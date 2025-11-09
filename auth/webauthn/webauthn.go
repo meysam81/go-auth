@@ -37,8 +37,8 @@ type Authenticator struct {
 // Config configures the WebAuthn authenticator.
 type Config struct {
 	// RelyingParty configuration
-	RPDisplayName string // e.g., "My App"
-	RPID          string // e.g., "example.com"
+	RPDisplayName string   // e.g., "My App"
+	RPID          string   // e.g., "example.com"
 	RPOrigins     []string // e.g., ["https://example.com"]
 
 	// Storage
@@ -47,10 +47,10 @@ type Config struct {
 	SessionStore    storage.OIDCStateStore // For storing challenges
 
 	// Optional WebAuthn configuration
-	Timeout                  int    // Optional: timeout in milliseconds (default 60000)
-	AuthenticatorAttachment  string // Optional: "platform", "cross-platform", or "" for both
-	UserVerification         string // Optional: "required", "preferred", "discouraged"
-	ResidentKey              string // Optional: "required", "preferred", "discouraged"
+	Timeout                 int    // Optional: timeout in milliseconds (default 60000)
+	AuthenticatorAttachment string // Optional: "platform", "cross-platform", or "" for both
+	UserVerification        string // Optional: "required", "preferred", "discouraged"
+	ResidentKey             string // Optional: "required", "preferred", "discouraged"
 }
 
 // NewAuthenticator creates a new WebAuthn authenticator.

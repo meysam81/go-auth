@@ -104,11 +104,11 @@ func main() {
 		}
 
 		response := map[string]interface{}{
-			"message":  "Hello from protected endpoint",
-			"user_id":  claims.UserID,
-			"email":    claims.Email,
-			"provider": claims.Provider,
-			"issued_at": claims.IssuedAt.Time,
+			"message":    "Hello from protected endpoint",
+			"user_id":    claims.UserID,
+			"email":      claims.Email,
+			"provider":   claims.Provider,
+			"issued_at":  claims.IssuedAt.Time,
 			"expires_at": claims.ExpiresAt.Time,
 		}
 
