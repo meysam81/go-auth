@@ -1,6 +1,8 @@
 package provider
 
 import (
+	"strings"
+
 	authoidc "github.com/meysam81/go-auth/auth/oidc"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/linkedin"
@@ -47,9 +49,10 @@ func NewLinkedInProvider(clientID, clientSecret, redirectURL string) *OAuth2Prov
 		}
 
 		// LinkedIn doesn't have a standard username field
+		// Generate username from given_name and family_name with proper formatting
 		if givenName, ok := data["given_name"].(string); ok {
 			if familyName, ok := data["family_name"].(string); ok {
-				userInfo.Username = givenName + familyName
+				userInfo.Username = strings.ToLower(givenName) + "." + strings.ToLower(familyName)
 			}
 		}
 

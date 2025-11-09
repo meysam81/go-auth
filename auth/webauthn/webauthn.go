@@ -4,6 +4,7 @@ package webauthn
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -440,31 +441,26 @@ func stringsToProtocolTransports(transports []string) []protocol.AuthenticatorTr
 
 // Session data encoding helpers
 func encodeSessionData(session *webauthn.SessionData) (string, error) {
-	// In production, use proper encoding (JSON, protobuf, etc.)
-	// For simplicity, we'll use base64 encoding of a JSON representation
-	data := fmt.Sprintf("%s:%s",
-		string(session.Challenge),
-		string(session.UserID),
-	)
-	return base64.RawURLEncoding.EncodeToString([]byte(data)), nil
+	// Use JSON encoding for proper serialization
+	data, err := json.Marshal(session)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal session data: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(data), nil
 }
 
 func decodeSessionData(encoded string) (*webauthn.SessionData, error) {
-	// This is a simplified implementation
-	// In production, use proper decoding matching your encoding strategy
+	// Decode base64
 	decoded, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode base64: %w", err)
 	}
 
-	// Parse the encoded data
-	// This is a placeholder - you'd need proper serialization
+	// Unmarshal JSON
 	session := &webauthn.SessionData{}
-
-	// For now, we'll extract challenge from the encoded string
-	// In production, use proper JSON/protobuf serialization
-	// Simple parsing - in production use proper serialization
-	session.Challenge = string(decoded)
+	if err := json.Unmarshal(decoded, session); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal session data: %w", err)
+	}
 
 	return session, nil
 }

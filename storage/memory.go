@@ -118,6 +118,12 @@ func (s *InMemoryUserStore) UpdateUser(ctx context.Context, user *User) error {
 
 	// Update indexes if email or username changed
 	if existing.Email != user.Email {
+		// Check if new email is already taken by another user
+		if user.Email != "" {
+			if existingUserID, exists := s.emailIndex[user.Email]; exists && existingUserID != user.ID {
+				return ErrAlreadyExists
+			}
+		}
 		delete(s.emailIndex, existing.Email)
 		if user.Email != "" {
 			s.emailIndex[user.Email] = user.ID
@@ -125,6 +131,12 @@ func (s *InMemoryUserStore) UpdateUser(ctx context.Context, user *User) error {
 	}
 
 	if existing.Username != user.Username {
+		// Check if new username is already taken by another user
+		if user.Username != "" {
+			if existingUserID, exists := s.usernameIndex[user.Username]; exists && existingUserID != user.ID {
+				return ErrAlreadyExists
+			}
+		}
 		delete(s.usernameIndex, existing.Username)
 		if user.Username != "" {
 			s.usernameIndex[user.Username] = user.ID
