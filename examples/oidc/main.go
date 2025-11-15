@@ -19,18 +19,18 @@
 // Before running this example, you need to create OAuth2 applications:
 //
 // Google (https://console.cloud.google.com/apis/credentials):
-//   1. Create OAuth2 credentials (Web application type)
-//   2. Add redirect URI: http://localhost:8080/callback/google
-//   3. Set environment variables:
-//      export GOOGLE_CLIENT_ID="your-client-id"
-//      export GOOGLE_CLIENT_SECRET="your-client-secret"
+//  1. Create OAuth2 credentials (Web application type)
+//  2. Add redirect URI: http://localhost:8080/callback/google
+//  3. Set environment variables:
+//     export GOOGLE_CLIENT_ID="your-client-id"
+//     export GOOGLE_CLIENT_SECRET="your-client-secret"
 //
 // GitHub (https://github.com/settings/developers):
-//   1. Create OAuth App
-//   2. Set callback URL: http://localhost:8080/callback/github
-//   3. Set environment variables:
-//      export GITHUB_CLIENT_ID="your-client-id"
-//      export GITHUB_CLIENT_SECRET="your-client-secret"
+//  1. Create OAuth App
+//  2. Set callback URL: http://localhost:8080/callback/github
+//  3. Set environment variables:
+//     export GITHUB_CLIENT_ID="your-client-id"
+//     export GITHUB_CLIENT_SECRET="your-client-secret"
 //
 // # Running the Example
 //
