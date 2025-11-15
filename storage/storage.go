@@ -115,13 +115,13 @@ type User struct {
 
 // WebAuthnCredential represents a stored WebAuthn/Passkey credential.
 type WebAuthnCredential struct {
-	ID              []byte                 `json:"id"`                // Credential ID
-	PublicKey       []byte                 `json:"public_key"`        // Public key
-	AttestationType string                 `json:"attestation_type"`  // Attestation type
-	AAGUID          []byte                 `json:"aaguid"`            // Authenticator AAGUID
-	SignCount       uint32                 `json:"sign_count"`        // Signature counter
-	UserID          string                 `json:"user_id"`           // Associated user ID
-	Transports      []string               `json:"transports"`        // Authenticator transports
+	ID              []byte                 `json:"id"`               // Credential ID
+	PublicKey       []byte                 `json:"public_key"`       // Public key
+	AttestationType string                 `json:"attestation_type"` // Attestation type
+	AAGUID          []byte                 `json:"aaguid"`           // Authenticator AAGUID
+	SignCount       uint32                 `json:"sign_count"`       // Signature counter
+	UserID          string                 `json:"user_id"`          // Associated user ID
+	Transports      []string               `json:"transports"`       // Authenticator transports
 	Metadata        map[string]interface{} `json:"metadata,omitempty"`
 	CreatedAt       time.Time              `json:"created_at"`
 	UpdatedAt       time.Time              `json:"updated_at"`

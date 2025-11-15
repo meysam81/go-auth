@@ -57,12 +57,12 @@ type TokenManager struct {
 // Config configures the JWT token manager.
 type Config struct {
 	UserStore       storage.UserStore
-	TokenStore      storage.TokenStore  // Optional: for refresh token revocation
-	SigningKey      []byte              // Secret key for HS256 or private key for RS256
-	SigningMethod   jwt.SigningMethod   // Optional: defaults to HS256
-	Issuer          string              // Optional: token issuer
-	AccessTokenTTL  time.Duration       // Optional: defaults to 15 minutes
-	RefreshTokenTTL time.Duration       // Optional: defaults to 7 days
+	TokenStore      storage.TokenStore // Optional: for refresh token revocation
+	SigningKey      []byte             // Secret key for HS256 or private key for RS256
+	SigningMethod   jwt.SigningMethod  // Optional: defaults to HS256
+	Issuer          string             // Optional: token issuer
+	AccessTokenTTL  time.Duration      // Optional: defaults to 15 minutes
+	RefreshTokenTTL time.Duration      // Optional: defaults to 7 days
 }
 
 // NewTokenManager creates a new JWT token manager.

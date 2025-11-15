@@ -47,7 +47,7 @@ type Provider interface {
 
 // UserInfo represents user information extracted from an OIDC/OAuth2 provider.
 type UserInfo struct {
-	Subject       string                 `json:"sub"`           // Unique user ID from provider
+	Subject       string                 `json:"sub"` // Unique user ID from provider
 	Email         string                 `json:"email"`
 	EmailVerified bool                   `json:"email_verified"`
 	Name          string                 `json:"name,omitempty"`

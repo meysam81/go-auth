@@ -84,7 +84,7 @@ func TestInMemoryUserStore_GetUserByID(t *testing.T) {
 		Email: "test@example.com",
 		Name:  "Test User",
 	}
-	store.CreateUser(ctx, user)
+	_ = store.CreateUser(ctx, user)
 
 	// Test successful retrieval
 	retrieved, err := store.GetUserByID(ctx, "user1")
@@ -114,7 +114,7 @@ func TestInMemoryUserStore_GetUserByEmail(t *testing.T) {
 		Email: "test@example.com",
 		Name:  "Test User",
 	}
-	store.CreateUser(ctx, user)
+	_ = store.CreateUser(ctx, user)
 
 	// Test successful retrieval
 	retrieved, err := store.GetUserByEmail(ctx, "test@example.com")
@@ -141,7 +141,7 @@ func TestInMemoryUserStore_GetUserByUsername(t *testing.T) {
 		Email:    "test@example.com",
 		Username: "testuser",
 	}
-	store.CreateUser(ctx, user)
+	_ = store.CreateUser(ctx, user)
 
 	// Test successful retrieval
 	retrieved, err := store.GetUserByUsername(ctx, "testuser")
@@ -169,7 +169,7 @@ func TestInMemoryUserStore_UpdateUser(t *testing.T) {
 		Username: "testuser",
 		Name:     "Test User",
 	}
-	store.CreateUser(ctx, user)
+	_ = store.CreateUser(ctx, user)
 
 	// Test successful update
 	updatedUser := &User{
@@ -272,7 +272,7 @@ func TestInMemoryUserStore_DeleteUser(t *testing.T) {
 		Email:    "test@example.com",
 		Username: "testuser",
 	}
-	store.CreateUser(ctx, user)
+	_ = store.CreateUser(ctx, user)
 
 	// Test successful deletion
 	err := store.DeleteUser(ctx, "user1")
@@ -513,7 +513,7 @@ func TestInMemorySessionStore_GetSession(t *testing.T) {
 	}
 	ttl := 1 * time.Hour
 
-	store.CreateSession(ctx, sessionID, data, ttl)
+	_ = store.CreateSession(ctx, sessionID, data, ttl)
 
 	// Test getting valid session
 	retrieved, err := store.GetSession(ctx, sessionID)
@@ -533,7 +533,7 @@ func TestInMemorySessionStore_GetSession(t *testing.T) {
 	// Test getting expired session
 	expiredSessionID := "expired"
 	expiredData := &SessionData{UserID: "user2"}
-	store.CreateSession(ctx, expiredSessionID, expiredData, -1*time.Hour) // Expired
+	_ = store.CreateSession(ctx, expiredSessionID, expiredData, -1*time.Hour) // Expired
 	_, err = store.GetSession(ctx, expiredSessionID)
 	if err != ErrExpired {
 		t.Fatalf("Expected ErrExpired, got %v", err)
@@ -549,7 +549,7 @@ func TestInMemorySessionStore_UpdateSession(t *testing.T) {
 		UserID: "user1",
 		Email:  "test@example.com",
 	}
-	store.CreateSession(ctx, sessionID, data, 1*time.Hour)
+	_ = store.CreateSession(ctx, sessionID, data, 1*time.Hour)
 
 	// Test updating session
 	newData := &SessionData{
@@ -575,7 +575,7 @@ func TestInMemorySessionStore_UpdateSession(t *testing.T) {
 	// Test updating expired session
 	expiredSessionID := "expired"
 	expiredData := &SessionData{UserID: "user2"}
-	store.CreateSession(ctx, expiredSessionID, expiredData, -1*time.Hour)
+	_ = store.CreateSession(ctx, expiredSessionID, expiredData, -1*time.Hour)
 	err = store.UpdateSession(ctx, expiredSessionID, newData, 1*time.Hour)
 	if err != ErrExpired {
 		t.Fatalf("Expected ErrExpired, got %v", err)
@@ -591,7 +591,7 @@ func TestInMemorySessionStore_RefreshSession(t *testing.T) {
 		UserID: "user1",
 		Email:  "test@example.com",
 	}
-	store.CreateSession(ctx, sessionID, data, 1*time.Hour)
+	_ = store.CreateSession(ctx, sessionID, data, 1*time.Hour)
 
 	// Wait a bit to ensure we can see the expiry change
 	time.Sleep(10 * time.Millisecond)
@@ -619,7 +619,7 @@ func TestInMemorySessionStore_RefreshSession(t *testing.T) {
 	// Test refreshing expired session
 	expiredSessionID := "expired"
 	expiredData := &SessionData{UserID: "user2"}
-	store.CreateSession(ctx, expiredSessionID, expiredData, -1*time.Hour)
+	_ = store.CreateSession(ctx, expiredSessionID, expiredData, -1*time.Hour)
 	err = store.RefreshSession(ctx, expiredSessionID, 1*time.Hour)
 	if err != ErrExpired {
 		t.Fatalf("Expected ErrExpired, got %v", err)
@@ -632,7 +632,7 @@ func TestInMemorySessionStore_DeleteSession(t *testing.T) {
 
 	sessionID := "session1"
 	data := &SessionData{UserID: "user1"}
-	store.CreateSession(ctx, sessionID, data, 1*time.Hour)
+	_ = store.CreateSession(ctx, sessionID, data, 1*time.Hour)
 
 	// Test deleting session
 	err := store.DeleteSession(ctx, sessionID)
@@ -677,7 +677,7 @@ func TestInMemoryTokenStore_ValidateRefreshToken(t *testing.T) {
 	tokenID := "token1"
 	expiresAt := time.Now().Add(7 * 24 * time.Hour)
 
-	store.StoreRefreshToken(ctx, userID, tokenID, expiresAt)
+	_ = store.StoreRefreshToken(ctx, userID, tokenID, expiresAt)
 
 	// Test validating valid token
 	retrievedUserID, err := store.ValidateRefreshToken(ctx, tokenID)
@@ -697,7 +697,7 @@ func TestInMemoryTokenStore_ValidateRefreshToken(t *testing.T) {
 	// Test validating expired token
 	expiredTokenID := "expired"
 	expiredExpiresAt := time.Now().Add(-1 * time.Hour)
-	store.StoreRefreshToken(ctx, userID, expiredTokenID, expiredExpiresAt)
+	_ = store.StoreRefreshToken(ctx, userID, expiredTokenID, expiredExpiresAt)
 	_, err = store.ValidateRefreshToken(ctx, expiredTokenID)
 	if err != ErrExpired {
 		t.Fatalf("Expected ErrExpired, got %v", err)
@@ -705,8 +705,8 @@ func TestInMemoryTokenStore_ValidateRefreshToken(t *testing.T) {
 
 	// Test validating revoked token
 	revokedTokenID := "revoked"
-	store.StoreRefreshToken(ctx, userID, revokedTokenID, expiresAt)
-	store.RevokeRefreshToken(ctx, revokedTokenID)
+	_ = store.StoreRefreshToken(ctx, userID, revokedTokenID, expiresAt)
+	_ = store.RevokeRefreshToken(ctx, revokedTokenID)
 	_, err = store.ValidateRefreshToken(ctx, revokedTokenID)
 	if err == nil || err.Error() != "token revoked" {
 		t.Fatalf("Expected 'token revoked' error, got %v", err)
@@ -721,7 +721,7 @@ func TestInMemoryTokenStore_RevokeRefreshToken(t *testing.T) {
 	tokenID := "token1"
 	expiresAt := time.Now().Add(7 * 24 * time.Hour)
 
-	store.StoreRefreshToken(ctx, userID, tokenID, expiresAt)
+	_ = store.StoreRefreshToken(ctx, userID, tokenID, expiresAt)
 
 	// Test revoking token
 	err := store.RevokeRefreshToken(ctx, tokenID)
@@ -750,12 +750,12 @@ func TestInMemoryTokenStore_RevokeAllUserTokens(t *testing.T) {
 	expiresAt := time.Now().Add(7 * 24 * time.Hour)
 
 	// Store multiple tokens for the user
-	store.StoreRefreshToken(ctx, userID, "token1", expiresAt)
-	store.StoreRefreshToken(ctx, userID, "token2", expiresAt)
-	store.StoreRefreshToken(ctx, userID, "token3", expiresAt)
+	_ = store.StoreRefreshToken(ctx, userID, "token1", expiresAt)
+	_ = store.StoreRefreshToken(ctx, userID, "token2", expiresAt)
+	_ = store.StoreRefreshToken(ctx, userID, "token3", expiresAt)
 
 	// Store token for different user
-	store.StoreRefreshToken(ctx, "user2", "token4", expiresAt)
+	_ = store.StoreRefreshToken(ctx, "user2", "token4", expiresAt)
 
 	// Test revoking all user tokens
 	err := store.RevokeAllUserTokens(ctx, userID)
@@ -827,7 +827,7 @@ func TestInMemoryOIDCStateStore_GetState(t *testing.T) {
 	}
 	ttl := 10 * time.Minute
 
-	store.StoreState(ctx, state, data, ttl)
+	_ = store.StoreState(ctx, state, data, ttl)
 
 	// Test getting valid state
 	retrieved, err := store.GetState(ctx, state)
@@ -856,7 +856,7 @@ func TestInMemoryOIDCStateStore_GetState(t *testing.T) {
 	// Test getting expired state
 	expiredState := "expired"
 	expiredData := &OIDCState{Provider: "github"}
-	store.StoreState(ctx, expiredState, expiredData, -1*time.Hour)
+	_ = store.StoreState(ctx, expiredState, expiredData, -1*time.Hour)
 	_, err = store.GetState(ctx, expiredState)
 	if err != ErrExpired {
 		t.Fatalf("Expected ErrExpired, got %v", err)
@@ -875,7 +875,7 @@ func TestInMemoryOIDCStateStore_DeleteState(t *testing.T) {
 
 	state := "state123"
 	data := &OIDCState{Provider: "google"}
-	store.StoreState(ctx, state, data, 10*time.Minute)
+	_ = store.StoreState(ctx, state, data, 10*time.Minute)
 
 	// Test deleting state
 	err := store.DeleteState(ctx, state)
@@ -909,7 +909,7 @@ func TestInMemoryUserStore_Concurrency(t *testing.T) {
 				ID:    string(rune(id)),
 				Email: string(rune(id)) + "@example.com",
 			}
-			store.CreateUser(ctx, user)
+			_ = store.CreateUser(ctx, user)
 			done <- true
 		}(i)
 	}
@@ -935,7 +935,7 @@ func TestInMemorySessionStore_Concurrency(t *testing.T) {
 		go func(id int) {
 			sessionID := string(rune(id))
 			data := &SessionData{UserID: string(rune(id))}
-			store.CreateSession(ctx, sessionID, data, 1*time.Hour)
+			_ = store.CreateSession(ctx, sessionID, data, 1*time.Hour)
 			done <- true
 		}(i)
 	}

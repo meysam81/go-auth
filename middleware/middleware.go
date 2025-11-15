@@ -118,7 +118,7 @@ type CookieWriter struct {
 	CookieName string
 	Path       string
 	Domain     string
-	MaxAge     int  // seconds
+	MaxAge     int // seconds
 	Secure     bool
 	HttpOnly   bool
 	SameSite   http.SameSite

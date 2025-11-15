@@ -270,7 +270,7 @@ func TestTokenManager_ValidateToken(t *testing.T) {
 		ID:    "user123",
 		Email: "test@example.com",
 	}
-	userStore.CreateUser(ctx, user)
+	_ = userStore.CreateUser(ctx, user)
 
 	// Generate tokens
 	pair, _ := tm.GenerateTokenPair(ctx, user)
@@ -325,7 +325,7 @@ func TestTokenManager_ValidateToken(t *testing.T) {
 	}
 
 	// Test revoked refresh token
-	tokenStore.RevokeRefreshToken(ctx, claims.TokenID)
+	_ = tokenStore.RevokeRefreshToken(ctx, claims.TokenID)
 	_, err = tm.ValidateToken(ctx, pair.RefreshToken)
 	if err == nil || (err != ErrTokenRevoked && !strings.Contains(err.Error(), "token revoked")) {
 		t.Fatalf("Expected ErrTokenRevoked, got %v", err)
@@ -348,7 +348,7 @@ func TestTokenManager_RefreshAccessToken(t *testing.T) {
 		ID:    "user123",
 		Email: "test@example.com",
 	}
-	userStore.CreateUser(ctx, user)
+	_ = userStore.CreateUser(ctx, user)
 
 	// Generate initial token pair
 	initialPair, _ := tm.GenerateTokenPair(ctx, user)
@@ -397,9 +397,9 @@ func TestTokenManager_RefreshAccessToken(t *testing.T) {
 	}
 
 	// Test refresh with revoked token
-	tokenStore.RevokeRefreshToken(ctx, claims.TokenID)
+	_ = tokenStore.RevokeRefreshToken(ctx, claims.TokenID)
 	refreshClaims, _ := ParseUnverified(initialPair.RefreshToken)
-	tokenStore.RevokeRefreshToken(ctx, refreshClaims.TokenID)
+	_ = tokenStore.RevokeRefreshToken(ctx, refreshClaims.TokenID)
 	_, err = tm.RefreshAccessToken(ctx, initialPair.RefreshToken)
 	if err == nil || (err != ErrTokenRevoked && !strings.Contains(err.Error(), "token revoked")) {
 		t.Fatalf("Expected ErrTokenRevoked, got %v", err)
@@ -407,7 +407,7 @@ func TestTokenManager_RefreshAccessToken(t *testing.T) {
 
 	// Test refresh for non-existent user
 	deletedUserPair, _ := tm.GenerateTokenPair(ctx, user)
-	userStore.DeleteUser(ctx, user.ID)
+	_ = userStore.DeleteUser(ctx, user.ID)
 	_, err = tm.RefreshAccessToken(ctx, deletedUserPair.RefreshToken)
 	if err != ErrInvalidToken {
 		t.Fatalf("Expected ErrInvalidToken for deleted user, got %v", err)
