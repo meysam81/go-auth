@@ -1,4 +1,53 @@
-// Package main demonstrates JWT authentication usage.
+// Package main demonstrates JWT (JSON Web Token) authentication with access and refresh tokens.
+//
+// This example shows how to:
+//   - Set up JWT authentication with signing and verification
+//   - Generate access and refresh token pairs for users
+//   - Protect HTTP endpoints with JWT middleware
+//   - Implement token refresh flow for long-lived sessions
+//   - Extract claims from authenticated JWT requests
+//
+// The example creates a simple HTTP server with the following endpoints:
+//   - / (public): API documentation and usage instructions
+//   - POST /login (public): Returns JWT access and refresh tokens
+//   - POST /refresh (public): Exchanges refresh token for new access token
+//   - GET /protected (requires JWT): Protected endpoint that returns user claims
+//
+// # Running the Example
+//
+// Start the server:
+//
+//	go run main.go
+//
+// Get JWT tokens:
+//
+//	curl -X POST http://localhost:8080/login
+//
+// Access protected endpoint:
+//
+//	curl -H "Authorization: Bearer <access_token>" http://localhost:8080/protected
+//
+// Refresh access token when it expires:
+//
+//	curl -X POST http://localhost:8080/refresh -d '{"refresh_token":"<refresh_token>"}'
+//
+// # JWT Flow
+//
+// 1. User logs in and receives an access token (15 min) and refresh token (7 days)
+// 2. Client includes access token in Authorization header for API requests
+// 3. When access token expires, client uses refresh token to get a new access token
+// 4. Refresh token can be used multiple times until it expires
+//
+// # Production Usage
+//
+// This example uses in-memory storage and a hardcoded signing key. For production:
+//   - Use a strong, randomly generated signing key from environment variables
+//   - Store signing keys securely (HSM, key vault, etc.)
+//   - Implement persistent token storage for token revocation
+//   - Use HTTPS to prevent token interception
+//   - Consider shorter access token TTLs for better security
+//   - Implement token rotation (new refresh token on each refresh)
+//   - Add rate limiting on login and refresh endpoints
 package main
 
 import (

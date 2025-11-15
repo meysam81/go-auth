@@ -1,4 +1,37 @@
-// Package main demonstrates basic authentication usage.
+// Package main demonstrates basic username/password authentication with HTTP middleware.
+//
+// This example shows how to:
+//   - Set up basic authentication with in-memory storage
+//   - Register a new user with username and password
+//   - Protect HTTP endpoints with Basic Auth middleware
+//   - Extract user information from authenticated requests
+//
+// The example creates a simple HTTP server with two endpoints:
+//   - / (public): Shows instructions for accessing the protected endpoint
+//   - /protected (requires auth): Displays authenticated user information
+//
+// # Running the Example
+//
+// Start the server:
+//
+//	go run main.go
+//
+// Test the protected endpoint:
+//
+//	curl -u testuser:securepassword123 http://localhost:8080/protected
+//
+// Or use a browser and enter credentials when prompted:
+//   - Username: testuser
+//   - Password: securepassword123
+//
+// # Production Usage
+//
+// This example uses in-memory storage which loses data on restart. For production:
+//   - Implement persistent storage using your database (PostgreSQL, MySQL, etc.)
+//   - Use environment variables for sensitive data (never hardcode credentials)
+//   - Configure appropriate password policies (length, complexity, etc.)
+//   - Add rate limiting to prevent brute force attacks
+//   - Use HTTPS in production to protect credentials in transit
 package main
 
 import (

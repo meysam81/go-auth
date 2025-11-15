@@ -7,10 +7,54 @@ import (
 )
 
 const (
+	// slackUserInfoURL is the Slack API endpoint for retrieving authenticated user identity information.
 	slackUserInfoURL = "https://slack.com/api/users.identity"
 )
 
-// NewSlackProvider creates a Slack OAuth2 provider.
+// NewSlackProvider creates a Slack OAuth2 provider for Slack authentication.
+//
+// This function creates an OAuth2-only provider for Slack authentication. Slack does
+// not support the full OIDC specification, so user information is retrieved from Slack's
+// identity API rather than from ID tokens.
+//
+// Slack provider features:
+//   - OAuth2 authorization code flow
+//   - Access to user identity via Slack API
+//   - Returns user name, email, and avatar
+//   - Email addresses are always considered verified
+//   - Supports multiple avatar resolutions (prefers 512px, falls back to 192px)
+//
+// Setup instructions:
+//  1. Go to Slack API (api.slack.com/apps)
+//  2. Create a new Slack app or select an existing one
+//  3. Navigate to OAuth & Permissions
+//  4. Add your redirect URL to "Redirect URLs"
+//  5. Add the required scopes under "User Token Scopes"
+//  6. Copy the Client ID and Client Secret from "App Credentials"
+//
+// Parameters:
+//   - clientID: Client ID from Slack app credentials
+//   - clientSecret: Client Secret from Slack app credentials
+//   - redirectURL: Redirect URL registered in Slack app OAuth settings
+//     (e.g., "https://yourapp.com/auth/slack/callback")
+//
+// Example:
+//
+//	provider := provider.NewSlackProvider(
+//	    "your-slack-client-id.apps.slack",
+//	    "your-slack-client-secret",
+//	    "https://yourapp.com/auth/slack/callback",
+//	)
+//
+// The provider will request the following scopes by default:
+//   - identity.basic: Access to basic identity information (user ID, name)
+//   - identity.email: Access to user's email address
+//   - identity.avatar: Access to user's avatar/profile picture
+//
+// Note: Slack does not support OIDC. This provider uses OAuth2 with Slack's identity
+// API for user info retrieval. The response contains a nested "user" object with all
+// user information. Slack emails are automatically considered verified. The provider
+// prefers higher resolution avatars (512px) but falls back to 192px if unavailable.
 func NewSlackProvider(clientID, clientSecret, redirectURL string) *OAuth2Provider {
 	oauth2Config := &oauth2.Config{
 		ClientID:     clientID,

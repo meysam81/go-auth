@@ -1,4 +1,66 @@
-// Package main demonstrates OIDC/SSO authentication usage.
+// Package main demonstrates OIDC/OAuth2 Single Sign-On (SSO) authentication with multiple providers.
+//
+// This example shows how to:
+//   - Set up OIDC/OAuth2 authentication with Google and GitHub
+//   - Initiate OAuth2 authorization flow with multiple providers
+//   - Handle OAuth2 callbacks and exchange authorization codes for tokens
+//   - Extract user information from OIDC ID tokens or OAuth2 user info endpoints
+//   - Create or update users based on SSO authentication
+//
+// The example creates a simple HTTP server with the following flow:
+//  1. User visits home page and selects a provider (Google, GitHub, etc.)
+//  2. User is redirected to the provider's authorization page
+//  3. After user grants permission, provider redirects back with an authorization code
+//  4. Application exchanges code for tokens and retrieves user information
+//  5. User is created or updated in the database and logged in
+//
+// # Setup
+//
+// Before running this example, you need to create OAuth2 applications:
+//
+// Google (https://console.cloud.google.com/apis/credentials):
+//  1. Create OAuth2 credentials (Web application type)
+//  2. Add redirect URI: http://localhost:8080/callback/google
+//  3. Set environment variables:
+//     export GOOGLE_CLIENT_ID="your-client-id"
+//     export GOOGLE_CLIENT_SECRET="your-client-secret"
+//
+// GitHub (https://github.com/settings/developers):
+//  1. Create OAuth App
+//  2. Set callback URL: http://localhost:8080/callback/github
+//  3. Set environment variables:
+//     export GITHUB_CLIENT_ID="your-client-id"
+//     export GITHUB_CLIENT_SECRET="your-client-secret"
+//
+// # Running the Example
+//
+// Start the server:
+//
+//	go run main.go
+//
+// Visit http://localhost:8080 in your browser and click on a login provider.
+//
+// # Adding More Providers
+//
+// This example can be extended to support additional providers:
+//   - Microsoft Azure AD: provider.NewMicrosoftProvider()
+//   - Auth0: provider.NewAuth0Provider()
+//   - Okta: provider.NewOktaProvider()
+//   - Apple: provider.NewAppleProvider()
+//   - Discord: provider.NewDiscordProvider()
+//   - And more...
+//
+// # Production Usage
+//
+// This example uses in-memory storage which loses data on restart. For production:
+//   - Implement persistent storage for users and OAuth state
+//   - Use environment-specific redirect URLs (no hardcoded localhost)
+//   - Store client secrets in environment variables or secret management systems
+//   - Create sessions or JWT tokens after successful authentication
+//   - Add CSRF protection for OAuth flows (library includes state validation)
+//   - Use HTTPS in production
+//   - Implement proper error handling and logging
+//   - Add user profile management and account linking features
 package main
 
 import (
