@@ -206,7 +206,7 @@ func TestInMemoryUserStore_UpdateUser(t *testing.T) {
 		Email:    "user2@example.com",
 		Username: "user2name",
 	}
-	store.CreateUser(ctx, user2)
+	_ = store.CreateUser(ctx, user2)
 
 	// Test update with email conflict
 	user2EmailConflict := &User{

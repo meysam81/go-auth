@@ -97,7 +97,7 @@ func main() {
 </html>
 `
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprint(w, html)
+		_, _ = fmt.Fprint(w, html)
 	})
 
 	// Login handler - initiates OAuth flow
@@ -153,12 +153,12 @@ func main() {
 `, result.User.ID, result.User.Email, result.User.Name, result.User.Username, result.User.Provider, result.IsNewUser)
 
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprint(w, html)
+		_, _ = fmt.Fprint(w, html)
 	})
 
 	// Dashboard (post-login redirect)
 	http.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "Welcome to your dashboard!")
+		_, _ = fmt.Fprintln(w, "Welcome to your dashboard!")
 	})
 
 	fmt.Println("Server starting on :8080")

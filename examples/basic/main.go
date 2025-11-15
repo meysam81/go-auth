@@ -52,9 +52,9 @@ func main() {
 			return
 		}
 
-		fmt.Fprintf(w, "Hello, %s! You are authenticated.\n", user.Name)
-		fmt.Fprintf(w, "User ID: %s\n", user.ID)
-		fmt.Fprintf(w, "Email: %s\n", user.Email)
+		_, _ = fmt.Fprintf(w, "Hello, %s! You are authenticated.\n", user.Name)
+		_, _ = fmt.Fprintf(w, "User ID: %s\n", user.ID)
+		_, _ = fmt.Fprintf(w, "Email: %s\n", user.Email)
 	})
 
 	// Apply middleware
@@ -62,10 +62,10 @@ func main() {
 
 	// Public handler
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "Public endpoint - no authentication required")
-		fmt.Fprintln(w, "Try accessing /protected with Basic Auth:")
-		fmt.Fprintln(w, "  Username: testuser")
-		fmt.Fprintln(w, "  Password: securepassword123")
+		_, _ = fmt.Fprintln(w, "Public endpoint - no authentication required")
+		_, _ = fmt.Fprintln(w, "Try accessing /protected with Basic Auth:")
+		_, _ = fmt.Fprintln(w, "  Username: testuser")
+		_, _ = fmt.Fprintln(w, "  Password: securepassword123")
 	})
 
 	fmt.Println("Server starting on :8080")

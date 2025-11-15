@@ -823,7 +823,7 @@ func TestTokenManager_NotBeforeClaim(t *testing.T) {
 	if claims.NotBefore == nil {
 		t.Fatal("NotBefore should be set")
 	}
-	if claims.NotBefore.Time.After(time.Now()) {
+	if claims.NotBefore.After(time.Now()) {
 		t.Error("NotBefore should not be in the future")
 	}
 }
