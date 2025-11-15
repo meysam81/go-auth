@@ -171,13 +171,13 @@ func (s *InMemoryUserStore) DeleteUser(ctx context.Context, id string) error {
 
 // InMemoryCredentialStore provides an in-memory implementation of CredentialStore.
 type InMemoryCredentialStore struct {
-	mu                   sync.RWMutex
-	passwordHashes       map[string][]byte                // userID -> hash
-	webauthnCreds        map[string][]*WebAuthnCredential // userID -> credentials
-	webauthnCredsById    map[string]*WebAuthnCredential   // credentialID (hex) -> credential
-	passwordResetTokens  map[string]*tokenData            // token -> data
-	emailVerifyTokens    map[string]*tokenData            // token -> data
-	totpSecrets          map[string]*totpData             // userID -> TOTP data
+	mu                  sync.RWMutex
+	passwordHashes      map[string][]byte                // userID -> hash
+	webauthnCreds       map[string][]*WebAuthnCredential // userID -> credentials
+	webauthnCredsById   map[string]*WebAuthnCredential   // credentialID (hex) -> credential
+	passwordResetTokens map[string]*tokenData            // token -> data
+	emailVerifyTokens   map[string]*tokenData            // token -> data
+	totpSecrets         map[string]*totpData             // userID -> TOTP data
 }
 
 type tokenData struct {
