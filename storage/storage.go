@@ -50,6 +50,36 @@ type CredentialStore interface {
 
 	// DeleteWebAuthnCredential removes a WebAuthn credential.
 	DeleteWebAuthnCredential(ctx context.Context, credentialID []byte) error
+
+	// StorePasswordResetToken stores a password reset token for a user.
+	StorePasswordResetToken(ctx context.Context, userID string, token string, expiresAt time.Time) error
+
+	// ValidatePasswordResetToken validates a password reset token and returns the associated user ID.
+	ValidatePasswordResetToken(ctx context.Context, token string) (string, error)
+
+	// DeletePasswordResetToken deletes a password reset token.
+	DeletePasswordResetToken(ctx context.Context, token string) error
+
+	// StoreEmailVerificationToken stores an email verification token for a user.
+	StoreEmailVerificationToken(ctx context.Context, userID string, token string, expiresAt time.Time) error
+
+	// ValidateEmailVerificationToken validates an email verification token and returns the associated user ID.
+	ValidateEmailVerificationToken(ctx context.Context, token string) (string, error)
+
+	// DeleteEmailVerificationToken deletes an email verification token.
+	DeleteEmailVerificationToken(ctx context.Context, token string) error
+
+	// StoreTOTPSecret stores a TOTP secret and backup codes for a user.
+	StoreTOTPSecret(ctx context.Context, userID string, secret string, backupCodes []string) error
+
+	// GetTOTPSecret retrieves the TOTP secret and unused backup codes for a user.
+	GetTOTPSecret(ctx context.Context, userID string) (secret string, backupCodes []string, err error)
+
+	// DeleteTOTPSecret deletes the TOTP secret and backup codes for a user.
+	DeleteTOTPSecret(ctx context.Context, userID string) error
+
+	// UseBackupCode marks a backup code as used. Returns an error if the code is invalid or already used.
+	UseBackupCode(ctx context.Context, userID string, code string) error
 }
 
 // SessionStore defines the interface for ephemeral session storage.
@@ -103,14 +133,15 @@ type OIDCStateStore interface {
 
 // User represents a user identity in the system.
 type User struct {
-	ID        string                 `json:"id"`
-	Email     string                 `json:"email"`
-	Username  string                 `json:"username,omitempty"`
-	Name      string                 `json:"name,omitempty"`
-	Provider  string                 `json:"provider,omitempty"` // e.g., "local", "google", "github"
-	Metadata  map[string]interface{} `json:"metadata,omitempty"` // Extensible user metadata
-	CreatedAt time.Time              `json:"created_at"`
-	UpdatedAt time.Time              `json:"updated_at"`
+	ID            string                 `json:"id"`
+	Email         string                 `json:"email"`
+	EmailVerified bool                   `json:"email_verified"`
+	Username      string                 `json:"username,omitempty"`
+	Name          string                 `json:"name,omitempty"`
+	Provider      string                 `json:"provider,omitempty"` // e.g., "local", "google", "github"
+	Metadata      map[string]interface{} `json:"metadata,omitempty"` // Extensible user metadata
+	CreatedAt     time.Time              `json:"created_at"`
+	UpdatedAt     time.Time              `json:"updated_at"`
 }
 
 // WebAuthnCredential represents a stored WebAuthn/Passkey credential.
