@@ -142,7 +142,7 @@ func (p *OAuth2Provider) ExtractUserInfo(ctx context.Context, token *oauth2.Toke
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch user info: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)

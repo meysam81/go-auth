@@ -67,7 +67,7 @@ func main() {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(tokenPair)
+		_ = json.NewEncoder(w).Encode(tokenPair)
 	})
 
 	// Refresh token handler
@@ -92,7 +92,7 @@ func main() {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(tokenPair)
+		_ = json.NewEncoder(w).Encode(tokenPair)
 	})
 
 	// Protected handler
@@ -104,16 +104,16 @@ func main() {
 		}
 
 		response := map[string]interface{}{
-			"message":  "Hello from protected endpoint",
-			"user_id":  claims.UserID,
-			"email":    claims.Email,
-			"provider": claims.Provider,
-			"issued_at": claims.IssuedAt.Time,
+			"message":    "Hello from protected endpoint",
+			"user_id":    claims.UserID,
+			"email":      claims.Email,
+			"provider":   claims.Provider,
+			"issued_at":  claims.IssuedAt.Time,
 			"expires_at": claims.ExpiresAt.Time,
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	})
 
 	// Apply middleware to protected route
@@ -121,16 +121,16 @@ func main() {
 
 	// Home handler
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "JWT Authentication Example")
-		fmt.Fprintln(w, "")
-		fmt.Fprintln(w, "Endpoints:")
-		fmt.Fprintln(w, "  POST /login      - Get access and refresh tokens")
-		fmt.Fprintln(w, "  POST /refresh    - Refresh access token")
-		fmt.Fprintln(w, "  GET  /protected  - Protected endpoint (requires Bearer token)")
-		fmt.Fprintln(w, "")
-		fmt.Fprintln(w, "Example usage:")
-		fmt.Fprintln(w, "  1. Login: curl -X POST http://localhost:8080/login")
-		fmt.Fprintln(w, "  2. Access: curl -H 'Authorization: Bearer <token>' http://localhost:8080/protected")
+		_, _ = fmt.Fprintln(w, "JWT Authentication Example")
+		_, _ = fmt.Fprintln(w, "")
+		_, _ = fmt.Fprintln(w, "Endpoints:")
+		_, _ = fmt.Fprintln(w, "  POST /login      - Get access and refresh tokens")
+		_, _ = fmt.Fprintln(w, "  POST /refresh    - Refresh access token")
+		_, _ = fmt.Fprintln(w, "  GET  /protected  - Protected endpoint (requires Bearer token)")
+		_, _ = fmt.Fprintln(w, "")
+		_, _ = fmt.Fprintln(w, "Example usage:")
+		_, _ = fmt.Fprintln(w, "  1. Login: curl -X POST http://localhost:8080/login")
+		_, _ = fmt.Fprintln(w, "  2. Access: curl -H 'Authorization: Bearer <token>' http://localhost:8080/protected")
 	})
 
 	fmt.Println("Server starting on :8080")
