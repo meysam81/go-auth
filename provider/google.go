@@ -9,10 +9,51 @@ import (
 )
 
 const (
+	// googleIssuerURL is the OIDC issuer URL for Google's authentication service.
 	googleIssuerURL = "https://accounts.google.com"
 )
 
-// NewGoogleProvider creates a Google OIDC provider.
+// NewGoogleProvider creates a Google OIDC provider for Google Sign-In.
+//
+// This function creates a fully configured OIDC provider for Google authentication,
+// supporting the standard OpenID Connect flow with Google's identity platform.
+//
+// Google provider features:
+//   - Full OIDC support with ID token verification
+//   - Automatic discovery of Google's OIDC endpoints
+//   - Standard scopes: openid, profile, email
+//   - Returns verified email addresses and profile information
+//
+// Setup instructions:
+//  1. Create a project in Google Cloud Console (console.cloud.google.com)
+//  2. Enable the Google+ API or Google Identity services
+//  3. Create OAuth2 credentials (Web application type)
+//  4. Add your redirect URL to authorized redirect URIs
+//  5. Use the client ID and client secret from the credentials
+//
+// Parameters:
+//   - ctx: Context for OIDC discovery requests
+//   - clientID: OAuth2 client ID from Google Cloud Console
+//   - clientSecret: OAuth2 client secret from Google Cloud Console
+//   - redirectURL: The callback URL registered in Google Cloud Console
+//     (e.g., "https://yourapp.com/auth/google/callback")
+//
+// Example:
+//
+//	provider, err := provider.NewGoogleProvider(
+//	    context.Background(),
+//	    "123456789.apps.googleusercontent.com",
+//	    "your-client-secret",
+//	    "https://yourapp.com/auth/google/callback",
+//	)
+//	if err != nil {
+//	    log.Fatalf("Failed to create Google provider: %v", err)
+//	}
+//
+// The provider will request the following scopes by default:
+//   - openid: Required for OIDC authentication
+//   - profile: User's basic profile information (name, picture)
+//   - email: User's email address and verification status
 func NewGoogleProvider(ctx context.Context, clientID, clientSecret, redirectURL string) (*BaseOIDCProvider, error) {
 	scopes := []string{
 		oidc.ScopeOpenID,
