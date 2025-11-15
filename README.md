@@ -1,5 +1,12 @@
 # go-auth
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/meysam81/go-auth.svg)](https://pkg.go.dev/github.com/meysam81/go-auth)
+[![Go Report Card](https://goreportcard.com/badge/github.com/meysam81/go-auth)](https://goreportcard.com/report/github.com/meysam81/go-auth)
+[![codecov](https://codecov.io/github/meysam81/go-auth/graph/badge.svg?token=8WzFAwJa1Z)](https://codecov.io/github/meysam81/go-auth)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/meysam81/go-auth)](https://github.com/meysam81/go-auth/blob/main/go.mod)
+[![License](https://img.shields.io/github/license/meysam81/go-auth)](https://github.com/meysam81/go-auth/blob/main/LICENSE)
+[![CI](https://github.com/meysam81/go-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/meysam81/go-auth/actions/workflows/ci.yml)
+
 A comprehensive, modular, and production-ready authentication library for Go applications. Supports multiple authentication methods including Basic Auth, JWT, WebAuthn/Passkeys, and OIDC/OAuth2 SSO with 10+ popular providers.
 
 ## Features
@@ -728,7 +735,7 @@ Contributions are welcome! Please follow these guidelines:
 
 ## License
 
-MIT License - see LICENSE file for details
+Apache 2.0 License - see LICENSE file for details
 
 ## Support
 
