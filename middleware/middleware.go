@@ -23,6 +23,9 @@ const (
 	// SessionIDKey is the context key for storing the session ID.
 	SessionIDKey ContextKey = "session_id"
 
+	// SessionDataKey is the context key for storing session data.
+	SessionDataKey ContextKey = "session_data"
+
 	// ClaimsKey is the context key for storing JWT claims.
 	ClaimsKey ContextKey = "claims"
 )
@@ -118,7 +121,7 @@ type CookieWriter struct {
 	CookieName string
 	Path       string
 	Domain     string
-	MaxAge     int  // seconds
+	MaxAge     int // seconds
 	Secure     bool
 	HttpOnly   bool
 	SameSite   http.SameSite

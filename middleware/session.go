@@ -61,7 +61,7 @@ func (m *SessionMiddleware) Middleware(next http.Handler) http.Handler {
 		// Add session data to context
 		ctx := context.WithValue(r.Context(), UserIDKey, sessionData.UserID)
 		ctx = context.WithValue(ctx, SessionIDKey, sessionID)
-		ctx = context.WithValue(ctx, "session_data", sessionData)
+		ctx = context.WithValue(ctx, SessionDataKey, sessionData)
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -69,6 +69,6 @@ func (m *SessionMiddleware) Middleware(next http.Handler) http.Handler {
 
 // GetSessionData retrieves session data from the request context.
 func GetSessionData(r *http.Request) (*storage.SessionData, bool) {
-	data, ok := r.Context().Value("session_data").(*storage.SessionData)
+	data, ok := r.Context().Value(SessionDataKey).(*storage.SessionData)
 	return data, ok
 }
