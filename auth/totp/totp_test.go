@@ -226,8 +226,7 @@ func TestManager_ValidateBackupCode(t *testing.T) {
 		t.Error("Invalid backup code should be rejected")
 	}
 
-	// Test for user without TOTP enabled
-	valid, err = mgr.ValidateBackupCode(ctx, "user-no-totp", "CODE-HERE")
+	_, err = mgr.ValidateBackupCode(ctx, "user-no-totp", "CODE-HERE")
 	if err != ErrNotEnabled {
 		t.Errorf("Expected ErrNotEnabled, got %v", err)
 	}
@@ -242,10 +241,13 @@ func TestManager_Disable(t *testing.T) {
 	ctx := context.Background()
 
 	// Generate secret
-	mgr.GenerateSecret(ctx, "user123", "test@example.com")
+	_, err := mgr.GenerateSecret(ctx, "user123", "test@example.com")
+	if err != nil {
+		t.Fatalf("Failed to generate secret: %v", err)
+	}
 
 	// Test disabling TOTP
-	err := mgr.Disable(ctx, "user123")
+	err = mgr.Disable(ctx, "user123")
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -284,7 +286,10 @@ func TestManager_IsEnabled(t *testing.T) {
 	}
 
 	// Generate secret
-	mgr.GenerateSecret(ctx, "user123", "test@example.com")
+	_, err = mgr.GenerateSecret(ctx, "user123", "test@example.com")
+	if err != nil {
+		t.Fatalf("Failed to generate secret: %v", err)
+	}
 
 	// Test user with TOTP
 	enabled, err = mgr.IsEnabled(ctx, "user123")
@@ -365,7 +370,10 @@ func TestManager_GenerateQRCodeURL(t *testing.T) {
 	ctx := context.Background()
 
 	// Generate secret
-	mgr.GenerateSecret(ctx, "user123", "test@example.com")
+	_, err := mgr.GenerateSecret(ctx, "user123", "test@example.com")
+	if err != nil {
+		t.Fatalf("Failed to generate secret: %v", err)
+	}
 
 	// Generate QR code URL
 	url, err := mgr.GenerateQRCodeURL(ctx, "user123", "test@example.com")

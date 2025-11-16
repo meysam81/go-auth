@@ -869,7 +869,10 @@ func TestAuthenticator_EmailVerification_SSO(t *testing.T) {
 		Provider:      "google",
 		EmailVerified: true, // SSO users are typically pre-verified
 	}
-	userStore.CreateUser(ctx, ssoUser)
+	err := userStore.CreateUser(ctx, ssoUser)
+	if err != nil {
+		t.Fatalf("Failed to create SSO user: %v", err)
+	}
 
 	// SSO users should be able to authenticate without password
 	// (This test is just to ensure we don't break SSO flow with email verification)
@@ -1094,10 +1097,13 @@ func TestAuthenticator_DisableTOTPWithInvalidCode(t *testing.T) {
 		Password: "password123",
 	}
 	user, _ := auth.Register(ctx, req)
-	auth.EnableTOTP(ctx, user.ID, "disable@example.com")
+	_, err := auth.EnableTOTP(ctx, user.ID, "disable@example.com")
+	if err != nil {
+		t.Fatalf("Failed to enable TOTP: %v", err)
+	}
 
 	// Try to disable with invalid code
-	err := auth.DisableTOTP(ctx, user.ID, "000000")
+	err = auth.DisableTOTP(ctx, user.ID, "000000")
 	if err != totp.ErrInvalidCode {
 		t.Errorf("Expected ErrInvalidCode, got %v", err)
 	}
