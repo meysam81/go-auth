@@ -74,7 +74,7 @@ func NewManager(cfg Config) (*Manager, error) {
 type Secret struct {
 	Secret      string   // Base32-encoded secret
 	URL         string   // otpauth:// URL for QR code generation
-	QRCode      string   // Base64-encoded PNG QR code image
+	QRCode      string   // otpauth:// URL for QR code generation (client should generate QR code from this URL)
 	BackupCodes []string // One-time use backup codes
 }
 
