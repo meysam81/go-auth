@@ -170,9 +170,6 @@ func TestDefaultStdLogger(t *testing.T) {
 
 func TestProductionStdLogger(t *testing.T) {
 	logger := ProductionStdLogger()
-	if logger == nil {
-		t.Fatal("ProductionStdLogger() returned nil")
-	}
 
 	if logger.redactionConfig == nil {
 		t.Error("ProductionStdLogger() should have redaction config")

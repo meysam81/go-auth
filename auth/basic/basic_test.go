@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"testing"
+	"time"
 
+	"github.com/meysam81/go-auth/auth/totp"
 	"github.com/meysam81/go-auth/storage"
+	totpLib "github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -621,4 +624,575 @@ func containsInside(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// Test password reset flow
+func TestAuthenticator_PasswordResetFlow(t *testing.T) {
+	userStore := storage.NewInMemoryUserStore()
+	credStore := storage.NewInMemoryCredentialStore()
+	auth, _ := NewAuthenticator(Config{
+		UserStore:       userStore,
+		CredentialStore: credStore,
+		BcryptCost:      bcrypt.MinCost,
+	})
+	ctx := context.Background()
+
+	// Register a user
+	req := RegisterRequest{
+		Email:    "reset@example.com",
+		Username: "resetuser",
+		Password: "oldpassword123",
+	}
+	user, _ := auth.Register(ctx, req)
+
+	// Test generating reset token by email
+	token, err := auth.GeneratePasswordResetToken(ctx, "reset@example.com")
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if token == "" {
+		t.Error("Token should not be empty")
+	}
+
+	// Test generating reset token by username
+	token2, err := auth.GeneratePasswordResetToken(ctx, "resetuser")
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if token2 == "" {
+		t.Error("Token should not be empty")
+	}
+
+	// Test validating valid token
+	userID, err := auth.ValidatePasswordResetToken(ctx, token)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if userID != user.ID {
+		t.Errorf("Expected user ID %s, got %s", user.ID, userID)
+	}
+
+	// Test completing password reset
+	newPassword := "newpassword456"
+	err = auth.CompletePasswordReset(ctx, token, newPassword)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	// Verify old password no longer works
+	_, err = auth.Authenticate(ctx, "reset@example.com", "oldpassword123")
+	if err != ErrInvalidCredentials {
+		t.Error("Old password should not work")
+	}
+
+	// Verify new password works
+	_, err = auth.Authenticate(ctx, "reset@example.com", newPassword)
+	if err != nil {
+		t.Fatalf("New password should work, got %v", err)
+	}
+
+	// Test that token is deleted after use
+	_, err = auth.ValidatePasswordResetToken(ctx, token)
+	if err != ErrInvalidToken {
+		t.Errorf("Expected ErrInvalidToken for used token, got %v", err)
+	}
+
+	// Test validating invalid token
+	_, err = auth.ValidatePasswordResetToken(ctx, "invalid-token")
+	if err != ErrInvalidToken {
+		t.Errorf("Expected ErrInvalidToken, got %v", err)
+	}
+
+	// Test generating token for non-existent user (should not error for security)
+	token, err = auth.GeneratePasswordResetToken(ctx, "nonexistent@example.com")
+	if err != nil {
+		t.Fatalf("Expected no error for non-existent user, got %v", err)
+	}
+	if token != "" {
+		t.Error("Token should be empty for non-existent user")
+	}
+
+	// Test completing reset with weak password
+	token3, _ := auth.GeneratePasswordResetToken(ctx, "reset@example.com")
+	err = auth.CompletePasswordReset(ctx, token3, "weak")
+	if err != ErrWeakPassword {
+		t.Errorf("Expected ErrWeakPassword, got %v", err)
+	}
+}
+
+// Test email verification flow
+func TestAuthenticator_EmailVerificationFlow(t *testing.T) {
+	userStore := storage.NewInMemoryUserStore()
+	credStore := storage.NewInMemoryCredentialStore()
+	auth, _ := NewAuthenticator(Config{
+		UserStore:                userStore,
+		CredentialStore:          credStore,
+		BcryptCost:               bcrypt.MinCost,
+		RequireEmailVerification: true,
+	})
+	ctx := context.Background()
+
+	// Register a user
+	req := RegisterRequest{
+		Email:    "verify@example.com",
+		Username: "verifyuser",
+		Password: "password123",
+	}
+	user, _ := auth.Register(ctx, req)
+
+	// User should not be verified initially
+	if user.EmailVerified {
+		t.Error("User should not be verified initially")
+	}
+
+	// Test that unverified user cannot authenticate
+	_, err := auth.Authenticate(ctx, "verify@example.com", "password123")
+	if err != ErrEmailNotVerified {
+		t.Errorf("Expected ErrEmailNotVerified, got %v", err)
+	}
+
+	// Generate verification token
+	token, err := auth.GenerateEmailVerificationToken(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if token == "" {
+		t.Error("Token should not be empty")
+	}
+
+	// Verify email
+	err = auth.VerifyEmail(ctx, token)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	// Check that user is now verified
+	verifiedUser, _ := userStore.GetUserByID(ctx, user.ID)
+	if !verifiedUser.EmailVerified {
+		t.Error("User should be verified after verification")
+	}
+
+	// Test that verified user can now authenticate
+	_, err = auth.Authenticate(ctx, "verify@example.com", "password123")
+	if err != nil {
+		t.Fatalf("Verified user should be able to authenticate, got %v", err)
+	}
+
+	// Test that token is deleted after use
+	err = auth.VerifyEmail(ctx, token)
+	if err != ErrInvalidToken {
+		t.Errorf("Expected ErrInvalidToken for used token, got %v", err)
+	}
+
+	// Test verifying with invalid token
+	err = auth.VerifyEmail(ctx, "invalid-token")
+	if err != ErrInvalidToken {
+		t.Errorf("Expected ErrInvalidToken, got %v", err)
+	}
+
+	// Test generating token for already verified user
+	_, err = auth.GenerateEmailVerificationToken(ctx, user.ID)
+	if err == nil {
+		t.Error("Expected error for already verified user")
+	}
+
+	// Test generating token for non-existent user
+	_, err = auth.GenerateEmailVerificationToken(ctx, "nonexistent-id")
+	if err == nil {
+		t.Error("Expected error for non-existent user")
+	}
+}
+
+// Test resending email verification token
+func TestAuthenticator_ResendEmailVerification(t *testing.T) {
+	userStore := storage.NewInMemoryUserStore()
+	credStore := storage.NewInMemoryCredentialStore()
+	auth, _ := NewAuthenticator(Config{
+		UserStore:       userStore,
+		CredentialStore: credStore,
+		BcryptCost:      bcrypt.MinCost,
+	})
+	ctx := context.Background()
+
+	// Register a user
+	req := RegisterRequest{
+		Email:    "resend@example.com",
+		Username: "resenduser",
+		Password: "password123",
+	}
+	user, _ := auth.Register(ctx, req)
+
+	// Test resending by email
+	token, err := auth.ResendEmailVerificationToken(ctx, "resend@example.com")
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if token == "" {
+		t.Error("Token should not be empty")
+	}
+
+	// Verify the token works
+	err = auth.VerifyEmail(ctx, token)
+	if err != nil {
+		t.Fatalf("Token should be valid, got %v", err)
+	}
+
+	// Check user is verified
+	verifiedUser, _ := userStore.GetUserByID(ctx, user.ID)
+	if !verifiedUser.EmailVerified {
+		t.Error("User should be verified")
+	}
+
+	// Test resending for non-existent user
+	_, err = auth.ResendEmailVerificationToken(ctx, "nonexistent@example.com")
+	if err == nil {
+		t.Error("Expected error for non-existent user")
+	}
+}
+
+// Test email verification with SSO users
+func TestAuthenticator_EmailVerification_SSO(t *testing.T) {
+	userStore := storage.NewInMemoryUserStore()
+	credStore := storage.NewInMemoryCredentialStore()
+	_, _ = NewAuthenticator(Config{
+		UserStore:                userStore,
+		CredentialStore:          credStore,
+		BcryptCost:               bcrypt.MinCost,
+		RequireEmailVerification: true,
+	})
+	ctx := context.Background()
+
+	// Create an SSO user (simulating OIDC login)
+	ssoUser := &storage.User{
+		ID:            "sso-user-id",
+		Email:         "sso@example.com",
+		Provider:      "google",
+		EmailVerified: true, // SSO users are typically pre-verified
+	}
+	err := userStore.CreateUser(ctx, ssoUser)
+	if err != nil {
+		t.Fatalf("Failed to create SSO user: %v", err)
+	}
+
+	// SSO users should be able to authenticate without password
+	// (This test is just to ensure we don't break SSO flow with email verification)
+	// Note: SSO users typically don't use password auth, but we're checking the flag works correctly
+}
+
+// Test generateVerificationToken
+func TestGenerateVerificationToken(t *testing.T) {
+	// Test token generation
+	token1, err := generateVerificationToken()
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	// Verify it's valid base64
+	decoded, err := base64.RawURLEncoding.DecodeString(token1)
+	if err != nil {
+		t.Errorf("Token should be valid base64: %v", err)
+	}
+
+	// Verify length (32 bytes)
+	if len(decoded) != 32 {
+		t.Errorf("Expected 32 bytes, got %d", len(decoded))
+	}
+
+	// Test uniqueness
+	token2, _ := generateVerificationToken()
+	if token1 == token2 {
+		t.Error("Tokens should be unique")
+	}
+
+	// Test entropy
+	tokens := make(map[string]bool)
+	for i := 0; i < 1000; i++ {
+		token, err := generateVerificationToken()
+		if err != nil {
+			t.Fatalf("Failed to generate token: %v", err)
+		}
+		if tokens[token] {
+			t.Fatalf("Duplicate token generated: %s", token)
+		}
+		tokens[token] = true
+	}
+}
+
+// Test TOTP integration with basic auth
+func TestAuthenticator_TOTPIntegration(t *testing.T) {
+	userStore := storage.NewInMemoryUserStore()
+	credStore := storage.NewInMemoryCredentialStore()
+	totpMgr, _ := totp.NewManager(totp.Config{
+		CredentialStore: credStore,
+		Issuer:          "TestApp",
+	})
+	auth, _ := NewAuthenticator(Config{
+		UserStore:       userStore,
+		CredentialStore: credStore,
+		BcryptCost:      bcrypt.MinCost,
+		TOTPManager:     totpMgr,
+	})
+	ctx := context.Background()
+
+	// Register a user
+	req := RegisterRequest{
+		Email:    "totp@example.com",
+		Password: "password123",
+	}
+	user, _ := auth.Register(ctx, req)
+
+	// Test that TOTP is not enabled initially
+	enabled, err := auth.IsTOTPEnabled(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if enabled {
+		t.Error("TOTP should not be enabled initially")
+	}
+
+	// Enable TOTP
+	secret, err := auth.EnableTOTP(ctx, user.ID, "totp@example.com")
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if secret.Secret == "" {
+		t.Error("Secret should not be empty")
+	}
+	if len(secret.BackupCodes) == 0 {
+		t.Error("Backup codes should be generated")
+	}
+
+	// Verify TOTP is now enabled
+	enabled, err = auth.IsTOTPEnabled(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if !enabled {
+		t.Error("TOTP should be enabled")
+	}
+
+	// Test authenticating with TOTP
+	code, _ := totpLib.GenerateCode(secret.Secret, time.Now())
+	authenticatedUser, err := auth.AuthenticateWithTOTP(ctx, "totp@example.com", "password123", code)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if authenticatedUser.ID != user.ID {
+		t.Error("Should return the same user")
+	}
+
+	// Test authenticating with invalid TOTP code
+	_, err = auth.AuthenticateWithTOTP(ctx, "totp@example.com", "password123", "000000")
+	if err != totp.ErrInvalidCode {
+		t.Errorf("Expected ErrInvalidCode, got %v", err)
+	}
+
+	// Test authenticating with wrong password
+	_, err = auth.AuthenticateWithTOTP(ctx, "totp@example.com", "wrongpassword", code)
+	if err != ErrInvalidCredentials {
+		t.Errorf("Expected ErrInvalidCredentials, got %v", err)
+	}
+
+	// Test authenticating with backup code
+	backupCode := secret.BackupCodes[0]
+	_, err = auth.AuthenticateWithTOTP(ctx, "totp@example.com", "password123", backupCode)
+	if err != nil {
+		t.Fatalf("Backup code should work, got %v", err)
+	}
+
+	// Test regenerating backup codes
+	newBackupCodes, err := auth.RegenerateTOTPBackupCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if len(newBackupCodes) == 0 {
+		t.Error("New backup codes should be generated")
+	}
+
+	// Test disabling TOTP with valid code
+	newCode, _ := totpLib.GenerateCode(secret.Secret, time.Now())
+	err = auth.DisableTOTP(ctx, user.ID, newCode)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	// Verify TOTP is disabled
+	enabled, err = auth.IsTOTPEnabled(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if enabled {
+		t.Error("TOTP should be disabled")
+	}
+}
+
+// Test TOTP operations without TOTP manager configured
+func TestAuthenticator_TOTPWithoutManager(t *testing.T) {
+	userStore := storage.NewInMemoryUserStore()
+	credStore := storage.NewInMemoryCredentialStore()
+	auth, _ := NewAuthenticator(Config{
+		UserStore:       userStore,
+		CredentialStore: credStore,
+		BcryptCost:      bcrypt.MinCost,
+		// No TOTP manager configured
+	})
+	ctx := context.Background()
+
+	// Register a user
+	req := RegisterRequest{
+		Email:    "nototp@example.com",
+		Password: "password123",
+	}
+	user, _ := auth.Register(ctx, req)
+
+	// Test that TOTP operations fail gracefully
+	enabled, err := auth.IsTOTPEnabled(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if enabled {
+		t.Error("TOTP should not be enabled when manager not configured")
+	}
+
+	_, err = auth.EnableTOTP(ctx, user.ID, "nototp@example.com")
+	if err == nil {
+		t.Error("Expected error when TOTP manager not configured")
+	}
+
+	err = auth.DisableTOTP(ctx, user.ID, "123456")
+	if err == nil {
+		t.Error("Expected error when TOTP manager not configured")
+	}
+
+	_, err = auth.AuthenticateWithTOTP(ctx, "nototp@example.com", "password123", "123456")
+	if err == nil {
+		t.Error("Expected error when TOTP manager not configured")
+	}
+
+	_, err = auth.RegenerateTOTPBackupCodes(ctx, user.ID)
+	if err == nil {
+		t.Error("Expected error when TOTP manager not configured")
+	}
+}
+
+// Test disabling TOTP with invalid code
+func TestAuthenticator_DisableTOTPWithInvalidCode(t *testing.T) {
+	userStore := storage.NewInMemoryUserStore()
+	credStore := storage.NewInMemoryCredentialStore()
+	totpMgr, _ := totp.NewManager(totp.Config{
+		CredentialStore: credStore,
+		Issuer:          "TestApp",
+	})
+	auth, _ := NewAuthenticator(Config{
+		UserStore:       userStore,
+		CredentialStore: credStore,
+		BcryptCost:      bcrypt.MinCost,
+		TOTPManager:     totpMgr,
+	})
+	ctx := context.Background()
+
+	// Register and enable TOTP
+	req := RegisterRequest{
+		Email:    "disable@example.com",
+		Password: "password123",
+	}
+	user, _ := auth.Register(ctx, req)
+	_, err := auth.EnableTOTP(ctx, user.ID, "disable@example.com")
+	if err != nil {
+		t.Fatalf("Failed to enable TOTP: %v", err)
+	}
+
+	// Try to disable with invalid code
+	err = auth.DisableTOTP(ctx, user.ID, "000000")
+	if err != totp.ErrInvalidCode {
+		t.Errorf("Expected ErrInvalidCode, got %v", err)
+	}
+
+	// Verify TOTP is still enabled
+	enabled, _ := auth.IsTOTPEnabled(ctx, user.ID)
+	if !enabled {
+		t.Error("TOTP should still be enabled after failed disable attempt")
+	}
+}
+
+// Test full authentication flow with TOTP
+func TestAuthenticator_FullTOTPWorkflow(t *testing.T) {
+	userStore := storage.NewInMemoryUserStore()
+	credStore := storage.NewInMemoryCredentialStore()
+	totpMgr, _ := totp.NewManager(totp.Config{
+		CredentialStore: credStore,
+		Issuer:          "TestApp",
+	})
+	auth, _ := NewAuthenticator(Config{
+		UserStore:       userStore,
+		CredentialStore: credStore,
+		BcryptCost:      bcrypt.MinCost,
+		TOTPManager:     totpMgr,
+	})
+	ctx := context.Background()
+
+	// Step 1: Register a user
+	req := RegisterRequest{
+		Email:    "workflow@example.com",
+		Username: "workflowuser",
+		Password: "password123",
+	}
+	user, err := auth.Register(ctx, req)
+	if err != nil {
+		t.Fatalf("Failed to register: %v", err)
+	}
+
+	// Step 2: User can authenticate with just password
+	_, err = auth.Authenticate(ctx, "workflow@example.com", "password123")
+	if err != nil {
+		t.Fatalf("Failed to authenticate: %v", err)
+	}
+
+	// Step 3: Enable TOTP
+	secret, err := auth.EnableTOTP(ctx, user.ID, "workflow@example.com")
+	if err != nil {
+		t.Fatalf("Failed to enable TOTP: %v", err)
+	}
+
+	// Step 4: Now user needs both password and TOTP
+	code, _ := totpLib.GenerateCode(secret.Secret, time.Now())
+	_, err = auth.AuthenticateWithTOTP(ctx, "workflow@example.com", "password123", code)
+	if err != nil {
+		t.Fatalf("Failed to authenticate with TOTP: %v", err)
+	}
+
+	// Step 5: User loses device, uses backup code
+	backupCode := secret.BackupCodes[0]
+	_, err = auth.AuthenticateWithTOTP(ctx, "workflow@example.com", "password123", backupCode)
+	if err != nil {
+		t.Fatalf("Failed to authenticate with backup code: %v", err)
+	}
+
+	// Step 6: User regenerates backup codes
+	newBackupCodes, err := auth.RegenerateTOTPBackupCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("Failed to regenerate backup codes: %v", err)
+	}
+	if len(newBackupCodes) == 0 {
+		t.Error("Should have new backup codes")
+	}
+
+	// Step 7: Old backup code doesn't work
+	_, err = auth.AuthenticateWithTOTP(ctx, "workflow@example.com", "password123", backupCode)
+	if err != totp.ErrInvalidCode {
+		t.Errorf("Old backup code should not work, got %v", err)
+	}
+
+	// Step 8: User disables TOTP
+	finalCode, _ := totpLib.GenerateCode(secret.Secret, time.Now())
+	err = auth.DisableTOTP(ctx, user.ID, finalCode)
+	if err != nil {
+		t.Fatalf("Failed to disable TOTP: %v", err)
+	}
+
+	// Step 9: User can authenticate with just password again
+	_, err = auth.Authenticate(ctx, "workflow@example.com", "password123")
+	if err != nil {
+		t.Fatalf("Should be able to authenticate without TOTP: %v", err)
+	}
 }

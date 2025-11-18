@@ -171,18 +171,34 @@ func (s *InMemoryUserStore) DeleteUser(ctx context.Context, id string) error {
 
 // InMemoryCredentialStore provides an in-memory implementation of CredentialStore.
 type InMemoryCredentialStore struct {
-	mu                sync.RWMutex
-	passwordHashes    map[string][]byte                // userID -> hash
-	webauthnCreds     map[string][]*WebAuthnCredential // userID -> credentials
-	webauthnCredsById map[string]*WebAuthnCredential   // credentialID (hex) -> credential
+	mu                  sync.RWMutex
+	passwordHashes      map[string][]byte                // userID -> hash
+	webauthnCreds       map[string][]*WebAuthnCredential // userID -> credentials
+	webauthnCredsById   map[string]*WebAuthnCredential   // credentialID (hex) -> credential
+	passwordResetTokens map[string]*tokenData            // token -> data
+	emailVerifyTokens   map[string]*tokenData            // token -> data
+	totpSecrets         map[string]*totpData             // userID -> TOTP data
+}
+
+type tokenData struct {
+	userID    string
+	expiresAt time.Time
+}
+
+type totpData struct {
+	secret      string
+	backupCodes map[string]bool // code -> used (true if used, false if available)
 }
 
 // NewInMemoryCredentialStore creates a new in-memory credential store.
 func NewInMemoryCredentialStore() *InMemoryCredentialStore {
 	return &InMemoryCredentialStore{
-		passwordHashes:    make(map[string][]byte),
-		webauthnCreds:     make(map[string][]*WebAuthnCredential),
-		webauthnCredsById: make(map[string]*WebAuthnCredential),
+		passwordHashes:      make(map[string][]byte),
+		webauthnCreds:       make(map[string][]*WebAuthnCredential),
+		webauthnCredsById:   make(map[string]*WebAuthnCredential),
+		passwordResetTokens: make(map[string]*tokenData),
+		emailVerifyTokens:   make(map[string]*tokenData),
+		totpSecrets:         make(map[string]*totpData),
 	}
 }
 
@@ -267,6 +283,145 @@ func (s *InMemoryCredentialStore) DeleteWebAuthnCredential(ctx context.Context, 
 
 	delete(s.webauthnCredsById, string(credentialID))
 
+	return nil
+}
+
+func (s *InMemoryCredentialStore) StorePasswordResetToken(ctx context.Context, userID string, token string, expiresAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.passwordResetTokens[token] = &tokenData{
+		userID:    userID,
+		expiresAt: expiresAt,
+	}
+
+	return nil
+}
+
+func (s *InMemoryCredentialStore) ValidatePasswordResetToken(ctx context.Context, token string) (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	data, exists := s.passwordResetTokens[token]
+	if !exists {
+		return "", ErrNotFound
+	}
+
+	if time.Now().After(data.expiresAt) {
+		return "", ErrExpired
+	}
+
+	return data.userID, nil
+}
+
+func (s *InMemoryCredentialStore) DeletePasswordResetToken(ctx context.Context, token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.passwordResetTokens, token)
+	return nil
+}
+
+func (s *InMemoryCredentialStore) StoreEmailVerificationToken(ctx context.Context, userID string, token string, expiresAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.emailVerifyTokens[token] = &tokenData{
+		userID:    userID,
+		expiresAt: expiresAt,
+	}
+
+	return nil
+}
+
+func (s *InMemoryCredentialStore) ValidateEmailVerificationToken(ctx context.Context, token string) (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	data, exists := s.emailVerifyTokens[token]
+	if !exists {
+		return "", ErrNotFound
+	}
+
+	if time.Now().After(data.expiresAt) {
+		return "", ErrExpired
+	}
+
+	return data.userID, nil
+}
+
+func (s *InMemoryCredentialStore) DeleteEmailVerificationToken(ctx context.Context, token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.emailVerifyTokens, token)
+	return nil
+}
+
+func (s *InMemoryCredentialStore) StoreTOTPSecret(ctx context.Context, userID string, secret string, backupCodes []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	codes := make(map[string]bool)
+	for _, code := range backupCodes {
+		codes[code] = false // false = unused
+	}
+
+	s.totpSecrets[userID] = &totpData{
+		secret:      secret,
+		backupCodes: codes,
+	}
+
+	return nil
+}
+
+func (s *InMemoryCredentialStore) GetTOTPSecret(ctx context.Context, userID string) (string, []string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	data, exists := s.totpSecrets[userID]
+	if !exists {
+		return "", nil, ErrNotFound
+	}
+
+	// Return only unused backup codes
+	unusedCodes := make([]string, 0)
+	for code, used := range data.backupCodes {
+		if !used {
+			unusedCodes = append(unusedCodes, code)
+		}
+	}
+
+	return data.secret, unusedCodes, nil
+}
+
+func (s *InMemoryCredentialStore) DeleteTOTPSecret(ctx context.Context, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.totpSecrets, userID)
+	return nil
+}
+
+func (s *InMemoryCredentialStore) UseBackupCode(ctx context.Context, userID string, code string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data, exists := s.totpSecrets[userID]
+	if !exists {
+		return ErrNotFound
+	}
+
+	used, exists := data.backupCodes[code]
+	if !exists {
+		return errors.New("invalid backup code")
+	}
+
+	if used {
+		return errors.New("backup code already used")
+	}
+
+	data.backupCodes[code] = true
 	return nil
 }
 

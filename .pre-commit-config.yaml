@@ -1,0 +1,98 @@
+repos:
+  - repo: https://github.com/oxc-project/mirrors-oxlint
+    rev: v1.28.0
+    hooks:
+      - id: oxlint
+        verbose: false
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+        args: ["--maxkb=2000"]
+      - id: check-ast
+      - id: check-executables-have-shebangs
+      - id: check-json
+      - id: check-shebang-scripts-are-executable
+      - id: check-yaml
+        args:
+          - --allow-multiple-documents
+      - id: detect-private-key
+        exclude: |
+          (?x)^(
+          )$
+      - id: detect-aws-credentials
+        args:
+          - --allow-missing-credentials
+      - id: end-of-file-fixer
+        exclude: |
+          (?x)^(
+          )$
+      - id: check-builtin-literals
+      - id: check-case-conflict
+      - id: check-docstring-first
+      - id: check-merge-conflict
+      - id: check-symlinks
+      - id: check-toml
+      - id: check-vcs-permalinks
+      - id: check-xml
+      - id: debug-statements
+      - id: destroyed-symlinks
+      - id: file-contents-sorter
+      - id: fix-byte-order-marker
+      - id: fix-encoding-pragma
+      - id: forbid-new-submodules
+      - id: forbid-submodules
+      - id: mixed-line-ending
+      - id: name-tests-test
+      - id: requirements-txt-fixer
+      - id: sort-simple-yaml
+      - id: trailing-whitespace
+      - id: pretty-format-json
+        args:
+          - --autofix
+        exclude: |
+          (?x)^(
+            manifest.json|
+            .oxlintrc.json|
+            renovate.json
+          )$
+  - repo: https://github.com/alessandrojcm/commitlint-pre-commit-hook
+    rev: v9.23.0
+    hooks:
+      - id: commitlint
+        stages: [commit-msg]
+        additional_dependencies: ["@commitlint/config-conventional"]
+  - repo: https://github.com/dnephin/pre-commit-golang
+    rev: v0.5.1
+    hooks:
+      - id: go-fmt
+      # - id: go-vet
+      # - id: go-lint
+      - id: go-imports
+      # - id: go-cyclo
+      #   args: [-over=15]
+      - id: validate-toml
+      - id: no-go-testing
+      - id: golangci-lint
+      # - id: go-critic
+      # - id: go-unit-tests
+      # - id: go-build
+      - id: go-mod-tidy
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.8
+    hooks:
+      - id: actionlint
+  - repo: https://github.com/reteps/dockerfmt
+    rev: v0.3.9
+    hooks:
+      - id: dockerfmt
+        args:
+          - --indent=4
+  - repo: local
+    hooks:
+      - id: bun-format
+        name: bun run format
+        entry: bun run format
+        language: system
+        types: [javascript]
+        pass_filenames: false

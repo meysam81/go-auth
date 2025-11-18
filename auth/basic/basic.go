@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/meysam81/go-auth/auth/totp"
 	"github.com/meysam81/go-auth/storage"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -22,6 +23,12 @@ var (
 
 	// ErrWeakPassword is returned when a password doesn't meet minimum requirements.
 	ErrWeakPassword = errors.New("password does not meet minimum requirements")
+
+	// ErrEmailNotVerified is returned when a user attempts to authenticate without verifying their email.
+	ErrEmailNotVerified = errors.New("email not verified")
+
+	// ErrInvalidToken is returned when a token is invalid or expired.
+	ErrInvalidToken = errors.New("invalid or expired token")
 )
 
 const (
@@ -30,20 +37,34 @@ const (
 
 	// DefaultBcryptCost is the default bcrypt cost factor.
 	DefaultBcryptCost = 12
+
+	// DefaultPasswordResetTTL is the default password reset token TTL.
+	DefaultPasswordResetTTL = 1 * time.Hour
+
+	// DefaultEmailVerificationTTL is the default email verification token TTL.
+	DefaultEmailVerificationTTL = 24 * time.Hour
 )
 
 // Authenticator handles basic username/password authentication.
 type Authenticator struct {
-	userStore       storage.UserStore
-	credentialStore storage.CredentialStore
-	bcryptCost      int
+	userStore                storage.UserStore
+	credentialStore          storage.CredentialStore
+	bcryptCost               int
+	requireEmailVerification bool
+	passwordResetTTL         time.Duration
+	emailVerificationTTL     time.Duration
+	totpManager              *totp.Manager
 }
 
 // Config configures the basic authenticator.
 type Config struct {
-	UserStore       storage.UserStore
-	CredentialStore storage.CredentialStore
-	BcryptCost      int // Optional: defaults to DefaultBcryptCost
+	UserStore                storage.UserStore
+	CredentialStore          storage.CredentialStore
+	BcryptCost               int           // Optional: defaults to DefaultBcryptCost
+	RequireEmailVerification bool          // Optional: defaults to false
+	PasswordResetTTL         time.Duration // Optional: defaults to DefaultPasswordResetTTL
+	EmailVerificationTTL     time.Duration // Optional: defaults to DefaultEmailVerificationTTL
+	TOTPManager              *totp.Manager // Optional: if provided, enables TOTP support
 }
 
 // NewAuthenticator creates a new basic authenticator.
@@ -63,10 +84,24 @@ func NewAuthenticator(cfg Config) (*Authenticator, error) {
 		return nil, fmt.Errorf("bcrypt cost must be between %d and %d", bcrypt.MinCost, bcrypt.MaxCost)
 	}
 
+	passwordResetTTL := cfg.PasswordResetTTL
+	if passwordResetTTL == 0 {
+		passwordResetTTL = DefaultPasswordResetTTL
+	}
+
+	emailVerificationTTL := cfg.EmailVerificationTTL
+	if emailVerificationTTL == 0 {
+		emailVerificationTTL = DefaultEmailVerificationTTL
+	}
+
 	return &Authenticator{
-		userStore:       cfg.UserStore,
-		credentialStore: cfg.CredentialStore,
-		bcryptCost:      cost,
+		userStore:                cfg.UserStore,
+		credentialStore:          cfg.CredentialStore,
+		bcryptCost:               cost,
+		requireEmailVerification: cfg.RequireEmailVerification,
+		passwordResetTTL:         passwordResetTTL,
+		emailVerificationTTL:     emailVerificationTTL,
+		totpManager:              cfg.TOTPManager,
 	}, nil
 }
 
@@ -157,6 +192,11 @@ func (a *Authenticator) Authenticate(ctx context.Context, identifier, password s
 			}
 			return nil, fmt.Errorf("failed to find user: %w", err)
 		}
+	}
+
+	// Check email verification if required (only for non-SSO users)
+	if a.requireEmailVerification && user.Provider == "basic" && !user.EmailVerified {
+		return nil, ErrEmailNotVerified
 	}
 
 	// Get stored password hash
@@ -265,4 +305,243 @@ type PasswordResetToken struct {
 	Token     string
 	UserID    string
 	ExpiresAt time.Time
+}
+
+// GeneratePasswordResetToken generates and stores a password reset token for a user.
+// The token should be sent to the user's email for verification.
+// Returns the generated token which should be included in the password reset link.
+func (a *Authenticator) GeneratePasswordResetToken(ctx context.Context, emailOrUsername string) (string, error) {
+	// Find user by email or username
+	user, err := a.userStore.GetUserByEmail(ctx, emailOrUsername)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			user, err = a.userStore.GetUserByUsername(ctx, emailOrUsername)
+		}
+		if err != nil {
+			// Don't leak that user doesn't exist
+			if errors.Is(err, storage.ErrNotFound) {
+				return "", nil // Return success but don't generate token
+			}
+			return "", fmt.Errorf("failed to find user: %w", err)
+		}
+	}
+
+	// Generate token
+	token, err := GenerateResetToken()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate token: %w", err)
+	}
+
+	// Store token with expiration
+	expiresAt := time.Now().Add(a.passwordResetTTL)
+	if err := a.credentialStore.StorePasswordResetToken(ctx, user.ID, token, expiresAt); err != nil {
+		return "", fmt.Errorf("failed to store token: %w", err)
+	}
+
+	return token, nil
+}
+
+// ValidatePasswordResetToken validates a password reset token and returns the associated user ID.
+func (a *Authenticator) ValidatePasswordResetToken(ctx context.Context, token string) (string, error) {
+	userID, err := a.credentialStore.ValidatePasswordResetToken(ctx, token)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) || errors.Is(err, storage.ErrExpired) {
+			return "", ErrInvalidToken
+		}
+		return "", fmt.Errorf("failed to validate token: %w", err)
+	}
+
+	return userID, nil
+}
+
+// CompletePasswordReset validates a password reset token and resets the user's password.
+// This is a convenience method that combines token validation and password reset.
+func (a *Authenticator) CompletePasswordReset(ctx context.Context, token, newPassword string) error {
+	// Validate token
+	userID, err := a.ValidatePasswordResetToken(ctx, token)
+	if err != nil {
+		return err
+	}
+
+	// Reset password
+	if err := a.ResetPassword(ctx, userID, newPassword); err != nil {
+		return err
+	}
+
+	// Delete the used token
+	if err := a.credentialStore.DeletePasswordResetToken(ctx, token); err != nil {
+		// Log error but don't fail the operation
+		return nil
+	}
+
+	return nil
+}
+
+// GenerateEmailVerificationToken generates and stores an email verification token for a user.
+// The token should be sent to the user's email for verification.
+// Returns the generated token which should be included in the verification link.
+func (a *Authenticator) GenerateEmailVerificationToken(ctx context.Context, userID string) (string, error) {
+	// Verify user exists
+	user, err := a.userStore.GetUserByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return "", fmt.Errorf("user not found")
+		}
+		return "", fmt.Errorf("failed to get user: %w", err)
+	}
+
+	// Check if already verified
+	if user.EmailVerified {
+		return "", errors.New("email already verified")
+	}
+
+	// Generate token
+	token, err := generateVerificationToken()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate token: %w", err)
+	}
+
+	// Store token with expiration
+	expiresAt := time.Now().Add(a.emailVerificationTTL)
+	if err := a.credentialStore.StoreEmailVerificationToken(ctx, userID, token, expiresAt); err != nil {
+		return "", fmt.Errorf("failed to store token: %w", err)
+	}
+
+	return token, nil
+}
+
+// VerifyEmail verifies a user's email address using a verification token.
+func (a *Authenticator) VerifyEmail(ctx context.Context, token string) error {
+	// Validate token
+	userID, err := a.credentialStore.ValidateEmailVerificationToken(ctx, token)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) || errors.Is(err, storage.ErrExpired) {
+			return ErrInvalidToken
+		}
+		return fmt.Errorf("failed to validate token: %w", err)
+	}
+
+	// Get user
+	user, err := a.userStore.GetUserByID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("failed to get user: %w", err)
+	}
+
+	// Mark email as verified
+	user.EmailVerified = true
+	if err := a.userStore.UpdateUser(ctx, user); err != nil {
+		return fmt.Errorf("failed to update user: %w", err)
+	}
+
+	// Delete the used token
+	if err := a.credentialStore.DeleteEmailVerificationToken(ctx, token); err != nil {
+		// Log error but don't fail the operation
+		return nil
+	}
+
+	return nil
+}
+
+// ResendEmailVerificationToken generates a new email verification token for a user.
+// This is useful when the original token has expired or was lost.
+func (a *Authenticator) ResendEmailVerificationToken(ctx context.Context, emailOrUsername string) (string, error) {
+	// Find user by email or username
+	user, err := a.userStore.GetUserByEmail(ctx, emailOrUsername)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			user, err = a.userStore.GetUserByUsername(ctx, emailOrUsername)
+		}
+		if err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
+				return "", fmt.Errorf("user not found")
+			}
+			return "", fmt.Errorf("failed to find user: %w", err)
+		}
+	}
+
+	return a.GenerateEmailVerificationToken(ctx, user.ID)
+}
+
+// generateVerificationToken generates a secure email verification token.
+func generateVerificationToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// TOTP Integration Methods
+// These methods provide convenient integration between basic auth and TOTP.
+
+// EnableTOTP enables TOTP for a user and returns the secret and backup codes.
+// This is a convenience wrapper around totp.Manager.GenerateSecret.
+func (a *Authenticator) EnableTOTP(ctx context.Context, userID, accountName string) (*totp.Secret, error) {
+	if a.totpManager == nil {
+		return nil, errors.New("TOTP manager not configured")
+	}
+
+	return a.totpManager.GenerateSecret(ctx, userID, accountName)
+}
+
+// DisableTOTP disables TOTP for a user.
+// Requires a valid TOTP code to prevent accidental or malicious disabling.
+func (a *Authenticator) DisableTOTP(ctx context.Context, userID, totpCode string) error {
+	if a.totpManager == nil {
+		return errors.New("TOTP manager not configured")
+	}
+
+	// Verify TOTP code before disabling
+	valid, err := a.totpManager.Validate(ctx, userID, totpCode)
+	if err != nil {
+		return err
+	}
+	if !valid {
+		return totp.ErrInvalidCode
+	}
+
+	return a.totpManager.Disable(ctx, userID)
+}
+
+// AuthenticateWithTOTP authenticates a user with email/username, password, and TOTP code.
+// This is a convenience method that combines password and TOTP authentication.
+func (a *Authenticator) AuthenticateWithTOTP(ctx context.Context, identifier, password, totpCode string) (*storage.User, error) {
+	// First authenticate with password
+	user, err := a.Authenticate(ctx, identifier, password)
+	if err != nil {
+		return nil, err
+	}
+
+	// Then validate TOTP
+	if a.totpManager == nil {
+		return nil, errors.New("TOTP manager not configured")
+	}
+
+	valid, err := a.totpManager.Validate(ctx, user.ID, totpCode)
+	if err != nil {
+		return nil, err
+	}
+	if !valid {
+		return nil, totp.ErrInvalidCode
+	}
+
+	return user, nil
+}
+
+// IsTOTPEnabled checks if TOTP is enabled for a user.
+func (a *Authenticator) IsTOTPEnabled(ctx context.Context, userID string) (bool, error) {
+	if a.totpManager == nil {
+		return false, nil
+	}
+
+	return a.totpManager.IsEnabled(ctx, userID)
+}
+
+// RegenerateTOTPBackupCodes generates new backup codes for a user.
+func (a *Authenticator) RegenerateTOTPBackupCodes(ctx context.Context, userID string) ([]string, error) {
+	if a.totpManager == nil {
+		return nil, errors.New("TOTP manager not configured")
+	}
+
+	return a.totpManager.RegenerateBackupCodes(ctx, userID)
 }
