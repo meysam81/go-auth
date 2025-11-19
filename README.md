@@ -1044,6 +1044,6 @@ Apache 2.0 License - see LICENSE file for details
 - [ ] Additional SSO providers
 - [ ] Rate limiting middleware
 - [x] Audit logging interface ✅
-- [ ] Password reset flow helpers
-- [ ] Email verification flow helpers
+- [x] Password reset flow helpers ✅
+- [x] Email verification flow helpers ✅
 - [x] Two-factor authentication (TOTP) ✅
