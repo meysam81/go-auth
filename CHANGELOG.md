@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.1.1](https://github.com/meysam81/go-auth/compare/v1.1.0...v1.1.1) (2025-11-19)
+
+
+### Bug Fixes
+
+* add funding ([7a71cb3](https://github.com/meysam81/go-auth/commit/7a71cb327e6d07d8fa8cea470f9612a2cf32982d))
+* **deps:** update go mods ([44234b3](https://github.com/meysam81/go-auth/commit/44234b3582be5c91e20f1b9b755bb4c1b04a82d1))
+* **dev:** add prettier to pre-commit ([2779c5d](https://github.com/meysam81/go-auth/commit/2779c5d1194632333170cb9f5bd2ec2cb4168af7))
+* **docs:** update roadmap ([7bff778](https://github.com/meysam81/go-auth/commit/7bff7788197449ff31ce31b35c5c0332d62a127e))
+* remove lowercase claude ([2c97b67](https://github.com/meysam81/go-auth/commit/2c97b67da15e9e112162518b91ee0d8681ac255f))
+
 ## [1.1.0](https://github.com/meysam81/go-auth/compare/v1.0.1...v1.1.0) (2025-11-19)
 
 ### Features
