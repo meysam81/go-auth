@@ -63,62 +63,62 @@ go run main.go
 
 ## Environment Variables
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `DATABASE_URL` | PostgreSQL connection string | Yes (unless using `-memory`) |
-| `JWT_SIGNING_KEY` | Secret key for JWT signing | No (auto-generated if not set) |
-| `GOOGLE_CLIENT_ID` | Google OAuth client ID | No (SSO disabled if not set) |
-| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret | No (SSO disabled if not set) |
-| `WEBAUTHN_RP_ID` | WebAuthn Relying Party ID | No (defaults to `localhost`) |
+| Variable               | Description                  | Required                       |
+| ---------------------- | ---------------------------- | ------------------------------ |
+| `DATABASE_URL`         | PostgreSQL connection string | Yes (unless using `-memory`)   |
+| `JWT_SIGNING_KEY`      | Secret key for JWT signing   | No (auto-generated if not set) |
+| `GOOGLE_CLIENT_ID`     | Google OAuth client ID       | No (SSO disabled if not set)   |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret   | No (SSO disabled if not set)   |
+| `WEBAUTHN_RP_ID`       | WebAuthn Relying Party ID    | No (defaults to `localhost`)   |
 
 ## API Endpoints
 
 ### Authentication
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/auth/register` | Register new user |
-| POST | `/auth/login` | Login with email/password |
-| POST | `/auth/refresh` | Refresh access token |
-| POST | `/auth/logout` | Logout (revoke refresh token) |
+| Method | Endpoint         | Description                   |
+| ------ | ---------------- | ----------------------------- |
+| POST   | `/auth/register` | Register new user             |
+| POST   | `/auth/login`    | Login with email/password     |
+| POST   | `/auth/refresh`  | Refresh access token          |
+| POST   | `/auth/logout`   | Logout (revoke refresh token) |
 
 ### Password Reset
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/auth/password/reset/request` | Request password reset email |
-| POST | `/auth/password/reset/confirm` | Confirm reset with token |
+| Method | Endpoint                       | Description                  |
+| ------ | ------------------------------ | ---------------------------- |
+| POST   | `/auth/password/reset/request` | Request password reset email |
+| POST   | `/auth/password/reset/confirm` | Confirm reset with token     |
 
 ### TOTP Two-Factor Authentication
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/auth/totp/setup` | Generate TOTP secret and backup codes |
-| POST | `/auth/totp/verify` | Verify TOTP code |
-| POST | `/auth/totp/disable` | Disable TOTP for user |
+| Method | Endpoint             | Description                           |
+| ------ | -------------------- | ------------------------------------- |
+| POST   | `/auth/totp/setup`   | Generate TOTP secret and backup codes |
+| POST   | `/auth/totp/verify`  | Verify TOTP code                      |
+| POST   | `/auth/totp/disable` | Disable TOTP for user                 |
 
 ### WebAuthn/Passkeys
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/auth/webauthn/register/begin` | Start passkey registration |
-| POST | `/auth/webauthn/register/finish` | Complete passkey registration |
-| POST | `/auth/webauthn/login/begin` | Start passkey login |
-| POST | `/auth/webauthn/login/finish` | Complete passkey login |
+| Method | Endpoint                         | Description                   |
+| ------ | -------------------------------- | ----------------------------- |
+| POST   | `/auth/webauthn/register/begin`  | Start passkey registration    |
+| POST   | `/auth/webauthn/register/finish` | Complete passkey registration |
+| POST   | `/auth/webauthn/login/begin`     | Start passkey login           |
+| POST   | `/auth/webauthn/login/finish`    | Complete passkey login        |
 
 ### Google SSO
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/auth/google/login` | Redirect to Google login |
-| GET | `/auth/google/callback` | OAuth callback handler |
+| Method | Endpoint                | Description              |
+| ------ | ----------------------- | ------------------------ |
+| GET    | `/auth/google/login`    | Redirect to Google login |
+| GET    | `/auth/google/callback` | OAuth callback handler   |
 
 ### Protected Endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/me` | Get current user profile |
-| GET | `/api/protected` | Example protected resource |
+| Method | Endpoint         | Description                |
+| ------ | ---------------- | -------------------------- |
+| GET    | `/api/me`        | Get current user profile   |
+| GET    | `/api/protected` | Example protected resource |
 
 ## Usage Examples
 
@@ -229,6 +229,7 @@ All authentication events are logged in JSON format using `log/slog`:
 ```
 
 Event types include:
+
 - `auth.register`, `auth.login`, `auth.logout`
 - `auth.password_reset.request`, `auth.password_reset.confirm`
 - `auth.totp.setup`, `auth.totp.verify`, `auth.totp.disable`
@@ -246,6 +247,7 @@ Event types include:
 ## Database Schema
 
 See `schema.sql` for the complete PostgreSQL schema including:
+
 - Users table with metadata
 - Password hashes
 - Password reset tokens

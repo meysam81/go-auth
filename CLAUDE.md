@@ -48,23 +48,27 @@ go-auth/
 ## Code Style Guidelines
 
 ### General
+
 - Follow the Google Go Style Guide
 - Minimal dependencies - prefer stdlib where possible
 - Interface-based design for testability
 - All public APIs must be documented
 
 ### Error Handling
+
 - Define package-level sentinel errors (e.g., `ErrInvalidCode`, `ErrNotEnabled`)
 - Wrap errors with context using `fmt.Errorf("context: %w", err)`
 - Check for `storage.ErrNotFound` for missing resources
 
 ### Naming Conventions
+
 - Packages: lowercase, single-word (e.g., `audit`, `totp`)
 - Interfaces: descriptive names ending in `-er` where appropriate (e.g., `UserStore`, `AuditLogger`)
 - Constructors: `NewXxx(config Config) (*Xxx, error)`
 - Config structs: named `Config` within each package
 
 ### Configuration Pattern
+
 ```go
 type Config struct {
     RequiredField SomeType
@@ -85,30 +89,36 @@ func NewManager(cfg Config) (*Manager, error) {
 ## Authentication Methods
 
 ### Basic Auth (`auth/basic`)
+
 - Username/password with bcrypt hashing
 - Registration and authentication flows
 
 ### JWT (`auth/jwt`)
+
 - Access and refresh token pairs
 - Configurable TTLs
 - Token revocation support
 
 ### TOTP (`auth/totp`)
+
 - RFC 6238 compliant
 - Backup codes support
 - QR code URL generation
 
 ### WebAuthn (`auth/webauthn`)
+
 - Passkey/FIDO2 support
 - Registration and login flows
 
 ### OIDC/OAuth2 (`auth/oidc`)
+
 - 10+ providers: Google, GitHub, Microsoft, GitLab, Auth0, Okta, Apple, Discord, Slack, LinkedIn
 - State management for CSRF protection
 
 ## Storage Interfaces
 
 The library is storage-agnostic. Key interfaces in `storage/`:
+
 - `UserStore` - User CRUD operations
 - `CredentialStore` - Password hashes, WebAuthn credentials, TOTP secrets
 - `SessionStore` - Session management
@@ -120,11 +130,13 @@ In-memory implementations are provided for development/testing.
 ## Middleware
 
 HTTP middleware in `middleware/` package:
+
 - `BasicAuthMiddleware` - Basic auth validation
 - `JWTMiddleware` - JWT token validation
 - `SessionMiddleware` - Session validation
 
 Token extractors:
+
 - `HeaderExtractor` - Extract from Authorization header
 - `CookieExtractor` - Extract from cookies
 - `MultiExtractor` - Try multiple sources
@@ -132,6 +144,7 @@ Token extractors:
 ## Audit Logging
 
 The `audit/` package provides compliance-ready logging:
+
 - Event types: auth, token, session, user operations
 - PII redaction support
 - Wrappers for auth components (e.g., `NewBasicAuthWrapper`)
@@ -146,6 +159,7 @@ The `audit/` package provides compliance-ready logging:
 ## Dependencies
 
 Core dependencies (keep minimal):
+
 - `golang.org/x/crypto` - Password hashing
 - `github.com/golang-jwt/jwt/v5` - JWT
 - `github.com/go-webauthn/webauthn` - WebAuthn

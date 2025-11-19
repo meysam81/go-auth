@@ -90,9 +90,8 @@ repos:
           - --indent=4
   - repo: local
     hooks:
-      - id: bun-format
-        name: bun run format
-        entry: bun run format
+      - id: prettier
+        name: prettier
+        entry: bunx prettier -w .
         language: system
-        types: [javascript]
         pass_filenames: false

@@ -39,10 +39,13 @@ A comprehensive, modular, and production-ready authentication library for Go app
 
 ## Table of Contents
 
+<!-- START doctoc generated TOC please keep comment here to allow auto update -->
+<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+
 - [Installation](#installation)
 - [30-Second Quick Start](#30-second-quick-start)
 - [Verify Installation](#verify-installation)
-- [Quick Start Examples](#quick-start)
+- [Quick Start](#quick-start)
   - [Basic Authentication](#basic-authentication)
   - [JWT Authentication](#jwt-authentication)
   - [TOTP Two-Factor Authentication](#totp-two-factor-authentication)
@@ -51,15 +54,33 @@ A comprehensive, modular, and production-ready authentication library for Go app
   - [Storage Interfaces](#storage-interfaces)
   - [Middleware](#middleware)
   - [Supported Providers](#supported-providers)
+  - [Custom Providers](#custom-providers)
 - [WebAuthn/Passkeys](#webauthnpasskeys)
 - [Session Management](#session-management)
 - [Audit Logging](#audit-logging)
+  - [Basic Usage](#basic-usage)
+  - [Advanced: Custom Audit Logger](#advanced-custom-audit-logger)
+  - [Extracting Request Context](#extracting-request-context)
+  - [Audit Event Types](#audit-event-types)
+  - [PII Redaction](#pii-redaction)
+  - [Custom Audit Implementation](#custom-audit-implementation)
+  - [Compliance Features](#compliance-features)
+- [Examples](#examples)
 - [Advanced Examples](#advanced-examples)
 - [Production Deployment](#production-deployment)
+  - [Security Best Practices](#security-best-practices)
+  - [Database Integration Example](#database-integration-example)
 - [Testing](#testing)
+- [Dependencies](#dependencies)
 - [Troubleshooting](#troubleshooting)
+  - [Common Issues](#common-issues)
+  - [Getting Help](#getting-help)
 - [Contributing](#contributing)
 - [License](#license)
+- [Support](#support)
+- [Roadmap](#roadmap)
+
+<!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
 ## Installation
 
@@ -455,6 +476,7 @@ type SessionStore interface {
 ```
 
 In-memory implementations are provided for development/testing:
+
 - `storage.NewInMemoryUserStore()`
 - `storage.NewInMemoryCredentialStore()`
 - `storage.NewInMemorySessionStore()`
@@ -488,18 +510,18 @@ extractor := &middleware.MultiExtractor{
 
 ### Supported Providers
 
-| Provider | Type | Constructor |
-|----------|------|-------------|
-| Google | OIDC | `provider.NewGoogleProvider()` |
-| Microsoft | OIDC | `provider.NewMicrosoftProvider()` |
-| GitLab | OIDC | `provider.NewGitLabProvider()` |
-| Auth0 | OIDC | `provider.NewAuth0Provider()` |
-| Okta | OIDC | `provider.NewOktaProvider()` |
-| Apple | OIDC | `provider.NewAppleProvider()` |
-| LinkedIn | OAuth2 | `provider.NewLinkedInProvider()` |
-| GitHub | OAuth2 | `provider.NewGitHubProvider()` |
-| Discord | OAuth2 | `provider.NewDiscordProvider()` |
-| Slack | OAuth2 | `provider.NewSlackProvider()` |
+| Provider  | Type   | Constructor                       |
+| --------- | ------ | --------------------------------- |
+| Google    | OIDC   | `provider.NewGoogleProvider()`    |
+| Microsoft | OIDC   | `provider.NewMicrosoftProvider()` |
+| GitLab    | OIDC   | `provider.NewGitLabProvider()`    |
+| Auth0     | OIDC   | `provider.NewAuth0Provider()`     |
+| Okta      | OIDC   | `provider.NewOktaProvider()`      |
+| Apple     | OIDC   | `provider.NewAppleProvider()`     |
+| LinkedIn  | OAuth2 | `provider.NewLinkedInProvider()`  |
+| GitHub    | OAuth2 | `provider.NewGitHubProvider()`    |
+| Discord   | OAuth2 | `provider.NewDiscordProvider()`   |
+| Slack     | OAuth2 | `provider.NewSlackProvider()`     |
 
 ### Custom Providers
 
@@ -724,6 +746,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 The library logs the following security events:
 
 **Authentication Events:**
+
 - `auth.login` - User login attempts
 - `auth.logout` - User logout
 - `auth.register` - New user registration
@@ -731,18 +754,21 @@ The library logs the following security events:
 - `auth.password_reset` - Password resets
 
 **Token Events:**
+
 - `token.generate` - Token generation
 - `token.validate` - Token validation
 - `token.refresh` - Token refresh
 - `token.revoke` - Token revocation
 
 **Session Events:**
+
 - `session.create` - Session creation
 - `session.validate` - Session validation
 - `session.refresh` - Session refresh
 - `session.delete` - Session deletion (logout)
 
 **User Management Events:**
+
 - `user.create`, `user.read`, `user.update`, `user.delete`
 
 ### PII Redaction
@@ -836,6 +862,7 @@ See [`examples/complete/README.md`](./examples/complete/README.md) for detailed 
 ### Security Best Practices
 
 1. **Use strong signing keys**
+
    ```go
    // Generate a secure random key
    signingKey := make([]byte, 32)
@@ -847,6 +874,7 @@ See [`examples/complete/README.md`](./examples/complete/README.md) for detailed 
    - Configure proper CORS policies
 
 3. **Store secrets in environment variables**
+
    ```go
    signingKey := []byte(os.Getenv("JWT_SIGNING_KEY"))
    ```
