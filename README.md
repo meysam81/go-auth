@@ -37,10 +37,134 @@ A comprehensive, modular, and production-ready authentication library for Go app
   - Follows Google Go Style Guide
   - Minimal dependencies
 
+## Table of Contents
+
+- [Installation](#installation)
+- [30-Second Quick Start](#30-second-quick-start)
+- [Verify Installation](#verify-installation)
+- [Quick Start Examples](#quick-start)
+  - [Basic Authentication](#basic-authentication)
+  - [JWT Authentication](#jwt-authentication)
+  - [TOTP Two-Factor Authentication](#totp-two-factor-authentication)
+  - [OIDC/SSO Authentication](#oidcsso-authentication)
+- [Architecture](#architecture)
+  - [Storage Interfaces](#storage-interfaces)
+  - [Middleware](#middleware)
+  - [Supported Providers](#supported-providers)
+- [WebAuthn/Passkeys](#webauthnpasskeys)
+- [Session Management](#session-management)
+- [Audit Logging](#audit-logging)
+- [Advanced Examples](#advanced-examples)
+- [Production Deployment](#production-deployment)
+- [Testing](#testing)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [License](#license)
+
 ## Installation
 
 ```bash
 go get github.com/meysam81/go-auth
+```
+
+## 30-Second Quick Start
+
+Copy this complete example into a file and run it:
+
+```go
+// main.go - Complete working example
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/http"
+
+	"github.com/meysam81/go-auth/auth/basic"
+	"github.com/meysam81/go-auth/middleware"
+	"github.com/meysam81/go-auth/storage"
+)
+
+func main() {
+	// 1. Create storage (in-memory for demo)
+	userStore := storage.NewInMemoryUserStore()
+	credStore := storage.NewInMemoryCredentialStore()
+
+	// 2. Create authenticator
+	auth, err := basic.NewAuthenticator(basic.Config{
+		UserStore:       userStore,
+		CredentialStore: credStore,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// 3. Register a user
+	_, err = auth.Register(context.Background(), basic.RegisterRequest{
+		Email:    "demo@example.com",
+		Username: "demo",
+		Password: "password123",
+		Name:     "Demo User",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// 4. Create middleware
+	mw := middleware.NewBasicAuthMiddleware(middleware.BasicAuthConfig{
+		Authenticator: auth,
+	})
+
+	// 5. Protected endpoint
+	http.Handle("/protected", mw.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, _ := middleware.GetUser(r)
+		fmt.Fprintf(w, "Hello, %s!", user.Name)
+	})))
+
+	// 6. Start server
+	fmt.Println("Server running on :8080")
+	fmt.Println("Test: curl -u demo:password123 http://localhost:8080/protected")
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+Run it:
+
+```bash
+go run main.go
+```
+
+Test it:
+
+```bash
+curl -u demo:password123 http://localhost:8080/protected
+# Output: Hello, Demo User!
+```
+
+## Verify Installation
+
+Create a simple test to verify go-auth is installed correctly:
+
+```go
+// verify.go
+package main
+
+import (
+	"fmt"
+
+	"github.com/meysam81/go-auth/storage"
+)
+
+func main() {
+	store := storage.NewInMemoryUserStore()
+	fmt.Printf("go-auth installed successfully! Store type: %T\n", store)
+}
+```
+
+```bash
+go run verify.go
+# Output: go-auth installed successfully! Store type: *storage.InMemoryUserStore
 ```
 
 ## Quick Start
@@ -80,6 +204,9 @@ func main() {
         Password: "securepassword123",
         Name:     "John Doe",
     })
+    if err != nil {
+        log.Fatal(err)
+    }
 
     // Create middleware
     authMiddleware := middleware.NewBasicAuthMiddleware(middleware.BasicAuthConfig{
@@ -105,6 +232,7 @@ package main
 
 import (
     "context"
+    "encoding/json"
     "log"
     "net/http"
     "time"
@@ -162,6 +290,68 @@ func main() {
     ))
 
     http.ListenAndServe(":8080", nil)
+}
+```
+
+### TOTP Two-Factor Authentication
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/meysam81/go-auth/auth/totp"
+    "github.com/meysam81/go-auth/storage"
+)
+
+func main() {
+    credentialStore := storage.NewInMemoryCredentialStore()
+
+    // Create TOTP manager
+    totpManager, err := totp.NewManager(totp.Config{
+        CredentialStore: credentialStore,
+        Issuer:          "MyApp",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    ctx := context.Background()
+    userID := "user123"
+    accountName := "user@example.com"
+
+    // Generate secret for user (returns QR code URL and backup codes)
+    secret, err := totpManager.GenerateSecret(ctx, userID, accountName)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("Scan this QR code URL with your authenticator app:")
+    fmt.Println(secret.QRCode)
+    fmt.Println("\nBackup codes (save these!):")
+    for _, code := range secret.BackupCodes {
+        fmt.Println(" ", code)
+    }
+
+    // Validate a code from the authenticator app
+    code := "123456" // User enters this from their app
+    valid, err := totpManager.Validate(ctx, userID, code)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    if valid {
+        fmt.Println("\n2FA verification successful!")
+    } else {
+        fmt.Println("\nInvalid code, please try again")
+    }
+
+    // Check if TOTP is enabled for a user
+    enabled, _ := totpManager.IsEnabled(ctx, userID)
+    fmt.Printf("TOTP enabled: %v\n", enabled)
 }
 ```
 
@@ -610,7 +800,7 @@ See the `examples/` directory for complete working examples:
 - `examples/basic/` - Basic authentication example
 - `examples/jwt/` - JWT authentication example
 - `examples/oidc/` - OIDC/SSO authentication example
-- `examples/webauthn/` - WebAuthn/Passkey example (TODO)
+- `examples/complete/` - Full-featured example with all auth methods
 
 Run an example:
 
@@ -618,6 +808,28 @@ Run an example:
 cd examples/basic
 go run main.go
 ```
+
+## Advanced Examples
+
+For production-ready patterns and comprehensive implementations, see the **complete example** at [`examples/complete/`](./examples/complete/).
+
+This standalone example includes:
+
+- **All authentication methods**: Basic auth, JWT, TOTP 2FA, WebAuthn/Passkeys, Google SSO
+- **PostgreSQL integration**: Complete storage implementations with SQL schema
+- **Password reset flow**: Token-based password recovery
+- **Session management**: Secure session handling
+- **Audit logging**: Using stdlib `log/slog` for compliance logging
+- **Full HTTP API**: RESTful endpoints for all operations
+
+The example is completely self-contained with its own `go.mod` and can be run immediately:
+
+```bash
+cd examples/complete
+go run main.go
+```
+
+See [`examples/complete/README.md`](./examples/complete/README.md) for detailed setup instructions and API documentation.
 
 ## Production Deployment
 
@@ -724,6 +936,61 @@ func TestAuthentication(t *testing.T) {
 
 All dependencies are production-ready, well-maintained, and widely used.
 
+## Troubleshooting
+
+### Common Issues
+
+**"cannot find module" error**
+
+```bash
+# Ensure you're using Go 1.21+ and modules are enabled
+go version
+go env GO111MODULE
+# Should be "on" or empty (auto)
+
+# Try cleaning module cache
+go clean -modcache
+go get github.com/meysam81/go-auth
+```
+
+**"storage.ErrNotFound" when authenticating**
+
+This means the user doesn't exist. Ensure you've registered the user first:
+
+```go
+// Register before authenticating
+_, err := auth.Register(ctx, basic.RegisterRequest{
+    Email:    "user@example.com",
+    Password: "password",
+})
+```
+
+**JWT token validation fails**
+
+- Ensure the signing key is the same for generation and validation
+- Check that the token hasn't expired (default: 15 minutes for access tokens)
+- Verify the token is being passed correctly in the `Authorization: Bearer <token>` header
+
+**TOTP codes always invalid**
+
+- Ensure server time is synchronized (TOTP is time-based)
+- Check that the secret was stored correctly during setup
+- Verify the user is using a compatible authenticator app (Google Authenticator, Authy, etc.)
+
+**WebAuthn registration fails**
+
+- WebAuthn requires HTTPS in production (localhost works for development)
+- Ensure `RPID` matches your domain exactly
+- Check that `RPOrigins` includes the full origin URL (e.g., `https://example.com`)
+
+### Getting Help
+
+If you encounter issues not covered here:
+
+1. Check the [GitHub Issues](https://github.com/meysam81/go-auth/issues) for similar problems
+2. Review the examples in `examples/` directory
+3. Use `go doc` to explore package documentation
+
 ## Contributing
 
 Contributions are welcome! Please follow these guidelines:
@@ -751,4 +1018,4 @@ Apache 2.0 License - see LICENSE file for details
 - [x] Audit logging interface ✅
 - [ ] Password reset flow helpers
 - [ ] Email verification flow helpers
-- [ ] Two-factor authentication (TOTP)
+- [x] Two-factor authentication (TOTP) ✅
