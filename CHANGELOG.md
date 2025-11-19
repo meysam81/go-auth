@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.0](https://github.com/meysam81/go-auth/compare/v1.0.1...v1.1.0) (2025-11-19)
+
+
+### Features
+
+* **docs:** Improve README documentation and setup instructions ([#18](https://github.com/meysam81/go-auth/issues/18)) ([08c36ec](https://github.com/meysam81/go-auth/commit/08c36ec3d3a694c0d4ef37c389ddb397e35dbb8e))
+* Implement authentication flow helpers and TOTP ([#15](https://github.com/meysam81/go-auth/issues/15)) ([eb07702](https://github.com/meysam81/go-auth/commit/eb077029e83a1c115c0efc98ca0a79a0ac7b079e))
+
 ## [1.0.1](https://github.com/meysam81/go-auth/compare/v1.0.0...v1.0.1) (2025-11-15)
 
 
