@@ -59,8 +59,11 @@ func NewPostgresUserStore(db *sql.DB) *PostgresUserStore {
 }
 
 func (s *PostgresUserStore) CreateUser(ctx context.Context, user *storage.User) error {
-	metadata, _ := json.Marshal(user.Metadata)
-	_, err := s.db.ExecContext(ctx,
+	metadata, err := json.Marshal(user.Metadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal user metadata: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO users (id, email, email_verified, username, name, provider, metadata, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		user.ID, user.Email, user.EmailVerified, user.Username, user.Name, user.Provider, metadata, user.CreatedAt, user.UpdatedAt,
@@ -191,7 +194,9 @@ func (s *PostgresCredentialStore) GetWebAuthnCredentials(ctx context.Context, us
 			return nil, err
 		}
 		cred.Transports = transports
-		json.Unmarshal(metadata, &cred.Metadata)
+		if err := json.Unmarshal(metadata, &cred.Metadata); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
+		}
 		credentials = append(credentials, cred)
 	}
 	return credentials, rows.Err()
@@ -341,7 +346,9 @@ func (s *PostgresSessionStore) GetSession(ctx context.Context, sessionID string)
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal(metadata, &data.Metadata)
+	if err := json.Unmarshal(metadata, &data.Metadata); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
+	}
 	return data, nil
 }
 
@@ -437,9 +444,13 @@ func (s *PostgresOIDCStateStore) GetState(ctx context.Context, state string) (*s
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal(metadata, &data.Metadata)
+	if err := json.Unmarshal(metadata, &data.Metadata); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
+	}
 	// Delete after retrieval (one-time use)
-	s.db.ExecContext(ctx, `DELETE FROM oidc_states WHERE state = $1`, state)
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM oidc_states WHERE state = $1`, state); err != nil {
+		log.Printf("Warning: failed to delete OIDC state: %v", err)
+	}
 	return data, nil
 }
 
@@ -546,7 +557,9 @@ func main() {
 	signingKey := []byte(os.Getenv("JWT_SIGNING_KEY"))
 	if len(signingKey) == 0 {
 		signingKey = make([]byte, 32)
-		rand.Read(signingKey)
+		if _, err := rand.Read(signingKey); err != nil {
+			log.Fatalf("Failed to generate signing key: %v", err)
+		}
 		log.Printf("Generated random signing key (use JWT_SIGNING_KEY env var in production)")
 	}
 
@@ -914,7 +927,10 @@ func (app *App) handlePasswordResetRequest(w http.ResponseWriter, r *http.Reques
 
 	// Generate reset token
 	tokenBytes := make([]byte, 32)
-	rand.Read(tokenBytes)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		app.jsonError(w, "Failed to generate reset token", http.StatusInternalServerError)
+		return
+	}
 	token := hex.EncodeToString(tokenBytes)
 
 	// Store token (expires in 1 hour)
@@ -960,7 +976,10 @@ func (app *App) handlePasswordResetConfirm(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Delete used token
-	app.credStore.DeletePasswordResetToken(r.Context(), req.Token)
+	if err := app.credStore.DeletePasswordResetToken(r.Context(), req.Token); err != nil {
+		// Log but don't fail since password is already updated
+		log.Printf("Warning: failed to delete password reset token: %v", err)
+	}
 
 	app.auditLogger.LogAuth("auth.password_reset.confirm", "success", userID, "", "local", r.RemoteAddr, r.UserAgent(), nil)
 

@@ -198,7 +198,7 @@ curl -X POST http://localhost:8080/auth/refresh \
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
 2. Create a new project or select existing
-3. Enable the Google+ API
+3. Enable the Google OAuth 2.0 API
 4. Go to Credentials > Create Credentials > OAuth 2.0 Client ID
 5. Set Authorized redirect URIs to `http://localhost:8080/auth/google/callback`
 6. Copy Client ID and Client Secret
