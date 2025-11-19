@@ -509,11 +509,11 @@ func main() {
 
 	// Initialize storage
 	var (
-		userStore   storage.UserStore
-		credStore   storage.CredentialStore
-		sessionStr  storage.SessionStore
-		tokenStore  storage.TokenStore
-		stateStore  storage.OIDCStateStore
+		userStore  storage.UserStore
+		credStore  storage.CredentialStore
+		sessionStr storage.SessionStore
+		tokenStore storage.TokenStore
+		stateStore storage.OIDCStateStore
 	)
 
 	if *useMemory || *dbURL == "" {
