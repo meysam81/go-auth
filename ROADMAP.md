@@ -334,7 +334,7 @@ The result: developers ship secure authentication in hours, not weeks, while mai
 **Current State**: Not implemented. Listed as roadmap item.
 
 **Implementation Approach**:
-- Create `auth/saml` package using `crewjam/saml` as foundation
+- Create `auth/saml` package using `github.com/crewjam/saml` as foundation
 - Implement SP-initiated SSO flow
 - Support metadata exchange (both file and URL)
 - Map SAML assertions to go-auth User model
