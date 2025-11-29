@@ -369,7 +369,7 @@ The result: developers ship secure authentication in hours, not weeks, while mai
 **Implementation Approach**:
 - Create `storage/redis` package
 - Implement `SessionStore`, `TokenStore`, `OIDCStateStore`
-- Use `redis/go-redis` client (widely adopted, maintained)
+- Use `github.com/redis/go-redis` client (widely adopted, maintained)
 - Support Redis Cluster and Sentinel configurations
 - Provide connection pooling and timeout configuration
 - Include TTL handling aligned with go-auth semantics
