@@ -4,7 +4,7 @@
 > **Version**: 1.0.0
 > **Status**: Active Development
 
-This roadmap outlines the strategic direction for go-auth, a comprehensive, modular, and production-ready authentication library for Go applications. Our philosophy is **depth over breadth**—we focus on making authentication exceptionally well rather than adding tangential features.
+This roadmap outlines the strategic direction for go-auth, a comprehensive, modular, and production-ready authentication library for Go applications. Our philosophy is **depth over breadth**—we focus on making authentication work exceptionally well rather than adding tangential features.
 
 ---
 
