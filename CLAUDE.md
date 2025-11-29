@@ -25,6 +25,7 @@ golangci-lint run
 go build ./examples/basic
 go build ./examples/jwt
 go build ./examples/oidc
+go build ./examples/complete
 ```
 
 ## Project Structure
@@ -170,4 +171,4 @@ Core dependencies (keep minimal):
 ## Version
 
 - Go version: 1.24.7
-- Current release: 1.0.1
+- Current release: 1.1.1
