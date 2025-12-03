@@ -3,7 +3,7 @@ module github.com/meysam81/go-auth
 go 1.24.7
 
 require (
-	github.com/coreos/go-oidc/v3 v3.16.0
+	github.com/coreos/go-oidc/v3 v3.17.0
 	github.com/go-webauthn/webauthn v0.15.0
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/pquerna/otp v1.5.0
