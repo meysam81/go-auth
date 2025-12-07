@@ -1,0 +1,148 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <defs>
+    <!-- Background gradient -->
+    <linearGradient id="ogBgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0F172A"/>
+      <stop offset="50%" style="stop-color:#1E293B"/>
+      <stop offset="100%" style="stop-color:#0F172A"/>
+    </linearGradient>
+
+    <!-- Shield gradients -->
+    <linearGradient id="ogShieldGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ADD8"/>
+      <stop offset="100%" style="stop-color:#06B6D4"/>
+    </linearGradient>
+    <linearGradient id="ogLayer1" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ADD8;stop-opacity:0.9"/>
+      <stop offset="100%" style="stop-color:#0891B2;stop-opacity:0.9"/>
+    </linearGradient>
+    <linearGradient id="ogLayer2" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#06B6D4;stop-opacity:0.7"/>
+      <stop offset="100%" style="stop-color:#0E7490;stop-opacity:0.7"/>
+    </linearGradient>
+    <linearGradient id="ogLayer3" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#22D3EE;stop-opacity:0.5"/>
+      <stop offset="100%" style="stop-color:#06B6D4;stop-opacity:0.5"/>
+    </linearGradient>
+
+    <!-- Glow effect -->
+    <filter id="ogGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="15" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Grid pattern -->
+    <pattern id="ogGrid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#334155" stroke-width="0.5" opacity="0.3"/>
+    </pattern>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="630" fill="url(#ogBgGradient)"/>
+
+  <!-- Grid pattern overlay -->
+  <rect width="1200" height="630" fill="url(#ogGrid)" opacity="0.4"/>
+
+  <!-- Decorative circles -->
+  <circle cx="80" cy="80" r="70" fill="#00ADD8" opacity="0.05"/>
+  <circle cx="1120" cy="550" r="100" fill="#06B6D4" opacity="0.05"/>
+  <circle cx="180" cy="480" r="50" fill="#22D3EE" opacity="0.03"/>
+
+  <!-- Shield Icon -->
+  <g transform="translate(100, 165)" filter="url(#ogGlow)">
+    <!-- Outer shield -->
+    <path d="M120 8 L220 48 L220 130 C220 185 170 225 120 245 C70 225 20 185 20 130 L20 48 Z"
+          fill="url(#ogShieldGradient)" opacity="0.15"/>
+
+    <!-- Layer 1 -->
+    <path d="M120 22 L207 57 L207 125 C207 172 165 208 120 225 C75 208 33 172 33 125 L33 57 Z"
+          fill="url(#ogLayer3)"/>
+
+    <!-- Layer 2 -->
+    <path d="M120 42 L190 70 L190 120 C190 158 155 185 120 198 C85 185 50 158 50 120 L50 70 Z"
+          fill="url(#ogLayer2)"/>
+
+    <!-- Layer 3 -->
+    <path d="M120 62 L173 85 L173 115 C173 143 148 165 120 175 C92 165 67 143 67 115 L67 85 Z"
+          fill="url(#ogLayer1)"/>
+
+    <!-- Keyhole -->
+    <circle cx="120" cy="98" r="16" fill="#0F172A"/>
+    <rect x="112" y="110" width="16" height="30" rx="3" fill="#0F172A"/>
+
+    <!-- Accent lines -->
+    <line x1="36" y1="85" x2="64" y2="95" stroke="#00ADD8" stroke-width="2.5" opacity="0.6"/>
+    <line x1="204" y1="85" x2="176" y2="95" stroke="#00ADD8" stroke-width="2.5" opacity="0.6"/>
+    <line x1="120" y1="22" x2="120" y2="50" stroke="#00ADD8" stroke-width="2.5" opacity="0.6"/>
+  </g>
+
+  <!-- Main title -->
+  <text x="480" y="260" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="88" font-weight="700" fill="#F8FAFC">go</text>
+  <text x="610" y="260" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="88" font-weight="300" fill="#64748B">-</text>
+  <text x="645" y="260" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="88" font-weight="700" fill="#00ADD8">auth</text>
+
+  <!-- Subtitle -->
+  <text x="480" y="315" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="26" font-weight="400" fill="#94A3B8">
+    Comprehensive Authentication Library for Go
+  </text>
+
+  <!-- Feature pills -->
+  <g transform="translate(480, 355)">
+    <rect x="0" y="0" width="75" height="34" rx="17" fill="#00ADD8" opacity="0.15"/>
+    <text x="37" y="23" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="13" font-weight="600" fill="#00ADD8" text-anchor="middle">JWT</text>
+
+    <rect x="88" y="0" width="100" height="34" rx="17" fill="#06B6D4" opacity="0.15"/>
+    <text x="138" y="23" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="13" font-weight="600" fill="#06B6D4" text-anchor="middle">WebAuthn</text>
+
+    <rect x="201" y="0" width="72" height="34" rx="17" fill="#22D3EE" opacity="0.15"/>
+    <text x="237" y="23" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="13" font-weight="600" fill="#22D3EE" text-anchor="middle">TOTP</text>
+
+    <rect x="286" y="0" width="72" height="34" rx="17" fill="#0891B2" opacity="0.15"/>
+    <text x="322" y="23" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="13" font-weight="600" fill="#0891B2" text-anchor="middle">OIDC</text>
+
+    <rect x="371" y="0" width="85" height="34" rx="17" fill="#0E7490" opacity="0.15"/>
+    <text x="413" y="23" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="13" font-weight="600" fill="#0E7490" text-anchor="middle">OAuth2</text>
+  </g>
+
+  <!-- Stats row -->
+  <g transform="translate(480, 430)">
+    <text x="0" y="0" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="17" font-weight="600" fill="#F8FAFC">5 Auth Methods</text>
+    <text x="0" y="25" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="13" font-weight="400" fill="#64748B">JWT, WebAuthn, TOTP, OIDC, Basic</text>
+
+    <text x="200" y="0" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="17" font-weight="600" fill="#F8FAFC">10+ Providers</text>
+    <text x="200" y="25" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="13" font-weight="400" fill="#64748B">Google, GitHub, Microsoft...</text>
+
+    <text x="385" y="0" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="17" font-weight="600" fill="#F8FAFC">Compliance Ready</text>
+    <text x="385" y="25" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="13" font-weight="400" fill="#64748B">SOC2, GDPR, HIPAA Audit Logs</text>
+  </g>
+
+  <!-- Tagline -->
+  <text x="600" y="545" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="22" font-weight="500" fill="#00ADD8" text-anchor="middle" letter-spacing="2.5">
+    SECURE. MODULAR. GO.
+  </text>
+
+  <!-- URL -->
+  <text x="600" y="585" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="15" font-weight="400" fill="#64748B" text-anchor="middle">
+    github.com/meysam81/go-auth
+  </text>
+</svg>
