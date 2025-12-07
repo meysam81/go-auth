@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <defs>
+    <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ADD8" />
+      <stop offset="100%" style="stop-color:#0891B2" />
+    </linearGradient>
+  </defs>
+
+  <!-- Simplified Shield -->
+  <path d="M16 2 L30 6 L30 16 C30 24 23 29 16 31 C9 29 2 24 2 16 L2 6 Z"
+        fill="url(#shieldGrad)" />
+
+  <!-- Inner Shield -->
+  <path d="M16 5 L27 8 L27 16 C27 22 22 26 16 28 C10 26 5 22 5 16 L5 8 Z"
+        fill="#0D2137" />
+
+  <!-- Simplified Key -->
+  <g transform="translate(16, 17)">
+    <!-- Key Head -->
+    <circle cx="0" cy="-5" r="4" fill="none" stroke="#14B8A6" stroke-width="2"/>
+    <!-- Key Shaft -->
+    <rect x="-1.5" y="-1" width="3" height="10" fill="#14B8A6" rx="1"/>
+    <!-- Key Tooth -->
+    <rect x="1.5" y="5" width="4" height="2" fill="#14B8A6" rx="0.5"/>
+  </g>
+</svg>
