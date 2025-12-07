@@ -1,0 +1,130 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300">
+  <defs>
+    <!-- Background gradient -->
+    <linearGradient id="bannerBgGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#0F172A"/>
+      <stop offset="50%" style="stop-color:#1E293B"/>
+      <stop offset="100%" style="stop-color:#0F172A"/>
+    </linearGradient>
+
+    <!-- Shield gradients -->
+    <linearGradient id="bannerShieldGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ADD8"/>
+      <stop offset="100%" style="stop-color:#06B6D4"/>
+    </linearGradient>
+    <linearGradient id="bannerLayer1" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ADD8;stop-opacity:0.9"/>
+      <stop offset="100%" style="stop-color:#0891B2;stop-opacity:0.9"/>
+    </linearGradient>
+    <linearGradient id="bannerLayer2" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#06B6D4;stop-opacity:0.7"/>
+      <stop offset="100%" style="stop-color:#0E7490;stop-opacity:0.7"/>
+    </linearGradient>
+    <linearGradient id="bannerLayer3" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#22D3EE;stop-opacity:0.5"/>
+      <stop offset="100%" style="stop-color:#06B6D4;stop-opacity:0.5"/>
+    </linearGradient>
+
+    <!-- Glow -->
+    <filter id="bannerGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="8" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Grid pattern -->
+    <pattern id="bannerGrid" width="30" height="30" patternUnits="userSpaceOnUse">
+      <path d="M 30 0 L 0 0 0 30" fill="none" stroke="#334155" stroke-width="0.5" opacity="0.3"/>
+    </pattern>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="300" fill="url(#bannerBgGradient)"/>
+
+  <!-- Grid overlay -->
+  <rect width="1200" height="300" fill="url(#bannerGrid)" opacity="0.4"/>
+
+  <!-- Decorative elements -->
+  <circle cx="50" cy="50" r="40" fill="#00ADD8" opacity="0.05"/>
+  <circle cx="1150" cy="250" r="60" fill="#06B6D4" opacity="0.05"/>
+  <circle cx="1100" cy="50" r="30" fill="#22D3EE" opacity="0.03"/>
+
+  <!-- Shield Icon -->
+  <g transform="translate(80, 55)" filter="url(#bannerGlow)">
+    <!-- Outer shield -->
+    <path d="M80 5 L145 35 L145 95 C145 130 105 155 80 170 C55 155 15 130 15 95 L15 35 Z"
+          fill="url(#bannerShieldGradient)" opacity="0.15"/>
+
+    <!-- Layer 1 -->
+    <path d="M80 15 L135 40 L135 90 C135 120 102 142 80 155 C58 142 25 120 25 90 L25 40 Z"
+          fill="url(#bannerLayer3)"/>
+
+    <!-- Layer 2 -->
+    <path d="M80 28 L122 48 L122 85 C122 108 96 125 80 135 C64 125 38 108 38 85 L38 48 Z"
+          fill="url(#bannerLayer2)"/>
+
+    <!-- Layer 3 -->
+    <path d="M80 42 L108 57 L108 78 C108 96 92 110 80 117 C68 110 52 96 52 78 L52 57 Z"
+          fill="url(#bannerLayer1)"/>
+
+    <!-- Keyhole -->
+    <circle cx="80" cy="65" r="10" fill="#0F172A"/>
+    <rect x="75" y="72" width="10" height="20" rx="2" fill="#0F172A"/>
+
+    <!-- Accent lines -->
+    <line x1="27" y1="58" x2="50" y2="66" stroke="#00ADD8" stroke-width="2" opacity="0.6"/>
+    <line x1="133" y1="58" x2="110" y2="66" stroke="#00ADD8" stroke-width="2" opacity="0.6"/>
+    <line x1="80" y1="15" x2="80" y2="35" stroke="#00ADD8" stroke-width="2" opacity="0.6"/>
+  </g>
+
+  <!-- Title -->
+  <text x="280" y="135" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="72" font-weight="700" fill="#F8FAFC">go</text>
+  <text x="385" y="135" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="72" font-weight="300" fill="#64748B">-</text>
+  <text x="415" y="135" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="72" font-weight="700" fill="#00ADD8">auth</text>
+
+  <!-- Subtitle -->
+  <text x="280" y="175" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="22" font-weight="400" fill="#94A3B8">
+    Comprehensive Authentication Library for Go
+  </text>
+
+  <!-- Feature badges on right side -->
+  <g transform="translate(750, 90)">
+    <rect x="0" y="0" width="85" height="32" rx="16" fill="#00ADD8" opacity="0.15"/>
+    <text x="42" y="21" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="12" font-weight="600" fill="#00ADD8" text-anchor="middle">JWT</text>
+
+    <rect x="95" y="0" width="105" height="32" rx="16" fill="#06B6D4" opacity="0.15"/>
+    <text x="147" y="21" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="12" font-weight="600" fill="#06B6D4" text-anchor="middle">WebAuthn</text>
+
+    <rect x="210" y="0" width="75" height="32" rx="16" fill="#22D3EE" opacity="0.15"/>
+    <text x="247" y="21" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="12" font-weight="600" fill="#22D3EE" text-anchor="middle">TOTP</text>
+
+    <rect x="295" y="0" width="75" height="32" rx="16" fill="#0891B2" opacity="0.15"/>
+    <text x="332" y="21" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="12" font-weight="600" fill="#0891B2" text-anchor="middle">OIDC</text>
+  </g>
+
+  <!-- Stats row -->
+  <g transform="translate(750, 145)">
+    <text x="0" y="0" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="14" font-weight="600" fill="#F8FAFC">5 Auth Methods</text>
+    <text x="130" y="0" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="14" font-weight="600" fill="#F8FAFC">10+ Providers</text>
+    <text x="260" y="0" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="14" font-weight="600" fill="#F8FAFC">Compliance Ready</text>
+  </g>
+
+  <!-- Tagline -->
+  <text x="280" y="230" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="14" font-weight="500" fill="#00ADD8" letter-spacing="2">
+    SECURE. MODULAR. GO.
+  </text>
+</svg>
