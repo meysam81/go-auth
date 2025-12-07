@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 120" width="400" height="120">
+  <defs>
+    <linearGradient id="shieldGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ADD8;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0891B2;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="keyGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#14B8A6;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0D9488;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Shield Shape -->
+  <path d="M50 15 L90 25 L90 55 C90 80 70 95 50 105 C30 95 10 80 10 55 L10 25 Z"
+        fill="url(#shieldGradient)" />
+
+  <!-- Inner Shield Highlight -->
+  <path d="M50 22 L82 30 L82 54 C82 74 66 86 50 94 C34 86 18 74 18 54 L18 30 Z"
+        fill="#0D2137" opacity="0.9" />
+
+  <!-- Key Symbol -->
+  <g transform="translate(50, 58)">
+    <!-- Key Head (Circle with notch) -->
+    <circle cx="0" cy="-12" r="12" fill="none" stroke="url(#keyGradient)" stroke-width="4"/>
+    <circle cx="0" cy="-12" r="5" fill="#0D2137"/>
+    <!-- Key Shaft -->
+    <rect x="-2.5" y="0" width="5" height="22" fill="url(#keyGradient)" rx="1"/>
+    <!-- Key Teeth -->
+    <rect x="2.5" y="14" width="8" height="4" fill="url(#keyGradient)" rx="1"/>
+    <rect x="2.5" y="6" width="6" height="4" fill="url(#keyGradient)" rx="1"/>
+  </g>
+
+  <!-- Wordmark: go-auth -->
+  <g font-family="'JetBrains Mono', 'SF Mono', 'Fira Code', monospace" font-weight="700">
+    <!-- "go" in Go Cyan -->
+    <text x="115" y="75" font-size="42" fill="#00ADD8">go</text>
+    <!-- Hyphen -->
+    <text x="177" y="75" font-size="42" fill="#64748B">-</text>
+    <!-- "auth" in Deep Navy -->
+    <text x="195" y="75" font-size="42" fill="#0D2137">auth</text>
+  </g>
+</svg>

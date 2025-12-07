@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300">
+  <defs>
+    <linearGradient id="bannerBg" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#0D2137" />
+      <stop offset="50%" style="stop-color:#0F2942" />
+      <stop offset="100%" style="stop-color:#0D2137" />
+    </linearGradient>
+    <linearGradient id="shieldFill" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ADD8" />
+      <stop offset="100%" style="stop-color:#0891B2" />
+    </linearGradient>
+    <linearGradient id="keyFill" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#14B8A6" />
+      <stop offset="100%" style="stop-color:#0D9488" />
+    </linearGradient>
+    <linearGradient id="accentGlow" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" style="stop-color:#00ADD8;stop-opacity:0" />
+      <stop offset="50%" style="stop-color:#00ADD8;stop-opacity:0.1" />
+      <stop offset="100%" style="stop-color:#00ADD8;stop-opacity:0" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="300" fill="url(#bannerBg)" />
+
+  <!-- Subtle accent line -->
+  <rect x="0" y="295" width="1200" height="5" fill="url(#shieldFill)" opacity="0.8"/>
+
+  <!-- Grid pattern -->
+  <g opacity="0.03">
+    <pattern id="bannerGrid" width="30" height="30" patternUnits="userSpaceOnUse">
+      <path d="M 30 0 L 0 0 0 30" fill="none" stroke="#00ADD8" stroke-width="0.5"/>
+    </pattern>
+    <rect width="1200" height="300" fill="url(#bannerGrid)" />
+  </g>
+
+  <!-- Center glow -->
+  <ellipse cx="600" cy="150" rx="400" ry="150" fill="url(#accentGlow)" />
+
+  <!-- Shield Logo -->
+  <g transform="translate(85, 50)">
+    <path d="M70 0 L140 17 L140 80 C140 122 105 147 70 162 C35 147 0 122 0 80 L0 17 Z"
+          fill="url(#shieldFill)" />
+    <path d="M70 12 L127 27 L127 78 C127 113 98 134 70 147 C42 134 13 113 13 78 L13 27 Z"
+          fill="#0D2137" opacity="0.92" />
+
+    <!-- Key -->
+    <g transform="translate(70, 87)">
+      <circle cx="0" cy="-20" r="18" fill="none" stroke="url(#keyFill)" stroke-width="5"/>
+      <circle cx="0" cy="-20" r="8" fill="#0D2137"/>
+      <rect x="-4" y="-2" width="8" height="35" fill="url(#keyFill)" rx="2"/>
+      <rect x="4" y="22" width="12" height="5" fill="url(#keyFill)" rx="1"/>
+      <rect x="4" y="12" width="9" height="5" fill="url(#keyFill)" rx="1"/>
+    </g>
+  </g>
+
+  <!-- Wordmark -->
+  <g font-family="'JetBrains Mono', 'SF Mono', 'Consolas', monospace" font-weight="700">
+    <text x="280" y="165" font-size="72" fill="#00ADD8">go</text>
+    <text x="395" y="165" font-size="72" fill="#64748B">-</text>
+    <text x="432" y="165" font-size="72" fill="#FFFFFF">auth</text>
+  </g>
+
+  <!-- Tagline -->
+  <text x="280" y="210" font-family="'Inter', system-ui, sans-serif" font-size="22" fill="#94A3B8" font-weight="400">
+    Production-Ready Authentication for Go
+  </text>
+
+  <!-- Feature pills (right side) -->
+  <g transform="translate(780, 95)">
+    <g>
+      <rect width="70" height="30" rx="15" fill="#00ADD8" opacity="0.15"/>
+      <rect width="70" height="30" rx="15" fill="none" stroke="#00ADD8" stroke-width="1" opacity="0.5"/>
+      <text x="35" y="20" font-family="'Inter', sans-serif" font-size="12" fill="#00ADD8" text-anchor="middle" font-weight="600">JWT</text>
+    </g>
+    <g transform="translate(80, 0)">
+      <rect width="85" height="30" rx="15" fill="#00ADD8" opacity="0.15"/>
+      <rect width="85" height="30" rx="15" fill="none" stroke="#00ADD8" stroke-width="1" opacity="0.5"/>
+      <text x="42" y="20" font-family="'Inter', sans-serif" font-size="12" fill="#00ADD8" text-anchor="middle" font-weight="600">OAuth2</text>
+    </g>
+    <g transform="translate(175, 0)">
+      <rect width="95" height="30" rx="15" fill="#14B8A6" opacity="0.15"/>
+      <rect width="95" height="30" rx="15" fill="none" stroke="#14B8A6" stroke-width="1" opacity="0.5"/>
+      <text x="47" y="20" font-family="'Inter', sans-serif" font-size="12" fill="#14B8A6" text-anchor="middle" font-weight="600">WebAuthn</text>
+    </g>
+    <g transform="translate(280, 0)">
+      <rect width="70" height="30" rx="15" fill="#14B8A6" opacity="0.15"/>
+      <rect width="70" height="30" rx="15" fill="none" stroke="#14B8A6" stroke-width="1" opacity="0.5"/>
+      <text x="35" y="20" font-family="'Inter', sans-serif" font-size="12" fill="#14B8A6" text-anchor="middle" font-weight="600">TOTP</text>
+    </g>
+  </g>
+
+  <g transform="translate(780, 140)">
+    <g>
+      <rect width="70" height="30" rx="15" fill="#00ADD8" opacity="0.15"/>
+      <rect width="70" height="30" rx="15" fill="none" stroke="#00ADD8" stroke-width="1" opacity="0.5"/>
+      <text x="35" y="20" font-family="'Inter', sans-serif" font-size="12" fill="#00ADD8" text-anchor="middle" font-weight="600">OIDC</text>
+    </g>
+    <g transform="translate(80, 0)">
+      <rect width="70" height="30" rx="15" fill="#00ADD8" opacity="0.15"/>
+      <rect width="70" height="30" rx="15" fill="none" stroke="#00ADD8" stroke-width="1" opacity="0.5"/>
+      <text x="35" y="20" font-family="'Inter', sans-serif" font-size="12" fill="#00ADD8" text-anchor="middle" font-weight="600">SAML</text>
+    </g>
+    <g transform="translate(160, 0)">
+      <rect width="110" height="30" rx="15" fill="#14B8A6" opacity="0.15"/>
+      <rect width="110" height="30" rx="15" fill="none" stroke="#14B8A6" stroke-width="1" opacity="0.5"/>
+      <text x="55" y="20" font-family="'Inter', sans-serif" font-size="12" fill="#14B8A6" text-anchor="middle" font-weight="600">10+ Providers</text>
+    </g>
+  </g>
+
+  <!-- Compliance badges -->
+  <g transform="translate(780, 200)" opacity="0.6">
+    <text x="0" y="15" font-family="'Inter', sans-serif" font-size="13" fill="#64748B">SOC2</text>
+    <text x="50" y="15" font-family="'Inter', sans-serif" font-size="13" fill="#64748B">GDPR</text>
+    <text x="100" y="15" font-family="'Inter', sans-serif" font-size="13" fill="#64748B">HIPAA</text>
+    <text x="155" y="15" font-family="'Inter', sans-serif" font-size="13" fill="#64748B">Compliant</text>
+  </g>
+</svg>
