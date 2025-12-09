@@ -7,7 +7,7 @@ require (
 	github.com/go-webauthn/webauthn v0.15.0
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/pquerna/otp v1.5.0
-	golang.org/x/crypto v0.44.0
+	golang.org/x/crypto v0.45.0
 	golang.org/x/oauth2 v0.34.0
 )
 
