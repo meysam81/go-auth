@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.2](https://github.com/meysam81/go-auth/compare/v1.1.1...v1.1.2) (2025-12-09)
+
+
+### Bug Fixes
+
+* **deps:** update module github.com/coreos/go-oidc/v3 to v3.17.0 ([#24](https://github.com/meysam81/go-auth/issues/24)) ([c4d2e56](https://github.com/meysam81/go-auth/commit/c4d2e56cafed5028362cde7bb0a59a484088d97f))
+* **deps:** update module golang.org/x/crypto to v0.45.0 [security] ([#22](https://github.com/meysam81/go-auth/issues/22)) ([3841f3d](https://github.com/meysam81/go-auth/commit/3841f3db4c9f078c765b47e2db7bbe0dfb81ac23))
+* **deps:** update module golang.org/x/oauth2 to v0.34.0 ([#30](https://github.com/meysam81/go-auth/issues/30)) ([ae73ef9](https://github.com/meysam81/go-auth/commit/ae73ef9ec86bfa48e50d6019b9112e406e6830ee))
+
 ## [1.1.1](https://github.com/meysam81/go-auth/compare/v1.1.0...v1.1.1) (2025-11-19)
 
 
