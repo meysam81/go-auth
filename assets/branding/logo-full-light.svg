@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 120" width="400" height="120">
+  <defs>
+    <linearGradient id="shieldGradientLight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0891B2"/>
+      <stop offset="100%" style="stop-color:#0E7490"/>
+    </linearGradient>
+    <linearGradient id="layerGradient1Light" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#0891B2;stop-opacity:0.9"/>
+      <stop offset="100%" style="stop-color:#0E7490;stop-opacity:0.9"/>
+    </linearGradient>
+    <linearGradient id="layerGradient2Light" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#06B6D4;stop-opacity:0.7"/>
+      <stop offset="100%" style="stop-color:#0891B2;stop-opacity:0.7"/>
+    </linearGradient>
+    <linearGradient id="layerGradient3Light" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#22D3EE;stop-opacity:0.5"/>
+      <stop offset="100%" style="stop-color:#06B6D4;stop-opacity:0.5"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Shield Icon - Layered/Modular Design -->
+  <g transform="translate(20, 10)">
+    <!-- Outer shield shape -->
+    <path d="M50 5 L90 20 L90 55 C90 75 70 90 50 98 C30 90 10 75 10 55 L10 20 Z"
+          fill="url(#shieldGradientLight)" opacity="0.1"/>
+
+    <!-- Layer 1 - Base layer (largest) -->
+    <path d="M50 12 L82 24 L82 52 C82 68 66 80 50 86 C34 80 18 68 18 52 L18 24 Z"
+          fill="url(#layerGradient3Light)"/>
+
+    <!-- Layer 2 - Middle layer -->
+    <path d="M50 20 L74 30 L74 50 C74 62 62 72 50 76 C38 72 26 62 26 50 L26 30 Z"
+          fill="url(#layerGradient2Light)"/>
+
+    <!-- Layer 3 - Inner layer -->
+    <path d="M50 28 L66 36 L66 48 C66 56 58 64 50 66 C42 64 34 56 34 48 L34 36 Z"
+          fill="url(#layerGradient1Light)"/>
+
+    <!-- Core - Keyhole/Lock symbol -->
+    <circle cx="50" cy="42" r="6" fill="#F8FAFC"/>
+    <rect x="47" y="46" width="6" height="10" rx="1" fill="#F8FAFC"/>
+
+    <!-- Accent lines representing connections/modules -->
+    <line x1="20" y1="35" x2="32" y2="40" stroke="#0891B2" stroke-width="1.5" opacity="0.6"/>
+    <line x1="80" y1="35" x2="68" y2="40" stroke="#0891B2" stroke-width="1.5" opacity="0.6"/>
+    <line x1="50" y1="12" x2="50" y2="22" stroke="#0891B2" stroke-width="1.5" opacity="0.6"/>
+  </g>
+
+  <!-- Wordmark -->
+  <g transform="translate(125, 60)">
+    <!-- "go" text -->
+    <text x="0" y="15" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="42" font-weight="700" fill="#0F172A">go</text>
+    <!-- Hyphen -->
+    <text x="52" y="15" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="42" font-weight="300" fill="#64748B">-</text>
+    <!-- "auth" text with accent -->
+    <text x="68" y="15" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="42" font-weight="700" fill="#0891B2">auth</text>
+  </g>
+
+  <!-- Tagline -->
+  <text x="125" y="95" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="13" font-weight="500" fill="#64748B" letter-spacing="0.5">
+    Secure. Modular. Go.
+  </text>
+</svg>

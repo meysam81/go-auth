@@ -1,0 +1,154 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640">
+  <defs>
+    <!-- Background gradient -->
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0F172A"/>
+      <stop offset="50%" style="stop-color:#1E293B"/>
+      <stop offset="100%" style="stop-color:#0F172A"/>
+    </linearGradient>
+
+    <!-- Shield gradients -->
+    <linearGradient id="socialShieldGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ADD8"/>
+      <stop offset="100%" style="stop-color:#06B6D4"/>
+    </linearGradient>
+    <linearGradient id="socialLayer1" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ADD8;stop-opacity:0.9"/>
+      <stop offset="100%" style="stop-color:#0891B2;stop-opacity:0.9"/>
+    </linearGradient>
+    <linearGradient id="socialLayer2" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#06B6D4;stop-opacity:0.7"/>
+      <stop offset="100%" style="stop-color:#0E7490;stop-opacity:0.7"/>
+    </linearGradient>
+    <linearGradient id="socialLayer3" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#22D3EE;stop-opacity:0.5"/>
+      <stop offset="100%" style="stop-color:#06B6D4;stop-opacity:0.5"/>
+    </linearGradient>
+
+    <!-- Glow effect -->
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="20" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Subtle pattern -->
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#334155" stroke-width="0.5" opacity="0.3"/>
+    </pattern>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1280" height="640" fill="url(#bgGradient)"/>
+
+  <!-- Grid pattern overlay -->
+  <rect width="1280" height="640" fill="url(#grid)" opacity="0.4"/>
+
+  <!-- Decorative elements - floating shapes -->
+  <circle cx="100" cy="100" r="80" fill="#00ADD8" opacity="0.05"/>
+  <circle cx="1180" cy="540" r="120" fill="#06B6D4" opacity="0.05"/>
+  <circle cx="200" cy="500" r="60" fill="#22D3EE" opacity="0.03"/>
+  <circle cx="1100" cy="150" r="100" fill="#00ADD8" opacity="0.04"/>
+
+  <!-- Large Shield Icon with glow -->
+  <g transform="translate(120, 170)" filter="url(#glow)">
+    <!-- Outer shield shape -->
+    <path d="M140 8 L260 55 L260 155 C260 220 200 270 140 295 C80 270 20 220 20 155 L20 55 Z"
+          fill="url(#socialShieldGradient)" opacity="0.15"/>
+
+    <!-- Layer 1 - Base layer -->
+    <path d="M140 25 L245 65 L245 150 C245 205 195 250 140 270 C85 250 35 205 35 150 L35 65 Z"
+          fill="url(#socialLayer3)"/>
+
+    <!-- Layer 2 - Middle layer -->
+    <path d="M140 50 L225 82 L225 145 C225 188 183 223 140 238 C97 223 55 188 55 145 L55 82 Z"
+          fill="url(#socialLayer2)"/>
+
+    <!-- Layer 3 - Inner layer -->
+    <path d="M140 75 L205 100 L205 140 C205 170 173 195 140 205 C107 195 75 170 75 140 L75 100 Z"
+          fill="url(#socialLayer1)"/>
+
+    <!-- Core - Keyhole/Lock symbol -->
+    <circle cx="140" cy="118" r="20" fill="#0F172A"/>
+    <rect x="130" y="132" width="20" height="35" rx="4" fill="#0F172A"/>
+
+    <!-- Accent lines -->
+    <line x1="40" y1="100" x2="72" y2="112" stroke="#00ADD8" stroke-width="3" opacity="0.6"/>
+    <line x1="240" y1="100" x2="208" y2="112" stroke="#00ADD8" stroke-width="3" opacity="0.6"/>
+    <line x1="140" y1="25" x2="140" y2="60" stroke="#00ADD8" stroke-width="3" opacity="0.6"/>
+  </g>
+
+  <!-- Main title -->
+  <text x="520" y="250" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="96" font-weight="700" fill="#F8FAFC">go</text>
+  <text x="662" y="250" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="96" font-weight="300" fill="#64748B">-</text>
+  <text x="698" y="250" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="96" font-weight="700" fill="#00ADD8">auth</text>
+
+  <!-- Subtitle -->
+  <text x="520" y="310" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="28" font-weight="400" fill="#94A3B8">
+    Comprehensive Authentication Library for Go
+  </text>
+
+  <!-- Feature pills -->
+  <g transform="translate(520, 350)">
+    <!-- JWT -->
+    <rect x="0" y="0" width="80" height="36" rx="18" fill="#00ADD8" opacity="0.15"/>
+    <text x="40" y="24" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="14" font-weight="600" fill="#00ADD8" text-anchor="middle">JWT</text>
+
+    <!-- WebAuthn -->
+    <rect x="95" y="0" width="110" height="36" rx="18" fill="#06B6D4" opacity="0.15"/>
+    <text x="150" y="24" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="14" font-weight="600" fill="#06B6D4" text-anchor="middle">WebAuthn</text>
+
+    <!-- TOTP -->
+    <rect x="220" y="0" width="80" height="36" rx="18" fill="#22D3EE" opacity="0.15"/>
+    <text x="260" y="24" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="14" font-weight="600" fill="#22D3EE" text-anchor="middle">TOTP</text>
+
+    <!-- OIDC -->
+    <rect x="315" y="0" width="80" height="36" rx="18" fill="#0891B2" opacity="0.15"/>
+    <text x="355" y="24" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="14" font-weight="600" fill="#0891B2" text-anchor="middle">OIDC</text>
+
+    <!-- OAuth2 -->
+    <rect x="410" y="0" width="95" height="36" rx="18" fill="#0E7490" opacity="0.15"/>
+    <text x="457" y="24" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="14" font-weight="600" fill="#0E7490" text-anchor="middle">OAuth2</text>
+  </g>
+
+  <!-- Key stats/features -->
+  <g transform="translate(520, 430)">
+    <text x="0" y="0" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="18" font-weight="600" fill="#F8FAFC">5 Auth Methods</text>
+    <text x="0" y="28" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="14" font-weight="400" fill="#64748B">JWT, WebAuthn, TOTP, OIDC, Basic</text>
+
+    <text x="220" y="0" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="18" font-weight="600" fill="#F8FAFC">10+ Providers</text>
+    <text x="220" y="28" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="14" font-weight="400" fill="#64748B">Google, GitHub, Microsoft...</text>
+
+    <text x="420" y="0" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="18" font-weight="600" fill="#F8FAFC">Compliance Ready</text>
+    <text x="420" y="28" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="14" font-weight="400" fill="#64748B">SOC2, GDPR, HIPAA Audit Logs</text>
+  </g>
+
+  <!-- Tagline at bottom -->
+  <text x="640" y="560" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="24" font-weight="500" fill="#00ADD8" text-anchor="middle" letter-spacing="3">
+    SECURE. MODULAR. GO.
+  </text>
+
+  <!-- GitHub URL hint -->
+  <text x="640" y="600" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="16" font-weight="400" fill="#64748B" text-anchor="middle">
+    github.com/meysam81/go-auth
+  </text>
+</svg>
