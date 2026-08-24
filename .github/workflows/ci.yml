@@ -7,6 +7,25 @@ on:
   push:
     branches:
       - main
+  # Required by the merge queue. A queued pull request is tested on a temporary
+  # `gh-readonly-queue/main/...` branch holding it plus everything ahead of it,
+  # which is the whole point: it catches the pair of changes that each pass
+  # alone and break together. A required check that does not trigger here never
+  # reports on that branch, and GitHub fails the merge rather than merging
+  # unverified -- so every check named in the ruleset's required list must be a
+  # job in this file. See the note in the merge-queue section of docs/ci.md.
+  merge_group:
+    types:
+      - checks_requested
+
+# A merge group and its pull request are independent units of work, so they get
+# independent concurrency groups. Superseded pull-request runs are cancelled to
+# keep the queue's throughput usable; merge-group and push runs are never
+# cancelled, because cancelling the former reports a failed check back to the
+# queue and cancelling the latter can abort a release-please run mid-flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   GO_VERSION: "1.24"
