@@ -1,11 +1,16 @@
 # go-auth
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/meysam81/go-auth.svg)](https://pkg.go.dev/github.com/meysam81/go-auth)
-[![Go Report Card](https://goreportcard.com/badge/github.com/meysam81/go-auth)](https://goreportcard.com/report/github.com/meysam81/go-auth)
-[![codecov](https://codecov.io/github/meysam81/go-auth/graph/badge.svg?token=8WzFAwJa1Z)](https://codecov.io/github/meysam81/go-auth)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/meysam81/go-auth)](https://github.com/meysam81/go-auth/blob/main/go.mod)
-[![License](https://img.shields.io/github/license/meysam81/go-auth)](https://github.com/meysam81/go-auth/blob/main/LICENSE)
-[![CI](https://github.com/meysam81/go-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/meysam81/go-auth/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/meysam81/go-auth/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white&style=flat-square)](https://github.com/meysam81/go-auth/actions/workflows/ci.yml)
+[![Go Reference](https://img.shields.io/badge/pkg.go.dev-reference-007d9c?logo=go&logoColor=white&style=flat-square)](https://pkg.go.dev/github.com/meysam81/go-auth)
+[![Go Report Card](https://goreportcard.com/badge/github.com/meysam81/go-auth?style=flat-square)](https://goreportcard.com/report/github.com/meysam81/go-auth)
+[![codecov](https://img.shields.io/codecov/c/github/meysam81/go-auth?logo=codecov&logoColor=white&style=flat-square)](https://codecov.io/github/meysam81/go-auth)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/meysam81/go-auth?logo=go&logoColor=white&style=flat-square)](go.mod)
+[![Latest Release](https://img.shields.io/github/v/release/meysam81/go-auth?logo=github&label=release&style=flat-square)](https://github.com/meysam81/go-auth/releases/latest)
+[![License](https://img.shields.io/github/license/meysam81/go-auth?style=flat-square)](LICENSE)
+
+[![Conventional Commits](https://img.shields.io/badge/Conventional%20Commits-1.0.0-FE5196?logo=conventionalcommits&logoColor=white&style=flat-square)](https://www.conventionalcommits.org)
+[![Renovate](https://img.shields.io/badge/renovate-enabled-1f8b4c?logo=renovatebot&logoColor=white&style=flat-square)](https://developer.mend.io/github/meysam81/go-auth)
+[![Last Commit](https://img.shields.io/github/last-commit/meysam81/go-auth?logo=github&style=flat-square)](https://github.com/meysam81/go-auth/commits/main)
 
 A comprehensive, modular, and production-ready authentication library for Go applications. Supports multiple authentication methods including Basic Auth, JWT, WebAuthn/Passkeys, and OIDC/OAuth2 SSO with 10+ popular providers.
 
