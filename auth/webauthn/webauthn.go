@@ -2,6 +2,7 @@
 package webauthn
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -179,7 +180,7 @@ func (a *Authenticator) BeginRegistration(ctx context.Context, userID string) (*
 	}
 
 	// Store session data
-	sessionID := string(session.Challenge)
+	sessionID := session.Challenge
 	sessionData, err := encodeSessionData(session)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to encode session data: %w", err)
@@ -309,7 +310,7 @@ func (a *Authenticator) BeginLogin(ctx context.Context, userID string) (*protoco
 	}
 
 	// Store session data
-	sessionID := string(session.Challenge)
+	sessionID := session.Challenge
 	sessionData, err := encodeSessionData(session)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to encode session data: %w", err)
@@ -385,7 +386,7 @@ func (a *Authenticator) FinishLogin(ctx context.Context, sessionID string, respo
 
 	// Update credential sign count
 	for _, cred := range existingCreds {
-		if string(cred.ID) == string(credential.ID) {
+		if bytes.Equal(cred.ID, credential.ID) {
 			cred.SignCount = credential.Authenticator.SignCount
 			if err := a.credentialStore.UpdateWebAuthnCredential(ctx, cred); err != nil {
 				// Log but don't fail authentication
