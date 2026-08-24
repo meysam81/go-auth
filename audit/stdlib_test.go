@@ -129,7 +129,9 @@ func TestStdLogger_SetRedactionConfig(t *testing.T) {
 		},
 	}
 
-	_ = logger.Log(context.Background(), event)
+	if err := logger.Log(context.Background(), event); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
 	output1 := buf.String()
 	if !strings.Contains(output1, "test@example.com") {
 		t.Errorf("Initial log should contain unredacted email")
@@ -141,7 +143,9 @@ func TestStdLogger_SetRedactionConfig(t *testing.T) {
 		RedactEmail: true,
 	})
 
-	_ = logger.Log(context.Background(), event)
+	if err := logger.Log(context.Background(), event); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
 	output2 := buf.String()
 	if strings.Contains(output2, "test@example.com") {
 		t.Errorf("After SetRedactionConfig, log should not contain original email")
@@ -275,7 +279,9 @@ func BenchmarkStdLogger_Log(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = logger.Log(context.Background(), event)
+		if err := logger.Log(context.Background(), event); err != nil {
+			b.Fatalf("Log: %v", err)
+		}
 	}
 }
 
@@ -304,6 +310,8 @@ func BenchmarkStdLogger_LogWithRedaction(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = logger.Log(context.Background(), event)
+		if err := logger.Log(context.Background(), event); err != nil {
+			b.Fatalf("Log: %v", err)
+		}
 	}
 }

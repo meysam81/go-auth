@@ -5,11 +5,17 @@ package audit
 
 import (
 	"context"
+	"log"
 	"time"
 )
 
 // AuditLogger defines the interface for audit logging.
 // Implementations should handle structured logging of security events in a compliance-ready format.
+//
+// The name stutters, but renaming an exported type breaks every downstream
+// implementation, so it stands until v2 renames it to Logger.
+//
+//nolint:revive // Renaming an exported type is a breaking change; deferred to v2.
 type AuditLogger interface {
 	// Log records an audit event. Implementations must be thread-safe.
 	// Returns an error if the event cannot be logged, though logging failures
@@ -17,45 +23,111 @@ type AuditLogger interface {
 	Log(ctx context.Context, event *AuditEvent) error
 }
 
+// LogErrorHandler is notified when an AuditLogger rejects an event.
+//
+// An audit sink that fails is itself a security-relevant condition: for a
+// package whose purpose is compliance evidence, a record that was never written
+// and never reported is indistinguishable from an event that never happened.
+// The handler must not block and must not panic; it runs inline on the
+// request's goroutine, after the wrapped operation has completed.
+type LogErrorHandler func(ctx context.Context, event *AuditEvent, err error)
+
+// DefaultLogErrorHandler reports a dropped audit event on the standard
+// library's default logger.
+//
+// It deliberately prints only the event type and result. The event itself
+// carries the actor's email, username and source address, and an error path is
+// the last place that should be the one component writing unredacted PII to a
+// destination the RedactionConfig does not cover.
+func DefaultLogErrorHandler(_ context.Context, event *AuditEvent, err error) {
+	if event == nil {
+		log.Printf("go-auth/audit: audit event dropped: %v", err)
+		return
+	}
+	log.Printf("go-auth/audit: audit event %s (%s) dropped: %v", event.EventType, event.EventResult, err)
+}
+
 // EventType represents the type of audit event.
 type EventType string
 
+// The event vocabulary. These identifiers are the stable part of this package:
+// v2 keeps them and removes the wrappers that emit them (F-22), so an
+// application decorating its own call sites should reuse these values rather
+// than inventing parallel strings that a log pipeline then has to reconcile.
 const (
-	// Authentication events
-	EventAuthLogin          EventType = "auth.login"
-	EventAuthLogout         EventType = "auth.logout"
-	EventAuthRegister       EventType = "auth.register"
+	// EventAuthLogin records a credential verification attempt.
+	EventAuthLogin EventType = "auth.login"
+
+	// EventAuthLogout records a session being ended by its owner.
+	EventAuthLogout EventType = "auth.logout"
+
+	// EventAuthRegister records an account being created.
+	EventAuthRegister EventType = "auth.register"
+
+	// EventAuthPasswordChange records an authenticated password change.
 	EventAuthPasswordChange EventType = "auth.password_change"
-	EventAuthPasswordReset  EventType = "auth.password_reset"
 
-	// Token events
+	// EventAuthPasswordReset records a password set through the reset flow,
+	// which is the unauthenticated path and therefore the higher-value one.
+	EventAuthPasswordReset EventType = "auth.password_reset"
+
+	// EventTokenGenerate records a token being minted.
 	EventTokenGenerate EventType = "token.generate"
+
+	// EventTokenValidate records a token being presented for verification.
 	EventTokenValidate EventType = "token.validate"
-	EventTokenRefresh  EventType = "token.refresh"
-	EventTokenRevoke   EventType = "token.revoke"
 
-	// Session events
-	EventSessionCreate   EventType = "session.create"
+	// EventTokenRefresh records an access token minted from a refresh token.
+	EventTokenRefresh EventType = "token.refresh"
+
+	// EventTokenRevoke records a token being revoked.
+	EventTokenRevoke EventType = "token.revoke"
+
+	// EventSessionCreate records a session being established.
+	EventSessionCreate EventType = "session.create"
+
+	// EventSessionValidate records a session identifier being presented.
 	EventSessionValidate EventType = "session.validate"
-	EventSessionRefresh  EventType = "session.refresh"
-	EventSessionDelete   EventType = "session.delete"
 
-	// WebAuthn events
-	EventWebAuthnRegisterBegin  EventType = "webauthn.register.begin"
+	// EventSessionRefresh records a session's expiry being extended.
+	EventSessionRefresh EventType = "session.refresh"
+
+	// EventSessionDelete records a session being destroyed.
+	EventSessionDelete EventType = "session.delete"
+
+	// EventWebAuthnRegisterBegin records the start of a registration ceremony.
+	EventWebAuthnRegisterBegin EventType = "webauthn.register.begin"
+
+	// EventWebAuthnRegisterFinish records the completion of a registration
+	// ceremony.
 	EventWebAuthnRegisterFinish EventType = "webauthn.register.finish"
-	EventWebAuthnLoginBegin     EventType = "webauthn.login.begin"
-	EventWebAuthnLoginFinish    EventType = "webauthn.login.finish"
 
-	// OIDC/OAuth events
+	// EventWebAuthnLoginBegin records the start of an assertion ceremony.
+	EventWebAuthnLoginBegin EventType = "webauthn.login.begin"
+
+	// EventWebAuthnLoginFinish records the completion of an assertion ceremony.
+	EventWebAuthnLoginFinish EventType = "webauthn.login.finish"
+
+	// EventOIDCAuthorize records an authorization request being started.
 	EventOIDCAuthorize EventType = "oidc.authorize"
-	EventOIDCCallback  EventType = "oidc.callback"
-	EventOIDCExchange  EventType = "oidc.token_exchange"
 
-	// User management events
+	// EventOIDCCallback records a callback being received from the provider.
+	EventOIDCCallback EventType = "oidc.callback"
+
+	// EventOIDCExchange records an authorization code being exchanged.
+	EventOIDCExchange EventType = "oidc.token_exchange"
+
+	// EventUserCreate records a user record being created.
 	EventUserCreate EventType = "user.create"
+
+	// EventUserUpdate records a user record being modified.
 	EventUserUpdate EventType = "user.update"
+
+	// EventUserDelete records a user record being removed.
 	EventUserDelete EventType = "user.delete"
-	EventUserRead   EventType = "user.read"
+
+	// EventUserRead records a user record being read.
+	EventUserRead EventType = "user.read"
 )
 
 // EventResult represents the outcome of an audit event.
@@ -74,6 +146,11 @@ const (
 
 // AuditEvent represents a security-relevant event that should be logged.
 // Fields follow industry best practices for audit logging (NIST, OWASP, CIS).
+//
+// The name stutters, but renaming an exported type breaks every downstream
+// caller, so it stands until v2 renames it to Event.
+//
+//nolint:revive // Renaming an exported type is a breaking change; deferred to v2.
 type AuditEvent struct {
 	// Timestamp is when the event occurred (UTC, RFC3339 format recommended).
 	Timestamp time.Time `json:"timestamp"`

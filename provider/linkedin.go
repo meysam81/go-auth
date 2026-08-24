@@ -56,6 +56,13 @@ const (
 // automatically generates a username from the user's given name and family name
 // in the format "firstname.lastname" (lowercase). The provider uses LinkedIn's
 // OIDC-compatible userinfo endpoint for retrieving user information.
+//
+// Deprecated: v2 removes the vendor-specific constructors, and this one is
+// additionally out of date: LinkedIn has published an OIDC discovery document
+// at "https://www.linkedin.com/oauth" since 2023, so an ID token with a
+// verifiable signature, audience and nonce is available where this constructor
+// gets none of them. Use [NewOIDCProvider] or [NewOIDCProviderWithClient] with
+// that issuer URL and the scopes "openid", "profile", "email".
 func NewLinkedInProvider(clientID, clientSecret, redirectURL string) *OAuth2Provider {
 	oauth2Config := &oauth2.Config{
 		ClientID:     clientID,
@@ -70,9 +77,13 @@ func NewLinkedInProvider(clientID, clientSecret, redirectURL string) *OAuth2Prov
 			RawClaims: data,
 		}
 
-		if sub, ok := data["sub"].(string); ok {
-			userInfo.Subject = sub
+		// Without a subject there is no stable name for this account, so the
+		// response is declined rather than turned into a subject-less user.
+		sub, ok := data["sub"].(string)
+		if !ok || sub == "" {
+			return nil
 		}
+		userInfo.Subject = sub
 
 		if email, ok := data["email"].(string); ok {
 			userInfo.Email = email

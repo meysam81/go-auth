@@ -55,6 +55,14 @@ const (
 // API for user info retrieval. The response contains a nested "user" object with all
 // user information. Slack emails are automatically considered verified. The provider
 // prefers higher resolution avatars (512px) but falls back to 192px if unavailable.
+//
+// Deprecated: v2 removes the vendor-specific constructors, and this one is
+// additionally out of date: Slack has published an OIDC discovery document at
+// "https://slack.com" since the Sign in with Slack OpenID Connect release, so
+// an ID token with a verifiable signature, audience and nonce is available
+// where this constructor gets none of them. Use [NewOIDCProvider] or
+// [NewOIDCProviderWithClient] with that issuer URL and the scopes "openid",
+// "profile", "email".
 func NewSlackProvider(clientID, clientSecret, redirectURL string) *OAuth2Provider {
 	oauth2Config := &oauth2.Config{
 		ClientID:     clientID,
@@ -65,31 +73,52 @@ func NewSlackProvider(clientID, clientSecret, redirectURL string) *OAuth2Provide
 	}
 
 	extractFunc := func(data map[string]interface{}) *authoidc.UserInfo {
+		// Slack reports application-level failures inside an HTTP 200 body as
+		// {"ok": false, "error": "..."}, so the status code alone does not
+		// establish that anyone authenticated. Parsing such a body produced a
+		// user with an empty subject and no error; declining it here turns it
+		// into ErrNoUserInfo.
+		succeeded, isBool := data["ok"].(bool)
+		if !isBool || !succeeded {
+			return nil
+		}
+
 		userInfo := &authoidc.UserInfo{
 			RawClaims: data,
 		}
 
 		// Slack returns nested user object
-		if user, ok := data["user"].(map[string]interface{}); ok {
-			if id, ok := user["id"].(string); ok {
-				userInfo.Subject = id
-			}
+		user, ok := data["user"].(map[string]interface{})
+		if !ok {
+			return nil
+		}
 
-			if name, ok := user["name"].(string); ok {
-				userInfo.Name = name
-				userInfo.Username = name
-			}
+		// Without a subject there is no stable name for this account.
+		id, ok := user["id"].(string)
+		if !ok || id == "" {
+			return nil
+		}
+		userInfo.Subject = id
 
-			if email, ok := user["email"].(string); ok {
-				userInfo.Email = email
-				userInfo.EmailVerified = true // Slack emails are verified
-			}
+		if name, ok := user["name"].(string); ok {
+			userInfo.Name = name
+			userInfo.Username = name
+		}
 
-			if image, ok := user["image_512"].(string); ok {
-				userInfo.Picture = image
-			} else if image, ok := user["image_192"].(string); ok {
-				userInfo.Picture = image
-			}
+		// Slack requires an address to be confirmed before it becomes a
+		// member's workspace email, so the assertion holds — but only for an
+		// address that is actually present. Claiming an empty string is
+		// verified is what an account-linking policy keyed on email_verified
+		// would then believe (finding F-01, CVE-2023-28131).
+		if email, ok := user["email"].(string); ok && email != "" {
+			userInfo.Email = email
+			userInfo.EmailVerified = true
+		}
+
+		if image, ok := user["image_512"].(string); ok {
+			userInfo.Picture = image
+		} else if image, ok := user["image_192"].(string); ok {
+			userInfo.Picture = image
 		}
 
 		return userInfo

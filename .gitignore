@@ -30,3 +30,15 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Compiled example binaries.
+#
+# `go build ./examples/complete` writes an extension-less ELF named after its
+# directory alongside the source. Nothing above matches an extension-less file,
+# so a `git add -A` after a local build would commit a multi-megabyte binary
+# into a library repository. Each example is a main package, so each can leave
+# one behind; add a line here when a new example directory is created.
+/examples/basic/basic
+/examples/complete/complete
+/examples/jwt/jwt
+/examples/oidc/oidc

@@ -34,19 +34,44 @@ A comprehensive, modular, and production-ready authentication library for Go app
   - Interface-based design for easy testing
 
 - **Production-Ready**
-  - Secure password hashing (bcrypt)
-  - Token revocation support
-  - Session management
-  - CSRF protection for OAuth flows
+  - Secure password hashing (bcrypt, with the 72-byte limit enforced rather than
+    silently truncated)
+  - Token revocation, pinned `alg`/`iss`/`aud` and an access-token-only
+    middleware path
+  - Session management with identifier rotation
+  - OAuth2/OIDC flows carry state, PKCE and a nonce; login-CSRF protection is
+    available through the browser-binding entry points and is opt-in — see
+    [OIDC/SSO Authentication](#oidcsso-authentication)
+  - TOTP two-factor with confirm-before-arm, replay protection and hashed backup
+    codes
   - Comprehensive audit logging (SOC2, GDPR, HIPAA compliant)
   - Follows Google Go Style Guide
   - Minimal dependencies
+
+## Upgrading within v1.x
+
+This release is the output of a security hardening pass. **Your code still
+compiles, but several run-time behaviours changed on purpose** — a control that
+is off by default protects nobody. The most likely to surprise you:
+
+| Change                                       | What you will see                                   | What to do                             |
+| -------------------------------------------- | --------------------------------------------------- | -------------------------------------- |
+| OIDC no longer auto-provisions               | `ErrAccountCreationRefused` on a first-time sign-in | set `oidc.Config.CreatePolicy`         |
+| Sign-in enforces an enrolled second factor   | `basic.ErrMFARequired`                              | use `AuthenticateWithTOTP`, or opt out |
+| TOTP enrolment must be confirmed             | `totp.ErrPendingConfirmation`                       | call `Confirm` after `GenerateSecret`  |
+| HMAC signing keys have a length floor        | `NewTokenManager` fails at startup                  | 32 bytes for HS256                     |
+| Reset/verification tokens are hashed at rest | old links stop working                              | wait out the TTL                       |
+
+The complete, ordered list with remediations is
+[`docs/security-hardening.md` §7](docs/security-hardening.md), and the findings
+behind each change are in the same document.
 
 ## Table of Contents
 
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 
+- [Upgrading within v1.x](#upgrading-within-v1x)
 - [Installation](#installation)
 - [30-Second Quick Start](#30-second-quick-start)
 - [Verify Installation](#verify-installation)
@@ -97,6 +122,14 @@ go get github.com/meysam81/go-auth
 
 Copy this complete example into a file and run it:
 
+> **Demo only.** `middleware.NewBasicAuthMiddleware` is deprecated: it runs one
+> bcrypt verification on every request — roughly 250 ms of CPU, paid before the
+> password is even known to be wrong — and HTTP Basic cannot carry a second
+> factor, so mounting it on an otherwise MFA-protected route is an MFA bypass
+> for that route. It is here because it is the shortest thing that runs. In a
+> real service, authenticate once at a sign-in endpoint and protect the rest
+> with `SessionMiddleware` or `JWTMiddleware`.
+
 ```go
 // main.go - Complete working example
 package main
@@ -144,7 +177,11 @@ func main() {
 
 	// 5. Protected endpoint
 	http.Handle("/protected", mw.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, _ := middleware.GetUser(r)
+		user, ok := middleware.GetUser(r)
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 		fmt.Fprintf(w, "Hello, %s!", user.Name)
 	})))
 
@@ -202,6 +239,7 @@ package main
 
 import (
     "context"
+    "fmt"
     "log"
     "net/http"
 
@@ -225,12 +263,11 @@ func main() {
     }
 
     // Register a user
-    user, err := auth.Register(context.Background(), basic.RegisterRequest{
+    if _, err := auth.Register(context.Background(), basic.RegisterRequest{
         Email:    "user@example.com",
         Password: "securepassword123",
         Name:     "John Doe",
-    })
-    if err != nil {
+    }); err != nil {
         log.Fatal(err)
     }
 
@@ -242,8 +279,12 @@ func main() {
     // Protected route
     http.Handle("/api/protected", authMiddleware.Middleware(
         http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-            user, _ := middleware.GetUser(r)
-            w.Write([]byte("Hello, " + user.Name))
+            user, ok := middleware.GetUser(r)
+            if !ok {
+                http.Error(w, "unauthorized", http.StatusUnauthorized)
+                return
+            }
+            fmt.Fprintf(w, "Hello, %s", user.Name)
         }),
     ))
 
@@ -251,16 +292,35 @@ func main() {
 }
 ```
 
+Three things to know before you call `Authenticate` in your own sign-in handler:
+
+- **`ErrMFARequired` is not a failed sign-in.** If you wired a
+  `Config.TOTPManager` and the user holds a _confirmed_ factor, `Authenticate`
+  returns this instead of the user. Collect a code and call
+  `AuthenticateWithTOTP(ctx, identifier, password, code)`, or set
+  `Config.RequireMFAWhenEnrolled: basic.AllowPasswordOnly` if you run your own
+  second-factor step. Treating any non-nil error as "wrong password" locks out
+  every enrolled user. With no TOTP manager configured, nothing changes.
+- **Passwords are capped at 72 bytes** (`ErrPasswordTooLong`) because bcrypt
+  ignores everything past that. Show the message; a generic failure on a
+  password the user just typed twice is a support ticket.
+- **Every rejection costs one bcrypt evaluation**, including an unknown
+  identifier, so account existence is not measurable from the response time.
+  Build the `Authenticator` once at startup — the constructor pays for that
+  guarantee up front.
+
 ### JWT Authentication
 
 ```go
 package main
 
 import (
-    "context"
+    "encoding/hex"
     "encoding/json"
+    "fmt"
     "log"
     "net/http"
+    "os"
     "time"
 
     "github.com/meysam81/go-auth/auth/jwt"
@@ -272,11 +332,25 @@ func main() {
     userStore := storage.NewInMemoryUserStore()
     tokenStore := storage.NewInMemoryTokenStore()
 
+    // HS256 requires a secret at least as long as its hash output: 32 bytes
+    // (RFC 7518 section 3.2). NewTokenManager refuses a shorter one at startup
+    // rather than signing tokens a laptop can crack offline. Generate it once
+    // with `openssl rand -hex 32` and keep it in the environment.
+    signingKey, err := hex.DecodeString(os.Getenv("JWT_SIGNING_KEY"))
+    if err != nil {
+        log.Fatal(err)
+    }
+
     // Create JWT manager
     tokenManager, err := jwt.NewTokenManager(jwt.Config{
-        UserStore:       userStore,
-        TokenStore:      tokenStore,
-        SigningKey:      []byte("your-secret-key"),
+        UserStore:  userStore,
+        TokenStore: tokenStore,
+        SigningKey: signingKey,
+        // Issuer and Audience are written at mint time AND required at
+        // validation once set, so two services sharing one secret stop
+        // accepting each other's tokens.
+        Issuer:          "https://auth.example.com",
+        Audience:        []string{"https://api.example.com"},
         AccessTokenTTL:  15 * time.Minute,
         RefreshTokenTTL: 7 * 24 * time.Hour,
     })
@@ -310,14 +384,29 @@ func main() {
 
     http.Handle("/api/protected", authMiddleware.Middleware(
         http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-            claims, _ := middleware.GetClaims(r)
-            w.Write([]byte("User ID: " + claims.UserID))
+            claims, ok := middleware.GetClaims(r)
+            if !ok {
+                http.Error(w, "unauthorized", http.StatusUnauthorized)
+                return
+            }
+            fmt.Fprintf(w, "User ID: %s", claims.UserID)
         }),
     ))
 
     http.ListenAndServe(":8080", nil)
 }
 ```
+
+`JWTMiddleware` accepts **access tokens only**. A refresh token presented as a
+bearer credential is rejected — it lives seven days against an access token's
+fifteen minutes and exists to be presented to exactly one endpoint. Use
+`RefreshAccessToken` there, and `ValidateRefreshToken` if you need to inspect
+one. `ValidateToken` is now equivalent to `ValidateAccessToken`.
+
+`NewJWTMiddleware` panics on a nil `TokenManager`, at construction, so a wiring
+mistake fails at startup instead of nil-dereferencing on the first
+unauthenticated request. Use `NewJWTMiddlewareWithError` to handle it as a
+value.
 
 ### TOTP Two-Factor Authentication
 
@@ -326,6 +415,7 @@ package main
 
 import (
     "context"
+    "errors"
     "fmt"
     "log"
 
@@ -349,7 +439,8 @@ func main() {
     userID := "user123"
     accountName := "user@example.com"
 
-    // Generate secret for user (returns QR code URL and backup codes)
+    // 1. ENROL. The factor is stored PENDING: it does not validate anything and
+    //    IsEnabled reports false until the user proves they have the secret.
     secret, err := totpManager.GenerateSecret(ctx, userID, accountName)
     if err != nil {
         log.Fatal(err)
@@ -357,29 +448,65 @@ func main() {
 
     fmt.Println("Scan this QR code URL with your authenticator app:")
     fmt.Println(secret.QRCode)
+
+    // These are the ONLY plaintext copy that will ever exist. The store
+    // receives digests, so you cannot show them again later.
     fmt.Println("\nBackup codes (save these!):")
     for _, code := range secret.BackupCodes {
         fmt.Println(" ", code)
     }
+    fmt.Printf("\nPending confirmation: %v\n", secret.Pending)
 
-    // Validate a code from the authenticator app
-    code := "123456" // User enters this from their app
-    valid, err := totpManager.Validate(ctx, userID, code)
-    if err != nil {
-        log.Fatal(err)
+    // 2. CONFIRM. Ask for one code from the app and arm the factor. Skipping
+    //    this step is how a user who never finished scanning ends up locked out
+    //    of their own account with no self-service path.
+    confirmationCode := "123456" // whatever the user typed in
+    if err := totpManager.Confirm(ctx, userID, confirmationCode); err != nil {
+        // ErrInvalidCode leaves the enrolment pending, so the user can retry.
+        // Disable(ctx, userID) cancels it entirely and lets them start over.
+        log.Fatalf("confirm: %v", err)
     }
 
-    if valid {
+    // 3. VALIDATE, on every later sign-in.
+    valid, err := totpManager.Validate(ctx, userID, "654321")
+    switch {
+    case errors.Is(err, totp.ErrPendingConfirmation):
+        fmt.Println("\nEnrolment was never confirmed")
+    case errors.Is(err, totp.ErrCodeReused):
+        // RFC 6238 section 5.2: a code authenticates once, not once per second.
+        fmt.Println("\nThat code has already been used")
+    case err != nil:
+        log.Fatal(err)
+    case valid:
         fmt.Println("\n2FA verification successful!")
-    } else {
+    default:
         fmt.Println("\nInvalid code, please try again")
     }
 
-    // Check if TOTP is enabled for a user
-    enabled, _ := totpManager.IsEnabled(ctx, userID)
+    // IsEnabled reports false for a pending enrolment; IsPending tells
+    // "never enrolled" apart from "enrolled, not confirmed".
+    enabled, err := totpManager.IsEnabled(ctx, userID)
+    if err != nil {
+        log.Fatal(err)
+    }
     fmt.Printf("TOTP enabled: %v\n", enabled)
 }
 ```
+
+Two options worth setting in production:
+
+- **`Config.Cipher`** encrypts the shared secret before it reaches your store.
+  Without it the secret is persisted in a form that hands anyone who reads a
+  backup a working second factor for every enrolled user. Backup codes are
+  hashed either way. Once configured, treat the key as being as
+  availability-critical as the store itself.
+- **`Config.ReplayGuard`** defaults to an in-process guard, which is correct for
+  a single process and insufficient for more than one. Supply a shared
+  implementation (Redis, your database) if you run several instances.
+
+`Config.ActivateOnGenerate` restores the pre-hardening "armed on generate"
+behaviour for a caller that cannot add the confirmation step yet. It is
+deprecated on arrival and re-opens the lockout it was added to close.
 
 ### OIDC/SSO Authentication
 
@@ -388,6 +515,7 @@ package main
 
 import (
     "context"
+    "fmt"
     "log"
     "net/http"
 
@@ -402,12 +530,15 @@ func main() {
     stateStore := storage.NewInMemoryOIDCStateStore()
 
     // Create providers
-    googleProvider, _ := provider.NewGoogleProvider(
+    googleProvider, err := provider.NewGoogleProvider(
         ctx,
         "your-google-client-id",
         "your-google-client-secret",
         "http://localhost:8080/callback/google",
     )
+    if err != nil {
+        log.Fatal(err)
+    }
 
     githubProvider := provider.NewGitHubProvider(
         "your-github-client-id",
@@ -416,18 +547,48 @@ func main() {
     )
 
     // Create OIDC client
-    oidcClient, _ := authoidc.NewClient(authoidc.Config{
+    oidcClient, err := authoidc.NewClient(authoidc.Config{
         Providers:  []authoidc.Provider{googleProvider, githubProvider},
         UserStore:  userStore,
         StateStore: stateStore,
-    })
 
-    // Login - redirects to provider
+        // Provisioning is REFUSED unless you authorize it. The library cannot
+        // tell whether the connection that asserted an address is entitled to
+        // it, and in a bring-your-own-IdP deployment that flag belongs to the
+        // tenant's administrator. AllowAccountCreation says "any verified
+        // assertion may create an account"; a real policy checks the domain
+        // against the connection.
+        CreatePolicy: authoidc.AllowAccountCreation,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Login - redirects to provider, and hands the browser a binding cookie
+    // that the callback will require. Without it there is nothing tying the
+    // callback to the user agent that started the flow, which is login CSRF:
+    // an attacker completes a flow against their own account and induces you
+    // to visit the resulting callback URL.
     http.HandleFunc("/login/google", func(w http.ResponseWriter, r *http.Request) {
-        authURL, _ := oidcClient.GetAuthorizationURL(r.Context(), authoidc.AuthURLOptions{
+        authReq, err := oidcClient.GetAuthorizationURLWithBinding(r.Context(), authoidc.AuthURLOptions{
             Provider: "google",
         })
-        http.Redirect(w, r, authURL, http.StatusTemporaryRedirect)
+        if err != nil {
+            http.Error(w, "Authentication failed", http.StatusInternalServerError)
+            return
+        }
+
+        http.SetCookie(w, &http.Cookie{
+            Name:     authoidc.BindingCookieName, // "__Host-go-auth-oidc-binding"
+            Value:    authReq.Binding,
+            Path:     "/",
+            MaxAge:   int(authoidc.DefaultStateTTL.Seconds()),
+            Secure:   true, // required by the __Host- prefix
+            HttpOnly: true,
+            SameSite: http.SameSiteLaxMode,
+        })
+
+        http.Redirect(w, r, authReq.URL, http.StatusTemporaryRedirect)
     })
 
     // Callback - handles OAuth response
@@ -435,19 +596,50 @@ func main() {
         state := r.URL.Query().Get("state")
         code := r.URL.Query().Get("code")
 
-        result, err := oidcClient.HandleCallback(r.Context(), state, code)
+        // An absent cookie is an empty binding, which a bound flow refuses.
+        binding := ""
+        if c, err := r.Cookie(authoidc.BindingCookieName); err == nil {
+            binding = c.Value
+        }
+
+        result, err := oidcClient.HandleCallbackWithBinding(r.Context(), state, code, binding)
         if err != nil {
+            // Do not echo err: it distinguishes "wrong binding" from "unknown
+            // state" from "unverified email", which is free reconnaissance.
             http.Error(w, "Authentication failed", http.StatusUnauthorized)
             return
         }
 
         // User is authenticated - create session or JWT
-        w.Write([]byte("Welcome, " + result.User.Name))
+        fmt.Fprintf(w, "Welcome, %s", result.User.Name)
     })
 
     http.ListenAndServe(":8080", nil)
 }
 ```
+
+**Use the `…WithBinding` pair.** `GetAuthorizationURL` and `HandleCallback` still
+exist and still work, but `GetAuthorizationURL` returns a bare `string` and has
+nowhere to hand you the binding value — so a flow started there has no
+login-CSRF protection at all. Both are deprecated for that reason. Every flow
+carries state, PKCE and (for an OIDC provider) a nonce regardless of which pair
+you use.
+
+**Errors your callback handler should expect**, all of them refusals the old
+code did not make:
+
+| Error                                      | Meaning                                                                                                                                    |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ErrAccountCreationRefused`                | verified assertion, no matching account, no `CreatePolicy` said yes                                                                        |
+| `ErrAccountLinkRequired`                   | an account exists for this email but was not created by this connection, or carries a different subject — set `LinkPolicy` to authorize it |
+| `ErrEmailNotVerified` / `ErrMissingEmail`  | the provider asserted an unverified or absent address; believing it is the nOAuth defect                                                   |
+| `ErrStateControlMissing`                   | your state store did not round-trip PKCE / binding / nonce — see the storage note below                                                    |
+| `ErrMissingBinding` / `ErrBindingMismatch` | the callback did not reach the browser that started the flow                                                                               |
+
+**You do not have to use the user store at all.** Leave `Config.UserStore` nil
+and `HandleCallbackWithBinding` returns verified claims in
+`CallbackResult.UserInfo` without touching a database. That is the shape v2
+ships, and identity decisions stay where they belong — in your application.
 
 ## Architecture
 
@@ -488,6 +680,42 @@ In-memory implementations are provided for development/testing:
 - `storage.NewInMemoryTokenStore()`
 - `storage.NewInMemoryOIDCStateStore()`
 
+They return **copies** on read, so mutating a `*User` you got from
+`GetUserByID` changes nothing until you call `UpdateUser`. They are for
+development, examples and tests; in v2 they move out of the public API into a
+conformance harness you can point at your own backend.
+
+#### What the library expects of your store
+
+Four rules. Breaking any of them is silent, which is why they are stated here
+and not only in the package docs:
+
+1. **Store what you are given, byte for byte.** Password-reset and email
+   verification tokens arrive already hashed, TOTP secrets may arrive encrypted
+   and backup codes arrive hashed. Normalising, trimming, case-folding or
+   re-hashing any of them breaks verification. Nothing the library persists is a
+   value an attacker who reads your database can replay.
+2. **Round-trip the whole record, not the fields you recognise.**
+   `OIDCState.CodeVerifier`, `OIDCState.BindingHash`, `OIDCState.Nonce`,
+   `User.ProviderSubject` and both `Metadata` maps each carry a security control
+   the library later refuses to proceed without. A store that maps one column
+   per known field and drops the rest fails every OIDC callback with
+   `ErrStateControlMissing` — deliberately, because the alternative is running
+   the flow with PKCE and the browser binding silently disarmed.
+3. **Return the contract errors.** `ErrNotFound`, `ErrAlreadyExists`,
+   `ErrExpired`, `ErrTokenRevoked`, `ErrInvalidBackupCode`, `ErrBackupCodeUsed`
+   — directly or wrapped so `errors.Is` matches. Collapsing them into one opaque
+   error forces the library to read a backend outage as a failed sign-in.
+4. **Make single-use single-use.** `UseBackupCode` must check-and-consume
+   atomically, `GetState` is one-time use, and `CreateSession` on a session ID
+   that is still live must return `ErrAlreadyExists` rather than replacing it —
+   256-bit IDs do not collide by chance.
+
+`storage/conformance_test.go` is a hostile conformance suite that asserts all of
+this against the in-memory stores. It is a `_test.go` file today, so you cannot
+import it yet; read it as the specification, and in v2 it ships as a package you
+can run against your own database.
+
 ### Middleware
 
 HTTP middleware is isolated in the `middleware` package and works with any framework that uses `http.Handler`:
@@ -513,6 +741,22 @@ extractor := &middleware.MultiExtractor{
 }
 ```
 
+Writing the cookie back out has a constructor, and you should use it: a
+`CookieWriter` literal that omits `Secure` and `HttpOnly` compiles and ships a
+session token readable by script over cleartext HTTP.
+
+```go
+// Secure and HttpOnly are not configurable here: they are always set. The
+// __Host- prefix rules (no Domain, Path=/) are validated at construction
+// rather than discovered when the browser silently drops the cookie.
+writer, err := middleware.NewSecureCookieWriter(middleware.SecureCookieConfig{
+    CookieName: "__Host-session",
+    Path:       "/",
+    MaxAge:     int((24 * time.Hour).Seconds()),
+    // SameSite defaults to Lax.
+})
+```
+
 ### Supported Providers
 
 | Provider  | Type   | Constructor                       |
@@ -527,6 +771,30 @@ extractor := &middleware.MultiExtractor{
 | GitHub    | OAuth2 | `provider.NewGitHubProvider()`    |
 | Discord   | OAuth2 | `provider.NewDiscordProvider()`   |
 | Slack     | OAuth2 | `provider.NewSlackProvider()`     |
+
+**Every vendor constructor above is deprecated.** OIDC discovery configures any
+OIDC-capable provider from its issuer URL alone, so these are configuration
+rather than logic, and v2 removes them. Use `provider.NewOIDCProvider` (or
+`NewOIDCProviderWithClient` to supply your own HTTP client) with the vendor's
+issuer URL, and `NewOAuth2Provider` for a provider that issues no ID token.
+
+Two vendor notes that affect security, not just style:
+
+- **Microsoft.** `NewMicrosoftProvider` targets the multi-tenant `common`
+  endpoint, which has no fixed issuer — every ID token carries the signing
+  tenant's own GUID in `iss` — so it verifies the signature and audience but
+  **not the issuer**. Any Entra ID tenant can therefore produce a token it
+  accepts. Read `tid` out of `UserInfo.RawClaims` and check it against your own
+  allow-list, or use `NewOIDCProvider` with
+  `https://login.microsoftonline.com/<tenant-id>/v2.0`, which pins the issuer
+  properly.
+- **GitHub.** `GET /user` returns the _public profile_ email, which GitHub only
+  lets you set to a verified address, and it is null for a user who publishes
+  none. The extractor reports `EmailVerified` accordingly rather than asserting
+  `true` unconditionally — so a user with no public email now arrives with no
+  email and is refused by the OIDC client's verified-email requirement. For a
+  hard guarantee, call `GET /user/emails` with the `user:email` scope in your
+  own extract function and take the entry that is both `primary` and `verified`.
 
 ### Custom Providers
 
@@ -560,13 +828,22 @@ func main() {
     sessionStore := storage.NewInMemoryOIDCStateStore() // For challenge storage
 
     auth, err := webauthn.NewAuthenticator(webauthn.Config{
-        RPDisplayName: "My App",
-        RPID:          "example.com",
-        RPOrigins:     []string{"https://example.com"},
-        UserStore:     userStore,
+        RPDisplayName:   "My App",
+        RPID:            "example.com",
+        RPOrigins:       []string{"https://example.com"},
+        UserStore:       userStore,
         CredentialStore: credentialStore,
         SessionStore:    sessionStore,
+
+        // Milliseconds. Defaults to 300000 (five minutes) and is refused above
+        // fifteen. It bounds three things at once so they cannot disagree: the
+        // hint sent to the browser, the deadline inside the stored ceremony
+        // record, and the TTL of the challenge itself.
+        Timeout: 300000,
     })
+    if err != nil {
+        log.Fatal(err)
+    }
 
     // Registration flow
     options, sessionID, err := auth.BeginRegistration(context.Background(), "user123")
@@ -584,12 +861,33 @@ func main() {
 }
 ```
 
+Behaviour worth knowing before you wire this into a sign-in page:
+
+- **A non-advancing signature counter is refused** with `ErrCredentialCloned`
+  (which wraps `ErrAuthenticationFailed`, so an existing handler keeps refusing
+  the sign-in). It is the only signal WebAuthn produces for a duplicated private
+  key — everything else about a clone verifies perfectly. An authenticator that
+  reports 0 on both sides is exempt, as the spec requires.
+- **A failed counter write fails the ceremony** with `ErrSignCountNotPersisted`,
+  which does _not_ wrap `ErrAuthenticationFailed`: the credential proved itself,
+  your storage did not. Alert on it; a dropped counter write blinds the clone
+  detector for that credential permanently.
+- **`BeginLogin` discloses account existence.** It returns `ErrUserNotFound` for
+  an unknown identifier and `ErrCredentialNotFound` for a known account with no
+  passkey. That is an enumeration oracle on an unauthenticated endpoint, it is a
+  known open issue (finding F-29 — the two sentinels are exported and callers
+  branch on them, so collapsing them inside v1 would change behaviour
+  invisibly), and until v2 closes it, rate-limit the endpoint and do not echo
+  the distinction to the browser.
+
 ## Session Management
 
 ```go
 package main
 
 import (
+    "context"
+    "log"
     "time"
 
     "github.com/meysam81/go-auth/session"
@@ -599,28 +897,60 @@ import (
 func main() {
     sessionStore := storage.NewInMemorySessionStore()
 
-    sessionManager, _ := session.NewManager(session.Config{
+    sessionManager, err := session.NewManager(session.Config{
         Store:      sessionStore,
         SessionTTL: 24 * time.Hour,
     })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    ctx := context.Background()
 
     // Create session
-    sess, _ := sessionManager.Create(context.Background(), session.CreateSessionRequest{
+    sess, err := sessionManager.Create(ctx, session.CreateSessionRequest{
         UserID:   "user123",
         Email:    "user@example.com",
         Provider: "google",
     })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Rotate the identifier the moment the user's privileges change -- right
+    // after sign-in, and after a password change. An attacker who fixed the
+    // pre-authentication identifier in the victim's browser holds a dead one
+    // afterwards; the old entry is deleted, not left to expire.
+    rotated, err := sessionManager.Rotate(ctx, sess.ID)
+    if err != nil {
+        log.Fatal(err)
+    }
 
     // Validate session
-    sessionData, _ := sessionManager.Validate(context.Background(), sess.ID)
+    sessionData, err := sessionManager.Validate(ctx, rotated.ID)
+    if err != nil {
+        log.Fatal(err)
+    }
+    _ = sessionData
 
     // Refresh session
-    sessionManager.Refresh(context.Background(), sess.ID)
+    if err := sessionManager.Refresh(ctx, rotated.ID); err != nil {
+        log.Fatal(err)
+    }
 
     // Delete session (logout)
-    sessionManager.Delete(context.Background(), sess.ID)
+    if err := sessionManager.Delete(ctx, rotated.ID); err != nil {
+        log.Fatal(err)
+    }
 }
 ```
+
+Changing a password does **not** revoke sessions or refresh tokens — the library
+does not know which of them belong to the user's other devices, and
+`SessionStore` has no bulk delete until v2 (adding a method to a published
+interface breaks every implementor). After a credential change, rotate the
+current session and revoke refresh tokens yourself with
+`jwt.TokenManager.RevokeAllUserTokens`.
 
 ## Audit Logging
 
@@ -830,7 +1160,9 @@ See the `examples/` directory for complete working examples:
 
 - `examples/basic/` - Basic authentication example
 - `examples/jwt/` - JWT authentication example
-- `examples/oidc/` - OIDC/SSO authentication example
+- `examples/oidc/` - OIDC/SSO authentication example. It is the reference wiring
+  for the hardened flow: browser binding on both legs, `Config.UserStore` left
+  nil, and the application resolving verified claims to its own account record
 - `examples/complete/` - Full-featured example with all auth methods
 
 Run an example:
@@ -853,12 +1185,18 @@ This standalone example includes:
 - **Audit logging**: Using stdlib `log/slog` for compliance logging
 - **Full HTTP API**: RESTful endpoints for all operations
 
-The example is completely self-contained with its own `go.mod` and can be run immediately:
+The example is completely self-contained with its own `go.mod` and can be run
+immediately, with no database and no external dependencies:
 
 ```bash
 cd examples/complete
-go run main.go
+go run main.go -memory
 ```
+
+Drop `-memory` to run against PostgreSQL (`-db`, or `DATABASE_URL`). Without
+`JWT_SIGNING_KEY` it generates a 32-byte key from `crypto/rand` at startup and
+says so — which means tokens do not survive a restart, and is exactly what you
+must not do in production.
 
 See [`examples/complete/README.md`](./examples/complete/README.md) for detailed setup instructions and API documentation.
 
@@ -866,31 +1204,70 @@ See [`examples/complete/README.md`](./examples/complete/README.md) for detailed 
 
 ### Security Best Practices
 
-1. **Use strong signing keys**
+1. **Use strong signing keys.** `NewTokenManager` enforces the RFC 7518 §3.2
+   floor — 32 bytes for HS256, 48 for HS384, 64 for HS512 — and refuses a
+   shorter secret at startup.
 
    ```go
-   // Generate a secure random key
+   import "crypto/rand" // never math/rand
+
    signingKey := make([]byte, 32)
-   rand.Read(signingKey)
+   if _, err := rand.Read(signingKey); err != nil {
+       return fmt.Errorf("generate signing key: %w", err)
+   }
    ```
 
+   For asymmetric signing, set `Config.PrivateKey` (a `crypto.Signer`) rather
+   than `SigningKey`; the constructor validates the key against the signing
+   method instead of failing on the first token you mint.
+
 2. **Use HTTPS in production**
-   - Set `Secure: true` on cookies
+   - Build session cookies with `middleware.NewSecureCookieWriter`, which sets
+     `Secure` and `HttpOnly` and validates `__Host-` prefix rules. The
+     zero-value `CookieWriter` sets neither.
    - Configure proper CORS policies
 
 3. **Store secrets in environment variables**
 
    ```go
-   signingKey := []byte(os.Getenv("JWT_SIGNING_KEY"))
+   signingKey, err := hex.DecodeString(os.Getenv("JWT_SIGNING_KEY"))
+   if err != nil {
+       return fmt.Errorf("decode signing key: %w", err)
+   }
    ```
 
 4. **Implement rate limiting**
    - Limit login attempts
    - Use exponential backoff
+   - `webauthn.BeginLogin` and any account-lookup endpoint need this
+     particularly: see the enumeration note under
+     [WebAuthn/Passkeys](#webauthnpasskeys)
 
 5. **Use persistent storage**
    - Implement storage interfaces with PostgreSQL, MySQL, etc.
    - Use Redis for sessions and ephemeral data
+   - Read [what the library expects of your store](#what-the-library-expects-of-your-store)
+     first; two of the four rules are invisible when broken
+
+6. **Encrypt TOTP secrets at rest.** Set `totp.Config.Cipher`. Without it, one
+   read of your credential table is a working second factor for every enrolled
+   user — which is exactly what the second factor exists to prevent. Backup
+   codes are hashed either way.
+
+7. **Enforce the second factor at the sign-in call.** The default
+   (`basic.EnforceMFA`) makes `Authenticate` return `ErrMFARequired` for a user
+   with a confirmed factor; handle it by collecting a code, not by treating it
+   as a failed password.
+
+8. **Bound outbound HTTP to identity providers.** The default client has a
+   timeout and a response-size cap but no address policy. When the issuer URL is
+   operator-supplied, pass an `HTTPClient` whose dialer refuses loopback,
+   link-local and private ranges — otherwise the issuer URL is an SSRF primitive
+   into your network. That policy is infrastructure's, not this library's.
+
+9. **Use the bound OIDC entry points.** `GetAuthorizationURLWithBinding` +
+   `HandleCallbackWithBinding`. The unbound pair still compiles and still leaves
+   login CSRF open.
 
 ### Database Integration Example
 
@@ -966,8 +1343,12 @@ func TestAuthentication(t *testing.T) {
 - `github.com/go-webauthn/webauthn` - WebAuthn/FIDO2
 - `github.com/coreos/go-oidc/v3` - OIDC client
 - `golang.org/x/oauth2` - OAuth2 flows
+- `github.com/pquerna/otp` - TOTP (RFC 6238)
 
-All dependencies are production-ready, well-maintained, and widely used.
+All dependencies are production-ready, well-maintained, and widely used. The set
+is enforced by a `depguard` rule rather than by discipline: every module here is
+either a cryptographic primitive we must not reimplement or a protocol
+implementation, and anything else expands the attack surface of every consumer.
 
 ## Troubleshooting
 
@@ -998,23 +1379,92 @@ _, err := auth.Register(ctx, basic.RegisterRequest{
 })
 ```
 
+**`NewTokenManager` fails at startup with `ErrInvalidKeyConfig`**
+
+- The HMAC secret is too short. HS256 needs 32 bytes, HS384 48, HS512 64
+  (RFC 7518 §3.2). A passphrase that worked in v1.1.1 is now refused, on purpose
+- Or an asymmetric `SigningMethod` was paired with a `[]byte` `SigningKey`. Use
+  `Config.PrivateKey`; `SigningKey` is HMAC-only and cannot carry an RSA or
+  ECDSA key
+
 **JWT token validation fails**
 
 - Ensure the signing key is the same for generation and validation
 - Check that the token hasn't expired (default: 15 minutes for access tokens)
 - Verify the token is being passed correctly in the `Authorization: Bearer <token>` header
+- If `Config.Issuer` or `Config.Audience` is set, they are **required** at
+  validation. A token minted before you set them will not verify
+- A **refresh token is rejected** as a bearer credential. Use
+  `RefreshAccessToken`; `ValidateToken` means `ValidateAccessToken` now
+
+**Sign-in returns `basic.ErrMFARequired`**
+
+Working as intended: the user holds a confirmed second factor and
+`Authenticate` refuses a password-only sign-in. Collect a code and call
+`AuthenticateWithTOTP`, or set
+`Config.RequireMFAWhenEnrolled: basic.AllowPasswordOnly` if you run your own
+second-factor step. Do not report it to the user as a bad password.
+
+**`totp.ErrPendingConfirmation` after enrolling**
+
+The factor is stored but not armed. Call `Confirm(ctx, userID, code)` with a
+code from the user's app; `IsPending` tells you an enrolment is waiting.
+`Disable` cancels it so the user can start over.
 
 **TOTP codes always invalid**
 
 - Ensure server time is synchronized (TOTP is time-based)
-- Check that the secret was stored correctly during setup
+- Check that the enrolment was confirmed (above)
+- If you configured a `Cipher` after users had already enrolled, existing rows
+  are plaintext and a configured `Cipher` refuses to read them — open the
+  migration window with `Config.AllowLegacyPlaintextSecrets`
+- `ErrCodeReused` is not "invalid": that exact code already authenticated inside
+  its window, which RFC 6238 §5.2 requires be refused
 - Verify the user is using a compatible authenticator app (Google Authenticator, Authy, etc.)
+
+**Backup codes come back as gibberish from the store**
+
+They are digests. Backup codes are hashed unconditionally, so the plaintext
+exists only in `Secret.BackupCodes` at enrolment and in the return of
+`RegenerateBackupCodes`. Display them once; there is no way to recover them.
+
+**Every OIDC sign-in fails with `ErrStateControlMissing`**
+
+Your `OIDCStateStore` is not round-tripping the whole record. The library writes
+PKCE, the browser binding and the nonce to both typed fields and mirrored
+`Metadata` keys, and refuses a record that comes back without either copy rather
+than proceeding with the control disarmed. Persist `Metadata` verbatim,
+including keys you do not recognise.
+
+**New OIDC users get `ErrAccountCreationRefused`**
+
+`Config.CreatePolicy` is nil, and a nil policy refuses. Set
+`authoidc.AllowAccountCreation` to restore the old behaviour, or supply a policy
+that checks the asserted domain against the connection.
+
+**An existing user gets `ErrAccountLinkRequired`**
+
+An account with that email address exists but was not created by this
+connection — most often a password account (`Provider: "basic"`) whose owner is
+now using SSO. Matching on email alone is the nOAuth defect, so it is refused.
+Authorize it deliberately with `Config.LinkPolicy`.
 
 **WebAuthn registration fails**
 
 - WebAuthn requires HTTPS in production (localhost works for development)
 - Ensure `RPID` matches your domain exactly
 - Check that `RPOrigins` includes the full origin URL (e.g., `https://example.com`)
+- `Config.Timeout` is in **milliseconds** and is refused above 15 minutes. It
+  used to be handed to the store as a raw `time.Duration`, which made the
+  documented "5 min" 300 nanoseconds; if you were compensating for that, stop
+
+**WebAuthn login fails with `ErrCredentialCloned`**
+
+The assertion's signature counter did not advance past the stored value, which
+is the only signal WebAuthn produces for a duplicated private key. Treat it as a
+security event, not as a bad password. If it fires for every user of one
+authenticator model that reports 0, that case is already exempt — check that
+your store is persisting `SignCount` rather than discarding the update.
 
 ### Getting Help
 

@@ -8,9 +8,18 @@ import (
 )
 
 const (
-	// microsoftIssuerURL is the OIDC issuer URL for Microsoft Azure AD using the common tenant.
-	// The "common" tenant allows sign-in with any Microsoft account (personal or work/school).
-	microsoftIssuerURL = "https://login.microsoftonline.com/common/v2.0"
+	// microsoftDiscoveryURL is where the multi-tenant metadata document lives.
+	// The "common" tenant allows sign-in with any Microsoft account (personal
+	// or work/school).
+	microsoftDiscoveryURL = "https://login.microsoftonline.com/common/v2.0"
+
+	// microsoftIssuerURL is the issuer the common-tenant metadata document
+	// reports, verbatim, braces included. Microsoft does not report a concrete
+	// issuer there because there is not one: an ID token from the common
+	// endpoint carries the signing tenant's own GUID in iss. Discovery fails
+	// outright unless this mismatch is declared, which is why the constructor
+	// below cannot simply hand the discovery URL to NewOIDCProvider.
+	microsoftIssuerURL = "https://login.microsoftonline.com/{tenantid}/v2.0"
 )
 
 // NewMicrosoftProvider creates a Microsoft Azure AD OIDC provider for Microsoft account authentication.
@@ -58,9 +67,33 @@ const (
 //   - profile: User's basic profile information
 //   - email: User's email address
 //
-// Note: This uses the "common" tenant endpoint. For single-tenant applications,
-// you may want to use a tenant-specific endpoint by modifying the issuer URL
-// to include your tenant ID instead of "common".
+// About the issuer check, and what you owe in its place:
+//
+// The multi-tenant "common" endpoint has no fixed issuer: every ID token it
+// produces carries the signing tenant's own GUID in iss. There is therefore
+// nothing to pin, and this constructor verifies the ID token's signature and
+// audience but not its issuer. That is Microsoft's documented multi-tenant
+// shape, not a shortcut, but it has a consequence you must handle:
+//
+// Any Entra ID tenant on the internet can produce a token this provider
+// accepts. The provider proves the assertion came from Microsoft and was
+// minted for your client ID. It does not, and cannot, prove which
+// organization the user belongs to. If your application is not genuinely open
+// to every Microsoft tenant, read the tid claim out of the returned user
+// info's RawClaims and check it against your own allow-list before you treat
+// the user as anybody.
+//
+// A single-tenant application should not use this constructor at all. Call
+// [NewOIDCProvider] with "https://login.microsoftonline.com/<tenant-id>/v2.0"
+// and the issuer is pinned for you.
+//
+// Deprecated: v2 removes the vendor-specific constructors. OIDC discovery
+// configures any OIDC-capable provider from its issuer URL alone, so this
+// function is configuration rather than logic and is not a primitive the
+// library should own. Use [NewOIDCProvider] or [NewOIDCProviderWithClient]
+// with the issuer URL "https://login.microsoftonline.com/<tenant-id>/v2.0",
+// which additionally restores the strict issuer check this constructor has to
+// give up.
 func NewMicrosoftProvider(ctx context.Context, clientID, clientSecret, redirectURL string) (*BaseOIDCProvider, error) {
 	scopes := []string{
 		"openid",
@@ -77,7 +110,15 @@ func NewMicrosoftProvider(ctx context.Context, clientID, clientSecret, redirectU
 		Scopes:       scopes,
 	}
 
-	provider, err := NewOIDCProvider(ctx, "microsoft", microsoftIssuerURL, clientID, clientSecret, redirectURL, scopes)
+	// Discovery is fetched from the common endpoint while the issuer is stated
+	// separately, because the two disagree by design; see microsoftIssuerURL.
+	// SkipIssuerCheck follows for the same reason: the real iss is per-tenant
+	// and unknowable here. See the doc comment for the tid check that has to
+	// take its place.
+	provider, err := newOIDCProvider(ctx, "microsoft", microsoftIssuerURL, clientID, clientSecret, redirectURL, scopes, oidcProviderOptions{
+		discoveryURL:    microsoftDiscoveryURL,
+		skipIssuerCheck: true,
+	})
 	if err != nil {
 		return nil, err
 	}

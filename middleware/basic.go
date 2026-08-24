@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/meysam81/go-auth/auth/basic"
@@ -9,6 +10,18 @@ import (
 )
 
 // BasicAuthMiddleware provides HTTP Basic Authentication middleware.
+//
+// Deprecated: this middleware runs one bcrypt evaluation per request and offers
+// no second factor (F-15). At the library's cost of 12 a verification is
+// roughly 250 ms of CPU, so a handful of concurrent clients saturates a core
+// and an unauthenticated caller can hold a route down for the price of sending
+// requests (CWE-400) — the credential need not even be valid, because the cost
+// is paid before the comparison result is known. HTTP Basic also has no way to
+// carry a TOTP or WebAuthn assertion, so mounting it on a route that is
+// otherwise MFA-protected creates a silent MFA bypass for that route. v2
+// removes it. Authenticate once at a sign-in endpoint and protect subsequent
+// requests with SessionMiddleware or JWTMiddleware; if a machine client needs
+// a static credential, issue it a token rather than a password.
 type BasicAuthMiddleware struct {
 	authenticator *basic.Authenticator
 	errorHandler  ErrorHandler
@@ -16,6 +29,8 @@ type BasicAuthMiddleware struct {
 }
 
 // BasicAuthConfig configures the basic auth middleware.
+//
+// Deprecated: see BasicAuthMiddleware (F-15). v2 removes it.
 type BasicAuthConfig struct {
 	Authenticator *basic.Authenticator
 	ErrorHandler  ErrorHandler // Optional: defaults to DefaultErrorHandler
@@ -23,7 +38,35 @@ type BasicAuthConfig struct {
 }
 
 // NewBasicAuthMiddleware creates a new basic auth middleware.
+//
+// Deprecated: see BasicAuthMiddleware. It costs one bcrypt evaluation per
+// request (F-15, CWE-400) and cannot carry a second factor, so it must not be
+// mounted on any route reachable by an untrusted client. v2 removes it; use
+// SessionMiddleware or JWTMiddleware.
+//
+// It panics when cfg.Authenticator is nil, for the reason given on
+// [NewJWTMiddleware]. Use [NewBasicAuthMiddlewareWithError] to handle that as a
+// value instead.
 func NewBasicAuthMiddleware(cfg BasicAuthConfig) *BasicAuthMiddleware {
+	m, err := NewBasicAuthMiddlewareWithError(cfg)
+	if err != nil {
+		panic(err)
+	}
+	return m
+}
+
+// NewBasicAuthMiddlewareWithError is [NewBasicAuthMiddleware] reporting a
+// configuration error rather than panicking.
+//
+// Deprecated: see BasicAuthMiddleware (F-15). v2 removes both constructors; the
+// error-returning form exists only so a caller that must keep this middleware
+// through the v1 line can refuse to start on a nil authenticator instead of
+// nil-dereferencing on the first request.
+func NewBasicAuthMiddlewareWithError(cfg BasicAuthConfig) (*BasicAuthMiddleware, error) {
+	if cfg.Authenticator == nil {
+		return nil, fmt.Errorf("%w: BasicAuthConfig.Authenticator is nil, so no credential can be verified", ErrMissingDependency)
+	}
+
 	errorHandler := cfg.ErrorHandler
 	if errorHandler == nil {
 		errorHandler = DefaultErrorHandler
@@ -38,10 +81,13 @@ func NewBasicAuthMiddleware(cfg BasicAuthConfig) *BasicAuthMiddleware {
 		authenticator: cfg.Authenticator,
 		errorHandler:  errorHandler,
 		realm:         realm,
-	}
+	}, nil
 }
 
 // Middleware returns an HTTP middleware function.
+//
+// Deprecated: see BasicAuthMiddleware (F-15). Every request, authenticated or
+// not, pays for a bcrypt verification before the outcome is known.
 func (m *BasicAuthMiddleware) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		username, password, ok := r.BasicAuth()

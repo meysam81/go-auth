@@ -91,11 +91,19 @@ go run main.go
 
 ### TOTP Two-Factor Authentication
 
-| Method | Endpoint             | Description                           |
-| ------ | -------------------- | ------------------------------------- |
-| POST   | `/auth/totp/setup`   | Generate TOTP secret and backup codes |
-| POST   | `/auth/totp/verify`  | Verify TOTP code                      |
-| POST   | `/auth/totp/disable` | Disable TOTP for user                 |
+| Method | Endpoint             | Description                                    |
+| ------ | -------------------- | ---------------------------------------------- |
+| POST   | `/auth/totp/setup`   | Begin enrollment; secret is stored **pending** |
+| POST   | `/auth/totp/confirm` | Arm the pending enrollment with one valid code |
+| POST   | `/auth/totp/verify`  | Verify a TOTP code against an armed factor     |
+| POST   | `/auth/totp/disable` | Disable TOTP for user                          |
+
+Enrollment is two steps on purpose. `/auth/totp/setup` stores the secret in a
+pending state: it is not yet a live factor, `verify` refuses it, and sign-in does
+not demand it. Only `/auth/totp/confirm` — which requires one valid code, and so
+proves the user actually scanned the QR code — arms it. A one-step enrollment
+locks out any user who never completed the scan, or who scanned into a device
+they then lost.
 
 ### WebAuthn/Passkeys
 
@@ -108,10 +116,21 @@ go run main.go
 
 ### Google SSO
 
-| Method | Endpoint                | Description              |
-| ------ | ----------------------- | ------------------------ |
-| GET    | `/auth/google/login`    | Redirect to Google login |
-| GET    | `/auth/google/callback` | OAuth callback handler   |
+| Method | Endpoint                | Description                                    |
+| ------ | ----------------------- | ---------------------------------------------- |
+| GET    | `/auth/google/login`    | Redirect to Google, setting the binding cookie |
+| GET    | `/auth/google/callback` | OAuth callback handler; requires that cookie   |
+
+The flow is bound to the browser that started it. `/auth/google/login` issues a
+binding value as a `__Host-` cookie alongside the redirect, and the callback
+refuses to complete without it. Without that binding an attacker can start a
+flow, authenticate as themselves, and hand the victim the resulting callback URL
+— which signs the victim's browser in as the attacker.
+
+Google is configured from its issuer URL through OIDC discovery, and the callback
+returns the provider's verified claims rather than a user record: this example
+resolves those claims to its own account row, keyed on the provider subject and
+never on the email address alone.
 
 ### Protected Endpoints
 
@@ -152,12 +171,27 @@ curl -X POST http://localhost:8080/auth/totp/setup \
   -H "Content-Type: application/json" \
   -d '{"user_id": "user123", "account_name": "user@example.com"}'
 
-# Response
+# Response -- note pending: true, the factor is NOT live yet
 {
   "secret": "JBSWY3DPEHPK3PXP",
   "qr_code_url": "otpauth://totp/GoAuthExample:user@example.com?...",
-  "backup_codes": ["ABCD-1234", "EFGH-5678", ...]
+  "backup_codes": ["ABCD-1234", "EFGH-5678", ...],
+  "pending": true,
+  "confirm_url": "/auth/totp/confirm"
 }
+
+# Arm it by proving possession of the secret
+curl -X POST http://localhost:8080/auth/totp/confirm \
+  -H "Content-Type: application/json" \
+  -d '{"user_id": "user123", "code": "123456"}'
+
+# Login without a code once the factor is armed -> 401 asking for one
+curl -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "user@example.com", "password": "securepass123"}'
+
+# Response: 401
+{ "requires_2fa": true, "message": "TOTP code required" }
 
 # Login with 2FA
 curl -X POST http://localhost:8080/auth/login \

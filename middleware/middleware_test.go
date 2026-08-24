@@ -2,9 +2,15 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/meysam81/go-auth/auth/jwt"
+	"github.com/meysam81/go-auth/storage"
 )
 
 func TestCookieExtractor(t *testing.T) {
@@ -13,7 +19,7 @@ func TestCookieExtractor(t *testing.T) {
 	}
 
 	// Test successful extraction
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	req.AddCookie(&http.Cookie{
 		Name:  "session_id",
 		Value: "test-session-123",
@@ -28,20 +34,20 @@ func TestCookieExtractor(t *testing.T) {
 	}
 
 	// Test missing cookie
-	reqNoCookie := httptest.NewRequest("GET", "/", nil)
+	reqNoCookie := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	_, err = extractor.Extract(reqNoCookie)
-	if err != ErrUnauthorized {
+	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("Expected ErrUnauthorized, got %v", err)
 	}
 
 	// Test wrong cookie name
-	reqWrongCookie := httptest.NewRequest("GET", "/", nil)
+	reqWrongCookie := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	reqWrongCookie.AddCookie(&http.Cookie{
 		Name:  "wrong_name",
 		Value: "value",
 	})
 	_, err = extractor.Extract(reqWrongCookie)
-	if err != ErrUnauthorized {
+	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("Expected ErrUnauthorized, got %v", err)
 	}
 }
@@ -53,7 +59,7 @@ func TestHeaderExtractor(t *testing.T) {
 		Scheme:     "Bearer",
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	req.Header.Set("Authorization", "Bearer test-token-123")
 
 	token, err := extractor.Extract(req)
@@ -65,30 +71,30 @@ func TestHeaderExtractor(t *testing.T) {
 	}
 
 	// Test missing header
-	reqNoHeader := httptest.NewRequest("GET", "/", nil)
+	reqNoHeader := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	_, err = extractor.Extract(reqNoHeader)
-	if err != ErrUnauthorized {
+	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("Expected ErrUnauthorized, got %v", err)
 	}
 
 	// Test wrong scheme
-	reqWrongScheme := httptest.NewRequest("GET", "/", nil)
+	reqWrongScheme := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	reqWrongScheme.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
 	_, err = extractor.Extract(reqWrongScheme)
-	if err != ErrUnauthorized {
+	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("Expected ErrUnauthorized for wrong scheme, got %v", err)
 	}
 
 	// Test malformed header (no space)
-	reqMalformed := httptest.NewRequest("GET", "/", nil)
+	reqMalformed := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	reqMalformed.Header.Set("Authorization", "Bearertoken")
 	_, err = extractor.Extract(reqMalformed)
-	if err != ErrUnauthorized {
+	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("Expected ErrUnauthorized for malformed header, got %v", err)
 	}
 
 	// Test case-insensitive scheme matching
-	reqLowerCase := httptest.NewRequest("GET", "/", nil)
+	reqLowerCase := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	reqLowerCase.Header.Set("Authorization", "bearer test-token-123")
 	token, err = extractor.Extract(reqLowerCase)
 	if err != nil {
@@ -104,14 +110,20 @@ func TestHeaderExtractor(t *testing.T) {
 		Scheme:     "",
 	}
 
-	reqNoScheme := httptest.NewRequest("GET", "/", nil)
-	reqNoScheme.Header.Set("X-API-Key", "api-key-value")
+	// The fixture is named rather than repeated: with no scheme configured the
+	// extractor must return the header value verbatim, so the assertion has to
+	// compare against exactly what was set, and a bare literal on both sides
+	// lets the two drift apart.
+	const rawHeaderValue = "opaque-header-fixture"
+
+	reqNoScheme := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+	reqNoScheme.Header.Set("X-API-Key", rawHeaderValue)
 	token, err = extractorNoScheme.Extract(reqNoScheme)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
-	if token != "api-key-value" {
-		t.Errorf("Expected token 'api-key-value', got %s", token)
+	if token != rawHeaderValue {
+		t.Errorf("Expected token %q, got %s", rawHeaderValue, token)
 	}
 }
 
@@ -129,7 +141,7 @@ func TestMultiExtractor(t *testing.T) {
 	}
 
 	// Test extraction from header (first extractor)
-	reqHeader := httptest.NewRequest("GET", "/", nil)
+	reqHeader := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	reqHeader.Header.Set("Authorization", "Bearer header-token")
 
 	token, err := multiExtractor.Extract(reqHeader)
@@ -141,7 +153,7 @@ func TestMultiExtractor(t *testing.T) {
 	}
 
 	// Test extraction from cookie (second extractor, fallback)
-	reqCookie := httptest.NewRequest("GET", "/", nil)
+	reqCookie := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	reqCookie.AddCookie(&http.Cookie{
 		Name:  "session_id",
 		Value: "cookie-token",
@@ -156,7 +168,7 @@ func TestMultiExtractor(t *testing.T) {
 	}
 
 	// Test with both present (should use first one)
-	reqBoth := httptest.NewRequest("GET", "/", nil)
+	reqBoth := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	reqBoth.Header.Set("Authorization", "Bearer header-token")
 	reqBoth.AddCookie(&http.Cookie{
 		Name:  "session_id",
@@ -172,9 +184,9 @@ func TestMultiExtractor(t *testing.T) {
 	}
 
 	// Test with neither present
-	reqNeither := httptest.NewRequest("GET", "/", nil)
+	reqNeither := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	_, err = multiExtractor.Extract(reqNeither)
-	if err != ErrUnauthorized {
+	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("Expected ErrUnauthorized, got %v", err)
 	}
 }
@@ -246,14 +258,14 @@ func TestCookieWriter(t *testing.T) {
 func TestDefaultErrorHandler(t *testing.T) {
 	// Test unauthorized error
 	rw := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 
 	DefaultErrorHandler(rw, req, ErrUnauthorized)
 
 	if rw.Code != http.StatusUnauthorized {
 		t.Errorf("Expected status 401, got %d", rw.Code)
 	}
-	if !contains(rw.Body.String(), "Unauthorized") {
+	if !strings.Contains(rw.Body.String(), "Unauthorized") {
 		t.Errorf("Expected body to contain 'Unauthorized', got %s", rw.Body.String())
 	}
 
@@ -264,14 +276,14 @@ func TestDefaultErrorHandler(t *testing.T) {
 	if rwForbidden.Code != http.StatusForbidden {
 		t.Errorf("Expected status 403, got %d", rwForbidden.Code)
 	}
-	if !contains(rwForbidden.Body.String(), "Forbidden") {
+	if !strings.Contains(rwForbidden.Body.String(), "Forbidden") {
 		t.Errorf("Expected body to contain 'Forbidden', got %s", rwForbidden.Body.String())
 	}
 }
 
 func TestGetUserID(t *testing.T) {
 	// Test with user ID in context
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	ctx := context.WithValue(req.Context(), UserIDKey, "user123")
 	req = req.WithContext(ctx)
 
@@ -284,7 +296,7 @@ func TestGetUserID(t *testing.T) {
 	}
 
 	// Test without user ID
-	reqNoUser := httptest.NewRequest("GET", "/", nil)
+	reqNoUser := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	_, ok = GetUserID(reqNoUser)
 	if ok {
 		t.Error("Expected user ID to not be found")
@@ -293,7 +305,7 @@ func TestGetUserID(t *testing.T) {
 
 func TestGetSessionID(t *testing.T) {
 	// Test with session ID in context
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	ctx := context.WithValue(req.Context(), SessionIDKey, "session123")
 	req = req.WithContext(ctx)
 
@@ -306,7 +318,7 @@ func TestGetSessionID(t *testing.T) {
 	}
 
 	// Test without session ID
-	reqNoSession := httptest.NewRequest("GET", "/", nil)
+	reqNoSession := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	_, ok = GetSessionID(reqNoSession)
 	if ok {
 		t.Error("Expected session ID to not be found")
@@ -339,16 +351,223 @@ func TestWithSessionID(t *testing.T) {
 	}
 }
 
-// Helper function
-func contains(s, substr string) bool {
-	return len(s) > 0 && len(substr) > 0 && s != "" && (s == substr || len(s) >= len(substr) && (s[:len(substr)] == substr || s[len(s)-len(substr):] == substr || containsInside(s, substr)))
+// TestNewSecureCookieWriterDefaults pins the attributes the zero-value
+// CookieWriter gets wrong: a session cookie must not travel over cleartext
+// HTTP, must not be readable from script, and must not ride along on a
+// cross-site request.
+func TestNewSecureCookieWriterDefaults(t *testing.T) {
+	writer, err := NewSecureCookieWriter(SecureCookieConfig{
+		CookieName: "session_id",
+		MaxAge:     3600,
+	})
+	if err != nil {
+		t.Fatalf("NewSecureCookieWriter: %v", err)
+	}
+
+	rw := httptest.NewRecorder()
+	writer.Write(rw, "token")
+
+	cookies := rw.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("expected 1 cookie, got %d", len(cookies))
+	}
+	cookie := cookies[0]
+
+	if !cookie.Secure {
+		t.Error("Secure must be set")
+	}
+	if !cookie.HttpOnly {
+		t.Error("HttpOnly must be set")
+	}
+	if cookie.SameSite != http.SameSiteLaxMode {
+		t.Errorf("SameSite = %v, want Lax", cookie.SameSite)
+	}
+	if cookie.Path != "/" {
+		t.Errorf("Path = %q, want /", cookie.Path)
+	}
+	if cookie.Domain != "" {
+		t.Errorf("Domain = %q, want host-only cookie", cookie.Domain)
+	}
 }
 
-func containsInside(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+// TestNewSecureCookieWriterRejectsUnsafeConfig covers the two failures a
+// browser reports by silently discarding the cookie.
+func TestNewSecureCookieWriterRejectsUnsafeConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  SecureCookieConfig
+	}{
+		{"empty name", SecureCookieConfig{}},
+		{"name with separator", SecureCookieConfig{CookieName: "session id"}},
+		{"name with control byte", SecureCookieConfig{CookieName: "session\x00id"}},
+		{"__Host- with domain", SecureCookieConfig{CookieName: "__Host-session", Domain: "example.com"}},
+		{"__Host- with path", SecureCookieConfig{CookieName: "__Host-session", Path: "/app"}},
 	}
-	return false
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := NewSecureCookieWriter(tt.cfg); !errors.Is(err, ErrInvalidCookieConfig) {
+				t.Fatalf("err = %v, want ErrInvalidCookieConfig", err)
+			}
+		})
+	}
+}
+
+// TestCookieWriterClearMirrorsWrite is the regression guard for a logout that
+// reports success and revokes nothing: a browser keys a cookie on
+// (name, domain, path), so a Clear that dropped any of them would set a second
+// cookie and leave the live session identifier in place.
+func TestCookieWriterClearMirrorsWrite(t *testing.T) {
+	writer := &CookieWriter{
+		CookieName: "session_id",
+		Path:       "/app",
+		Domain:     "example.com",
+		MaxAge:     3600,
+		Secure:     true,
+		HttpOnly:   true,
+		SameSite:   http.SameSiteStrictMode,
+	}
+
+	rwWrite := httptest.NewRecorder()
+	writer.Write(rwWrite, "token")
+	written := rwWrite.Result().Cookies()[0]
+
+	rwClear := httptest.NewRecorder()
+	writer.Clear(rwClear)
+	cleared := rwClear.Result().Cookies()[0]
+
+	if cleared.Name != written.Name {
+		t.Errorf("Name = %q, want %q", cleared.Name, written.Name)
+	}
+	if cleared.Path != written.Path {
+		t.Errorf("Path = %q, want %q", cleared.Path, written.Path)
+	}
+	if cleared.Domain != written.Domain {
+		t.Errorf("Domain = %q, want %q", cleared.Domain, written.Domain)
+	}
+	if cleared.Secure != written.Secure {
+		t.Errorf("Secure = %v, want %v", cleared.Secure, written.Secure)
+	}
+	if cleared.HttpOnly != written.HttpOnly {
+		t.Errorf("HttpOnly = %v, want %v", cleared.HttpOnly, written.HttpOnly)
+	}
+	if cleared.SameSite != written.SameSite {
+		t.Errorf("SameSite = %v, want %v", cleared.SameSite, written.SameSite)
+	}
+	if cleared.Value != "" {
+		t.Errorf("Value = %q, want empty", cleared.Value)
+	}
+	if cleared.MaxAge != -1 {
+		t.Errorf("MaxAge = %d, want -1", cleared.MaxAge)
+	}
+	// Max-Age alone is not enough for every user agent; an expiry in the past
+	// must accompany it.
+	if cleared.Expires.IsZero() || !cleared.Expires.Before(time.Now()) {
+		t.Errorf("Expires = %v, want an instant in the past", cleared.Expires)
+	}
+}
+
+// TestCookieExtractorRejectsEmptyValue: a cleared cookie is a present cookie
+// with an empty value and must not be forwarded as a credential.
+func TestCookieExtractorRejectsEmptyValue(t *testing.T) {
+	extractor := &CookieExtractor{CookieName: "session_id"}
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: ""})
+
+	if _, err := extractor.Extract(req); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("err = %v, want ErrUnauthorized", err)
+	}
+}
+
+// newTestTokenManager builds a token manager over in-memory stores.
+func newTestTokenManager(t *testing.T) (*jwt.TokenManager, *storage.User) {
+	t.Helper()
+
+	userStore := storage.NewInMemoryUserStore()
+	user := &storage.User{
+		ID:    "u1",
+		Email: "user@example.com",
+	}
+	if err := userStore.CreateUser(context.Background(), user); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	manager, err := jwt.NewTokenManager(jwt.Config{
+		UserStore:  userStore,
+		SigningKey: []byte("0123456789abcdef0123456789abcdef"),
+		Issuer:     "go-auth-test",
+	})
+	if err != nil {
+		t.Fatalf("NewTokenManager: %v", err)
+	}
+	return manager, user
+}
+
+// TestJWTMiddlewareRejectsRefreshToken is the F-02 regression guard: a refresh
+// token presented as a bearer credential must not authorize a request. Reverting
+// the middleware to ValidateToken alone will not fail this test — jwt pins the
+// type as well — but reverting both, which is the shape of the original defect,
+// does.
+func TestJWTMiddlewareRejectsRefreshToken(t *testing.T) {
+	manager, user := newTestTokenManager(t)
+
+	pair, err := manager.GenerateTokenPair(context.Background(), user)
+	if err != nil {
+		t.Fatalf("GenerateTokenPair: %v", err)
+	}
+
+	mw := NewJWTMiddleware(JWTConfig{TokenManager: manager})
+
+	var reached bool
+	handler := mw.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		reached = true
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+	req.Header.Set("Authorization", "Bearer "+pair.RefreshToken)
+	rw := httptest.NewRecorder()
+	handler.ServeHTTP(rw, req)
+
+	if reached {
+		t.Fatal("refresh token authorized a request protected by JWTMiddleware")
+	}
+	if rw.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rw.Code)
+	}
+}
+
+// TestJWTMiddlewareAcceptsAccessToken keeps the F-02 fix from degenerating into
+// a middleware that rejects everything.
+func TestJWTMiddlewareAcceptsAccessToken(t *testing.T) {
+	manager, user := newTestTokenManager(t)
+
+	pair, err := manager.GenerateTokenPair(context.Background(), user)
+	if err != nil {
+		t.Fatalf("GenerateTokenPair: %v", err)
+	}
+
+	mw := NewJWTMiddleware(JWTConfig{TokenManager: manager})
+
+	var (
+		gotUserID string
+		gotOK     bool
+	)
+	handler := mw.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		gotUserID, gotOK = GetUserID(r)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+	req.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+	rw := httptest.NewRecorder()
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rw.Code)
+	}
+	if !gotOK {
+		t.Error("handler ran without a user ID in its request context")
+	}
+	if gotUserID != user.ID {
+		t.Errorf("user ID = %q, want %q", gotUserID, user.ID)
+	}
 }

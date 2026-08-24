@@ -51,6 +51,15 @@ const (
 //
 // Note: GitHub does not support OIDC. This provider uses OAuth2 with GitHub's REST API
 // for user info retrieval. The user's GitHub ID is used as the subject identifier.
+//
+// Deprecated: v2 removes the vendor-specific constructors. This one is a
+// hardcoded endpoint pair, a scope list and a response parser, none of which
+// the library is better placed to maintain than the application. GitHub
+// publishes no OIDC discovery document, so the replacement is
+// [NewOAuth2Provider] or [NewOAuth2ProviderWithClient] with
+// [github.Endpoint], "https://api.github.com/user" and an extract function of
+// your own — which is also where a deployment can call /user/emails and
+// establish verification properly.
 func NewGitHubProvider(clientID, clientSecret, redirectURL string) *OAuth2Provider {
 	oauth2Config := &oauth2.Config{
 		ClientID:     clientID,
@@ -65,10 +74,14 @@ func NewGitHubProvider(clientID, clientSecret, redirectURL string) *OAuth2Provid
 			RawClaims: data,
 		}
 
-		// GitHub uses "id" as the unique identifier
-		if id, ok := data["id"].(float64); ok {
-			userInfo.Subject = fmt.Sprintf("%d", int64(id))
+		// GitHub uses "id" as the unique identifier. Without it there is no
+		// stable name for this account, so the response is declined rather
+		// than turned into a user with an empty subject.
+		id, ok := data["id"].(float64)
+		if !ok {
+			return nil
 		}
+		userInfo.Subject = fmt.Sprintf("%d", int64(id))
 
 		if email, ok := data["email"].(string); ok {
 			userInfo.Email = email
@@ -86,8 +99,19 @@ func NewGitHubProvider(clientID, clientSecret, redirectURL string) *OAuth2Provid
 			userInfo.Picture = avatarURL
 		}
 
-		// GitHub emails from API are always verified
-		userInfo.EmailVerified = true
+		// GET /user reports the public profile email, and GitHub only lets a
+		// verified address be selected as that. It reports null for a user who
+		// publishes none, and the old unconditional true then asserted that an
+		// empty string was a verified address — which an account-linking
+		// policy keyed on email_verified would have believed
+		// (finding F-01, CVE-2023-28131, the nOAuth class).
+		//
+		// This endpoint carries no email_verified claim, so the inference is
+		// as strong as it gets from /user alone. A deployment that needs a
+		// hard guarantee must request the "user:email" scope this constructor
+		// already asks for, call GET /user/emails, and take the entry whose
+		// primary and verified fields are both true.
+		userInfo.EmailVerified = userInfo.Email != ""
 
 		return userInfo
 	}

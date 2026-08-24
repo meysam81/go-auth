@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -63,6 +64,9 @@ func NewStdLogger(cfg StdLoggerConfig) *StdLogger {
 }
 
 // Log records an audit event as a structured JSON log entry.
+//
+// A nil event is a no-op rather than an error: it means the caller had nothing
+// to record, which is not a logging failure.
 func (s *StdLogger) Log(ctx context.Context, event *AuditEvent) error {
 	if event == nil {
 		return nil
@@ -74,12 +78,17 @@ func (s *StdLogger) Log(ctx context.Context, event *AuditEvent) error {
 		logEvent = s.redactionConfig.ApplyRedaction(event)
 	}
 
-	// Marshal to JSON
 	data, err := json.Marshal(logEvent)
 	if err != nil {
-		// Log the error but don't fail the operation
+		// The event is lost either way, so the encoding failure is both
+		// reported on the sink and returned: a caller that treats a Log error
+		// as significant gets to see it, and an operator watching the log
+		// stream sees the gap explained rather than a record that never
+		// appeared. The event itself is not printed - it holds the actor's
+		// email and source address, and a marshaling failure is no reason to
+		// emit PII the RedactionConfig has not been applied to.
 		s.logger.Printf("ERROR: failed to marshal audit event: %v", err)
-		return err
+		return fmt.Errorf("marshal audit event: %w", err)
 	}
 
 	// Write to log

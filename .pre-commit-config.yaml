@@ -1,3 +1,22 @@
+# pre-commit.ci runs hooks in a sandbox that provides neither a Go toolchain nor
+# bun, so every hook needing one errors there rather than failing honestly --
+# which is why the check has been red on main. Skipping them keeps the hosted
+# run meaningful (it still enforces the whitespace, YAML/JSON, secret-detection
+# and actionlint hooks) while the toolchain-dependent checks are gated in GitHub
+# Actions, where a toolchain exists: `go vet`, `gofmt`, `golangci-lint` and
+# `go mod tidy` in the `checks` job, and prettier alongside them. Locally the
+# full set still runs on every commit.
+ci:
+  skip:
+    - go-fmt
+    - go-imports
+    - go-mod-tidy
+    - go-vet
+    - golangci-lint
+    - no-go-testing
+    - prettier
+    - validate-toml
+
 repos:
   - repo: https://github.com/oxc-project/mirrors-oxlint
     rev: v1.79.0
@@ -66,14 +85,27 @@ repos:
     rev: v0.5.1
     hooks:
       - id: go-fmt
+      # go-vet stays disabled here: run-go-vet.sh starts with `pkg=$(go list)`,
+      # and this module root holds no .go files, so the hook aborts before it
+      # ever vets anything. The local `go-vet` hook below runs the same check
+      # the CI `checks` job runs.
       # - id: go-vet
+      # go-lint (golint) is dead upstream; revive covers it inside golangci-lint.
       # - id: go-lint
       - id: go-imports
       # - id: go-cyclo
       #   args: [-over=15]
       - id: validate-toml
       - id: no-go-testing
+      # F-23: an explicit --config so the hook grades against the checked-in
+      # rule set (gosec, strict errcheck, depguard) no matter which directory
+      # pre-commit is invoked from, instead of silently falling back to
+      # golangci-lint's defaults the way this repo did before .golangci.yml.
       - id: golangci-lint
+        args:
+          - --config=.golangci.yml
+      # go-critic and go-unit-tests are covered by golangci-lint's gocritic and
+      # by the CI test job; running them again per-commit only costs time.
       # - id: go-critic
       # - id: go-unit-tests
       # - id: go-build
@@ -90,6 +122,13 @@ repos:
           - --indent=4
   - repo: local
     hooks:
+      - id: go-vet
+        name: go vet
+        entry: go vet ./...
+        language: system
+        types: [go]
+        pass_filenames: false
+        description: "Runs `go vet ./...`, the same check the CI `checks` job gates on"
       - id: prettier
         name: prettier
         entry: bunx prettier -u --write

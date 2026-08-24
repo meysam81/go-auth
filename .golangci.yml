@@ -1,0 +1,259 @@
+# golangci-lint configuration for go-auth.
+#
+# F-23 (docs/security-hardening.md §5): before this file existed the linter ran
+# on defaults, so nothing checked for weak randomness, blank-identifier error
+# suppression, leaked response bodies or context-less requests -- the exact
+# classes that produced findings F-11, F-12 and F-20. The rules below are the
+# enforcement half of that finding; the test programme in §6 is the other half.
+version: "2"
+
+run:
+  timeout: 5m
+  # Tests exercise the adversarial suites in §6 and are held to the same bar as
+  # the library, except where a rule is meaningless there (see exclusions).
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - contextcheck
+    - copyloopvar
+    - depguard
+    - errorlint
+    - exhaustive
+    - forbidigo
+    - gocritic
+    - gosec
+    - misspell
+    - nilnil
+    # F-20 was an outbound request built without a context and without a
+    # timeout. noctx is the rule that would have caught it: it flags every
+    # http.Get/http.NewRequest/client.Do that carries no context, in the
+    # library and in the tests alike.
+    - noctx
+    - paralleltest
+    - prealloc
+    - revive
+    - unconvert
+    - wastedassign
+    # docs/security-hardening.md §5 also names testifylint. It is deliberately
+    # absent: nothing in this module imports stretchr/testify -- the go.sum
+    # entry is a transitive test dependency of another module, not an import of
+    # ours -- so the linter would have nothing to inspect. Enabling a rule that
+    # cannot fire is the defect the closing comment of this file describes, so
+    # the claim in the docs is what needs correcting, not the config.
+
+  settings:
+    errcheck:
+      # F-11/F-12: `_ = a.userStore.DeleteUser(...)` and a discarded
+      # DeletePasswordResetToken were both findings. A blank assignment is an
+      # unhandled error wearing a disguise, so it is an error here.
+      check-blank: true
+      check-type-assertions: true
+
+    govet:
+      enable-all: true
+      disable:
+        # fieldalignment optimises struct padding; it fights the readability of
+        # config structs whose field order is part of the documented API.
+        - fieldalignment
+
+    gosec:
+      severity: low
+      confidence: low
+      excludes:
+        # G115 (integer overflow conversion) is handled by govet's own
+        # conversion checks and fires on every int->int64 in the codebase.
+        - G115
+
+    depguard:
+      rules:
+        main:
+          # A minimal dependency set is a stated design value of this library
+          # (docs/security-hardening.md §5): every module here is either a
+          # cryptographic primitive we must not reimplement or a protocol
+          # implementation. Anything else expands the attack surface of every
+          # consumer, so the set is enforced by rule rather than by discipline.
+          list-mode: strict
+          allow:
+            - $gostd
+            - github.com/meysam81/go-auth
+            - golang.org/x/crypto
+            - golang.org/x/oauth2
+            - github.com/golang-jwt/jwt/v5
+            - github.com/coreos/go-oidc/v3
+            - github.com/go-webauthn/webauthn
+            - github.com/pquerna/otp
+
+    forbidigo:
+      # Needed so `pkg` below matches the resolved import path rather than the
+      # local identifier, which an alias could otherwise dodge.
+      analyze-types: true
+      forbid:
+        # CWE-338. Every value this library generates -- session IDs, OIDC
+        # state, PKCE verifiers, nonces, reset tokens, TOTP secrets and backup
+        # codes -- is a security token. math/rand is seeded predictably and its
+        # v2 stream is still not unpredictable to an attacker who observes
+        # output. crypto/rand only.
+        - pattern: ^rand\..*$
+          pkg: ^math/rand$
+          msg: "F-23/CWE-338: math/rand is not cryptographically secure. Use crypto/rand."
+        - pattern: ^rand\..*$
+          pkg: ^math/rand/v2$
+          msg: "F-23/CWE-338: math/rand/v2 is not cryptographically secure. Use crypto/rand."
+
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+
+    exhaustive:
+      # A switch that ends in `default` has stated what it does with the values
+      # it did not name; one that does not is a silent fall-through.
+      default-signifies-exhaustive: true
+
+    nilnil:
+      detect-opposite: true
+
+    revive:
+      # Google Go Style Guide: naming, error strings, and a doc comment on every
+      # exported symbol that starts with the symbol name.
+      severity: error
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: empty-block
+        - name: error-naming
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: exported
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-naming
+        - name: unexported-return
+        - name: unreachable-code
+        - name: var-declaration
+        - name: var-naming
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+      disabled-checks:
+        # Conflicts with the doc-comment style the Google guide prescribes.
+        - commentFormatting
+        # Named results are how the deferred-rollback shape in F-11 is written.
+        - unnamedResult
+        - hugeParam
+
+    misspell:
+      locale: US
+
+    staticcheck:
+      checks:
+        - all
+
+  exclusions:
+    generated: lax
+    rules:
+      # A test may legitimately need a deterministic, reproducible pseudo-random
+      # stream (fuzz corpora, table shuffling). No token minted in a test is a
+      # real credential, so the crypto/rand mandate does not apply there.
+      - path: _test\.go$
+        linters:
+          - forbidigo
+      - path: _test\.go$
+        text: "G404"
+        linters:
+          - gosec
+      # noctx also flags httptest.NewRequest, which predates
+      # httptest.NewRequestWithContext and cannot carry one. The request it
+      # builds is handed straight to a handler in the same process and never
+      # crosses a network, so there is no call for a context to cancel and no
+      # F-20 to catch. Only that constructor is exempt: an outbound request
+      # built without a context is still reported inside a test.
+      - path: _test\.go$
+        text: "httptest\\.NewRequest must not be called"
+        linters:
+          - noctx
+
+      # paralleltest, exclusion 1 of 3: tests that must NOT run in parallel,
+      # named one at a time so every other test in the same file stays under the
+      # rule. Each makes an observation that a test running beside it would
+      # destroy, and Go releases a package's parallel tests only after its
+      # sequential ones have returned -- running sequentially IS the isolation.
+      #   auth/basic: the F-09 pair times bcrypt on the account-not-found path,
+      #     and counts entropy draws against a swapped process-global
+      #     crypto/rand.Reader.
+      #   auth/jwt: a TotalAlloc delta bounding the CVE-2025-30204 decode.
+      #   provider: a swapped package-level default HTTP client.
+      - path: auth/basic/adversarial_test\.go$
+        text: "Test(Authenticate_AccountExistenceIsNotMeasurable|GeneratePasswordResetToken_UnknownAccountPaysForTheSameCeremony)"
+        linters:
+          - paralleltest
+      - path: auth/jwt/adversarial_test\.go$
+        text: "TestJWT_DeeplyPaddedTokenRejectedWithoutUnboundedAllocation"
+        linters:
+          - paralleltest
+      - path: provider/adversarial_test\.go$
+        text: "TestVendorConstructors_OIDCIssuerAndScopesPinned"
+        linters:
+          - paralleltest
+
+      # paralleltest, exclusion 2 of 3: a LEDGER of suites that have not adopted
+      # t.Parallel -- not a claim that they cannot. It replaces a blanket
+      # `path: _test\.go$` exclusion, which matched every file the linter can
+      # fire on and so made it a rule that could never report anything: the
+      # shape this file's closing comment warns about.
+      #
+      # Naming the files keeps the rule live everywhere else. It is enforced
+      # today on storage/conformance_test.go, auth/oidc/adversarial_test.go,
+      # auth/oidc/oidc_hardening_test.go, auth/webauthn/adversarial_test.go,
+      # auth/basic/adversarial_test.go, auth/jwt/adversarial_test.go,
+      # middleware/adversarial_test.go, session/adversarial_test.go,
+      # provider/{adversarial,hardening}_test.go, and on every test file added
+      # from here on.
+      #
+      # The list shrinks, it does not grow. To retire an entry, add t.Parallel
+      # to that file's tests and delete its alternative below; to see what is
+      # left in one, run:
+      #   golangci-lint run --enable-only=paralleltest ./<pkg>/...
+      - path: (audit/(audit|noop|stdlib|wrapper)|auth/basic/basic|auth/jwt/jwt|auth/totp/(totp|adversarial)|middleware/middleware|session/session|storage/memory)_test\.go$
+        linters:
+          - paralleltest
+
+      # paralleltest, exclusion 3 of 3: the same debt inside a file that is
+      # otherwise converted, so it is recorded test by test rather than by
+      # dropping the whole file out of the rule -- a test added to
+      # auth/basic/adversarial_test.go tomorrow is still checked. These three are
+      # t.Run bodies nobody has got to yet, NOT tests that need to be sequential;
+      # the ones that do are exclusion 1.
+      - path: auth/basic/adversarial_test\.go$
+        text: "Test(GeneratePasswordResetToken_UnknownAccountIsIndistinguishable|PasswordResetToken_MalformedTokensAreRejected|Authenticate_ConfirmedSecondFactorBlocksPasswordOnlySignIn)"
+        linters:
+          - paralleltest
+
+issues:
+  # golangci-lint reports at most one issue per line by default, so when gosec's
+  # G404 and forbidigo's math/rand ban both land on the same call, one of them is
+  # silently dropped -- and which one survives is an ordering accident. A rule
+  # that cannot be observed firing is not a control, which is the shape of F-23
+  # itself, so every finding is surfaced.
+  uniq-by-line: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
