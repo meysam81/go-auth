@@ -81,6 +81,13 @@ type fakeUserStore struct {
 	mu      sync.Mutex
 	byEmail map[string]*storage.User
 	created []*storage.User
+
+	// updated records a COPY of every user handed to UpdateUser. The store
+	// shares pointers with its caller, so reading the account back would show a
+	// backfill the library only made in memory; the copy is what proves the
+	// write reached the store.
+	updated   []storage.User
+	updateErr error
 }
 
 func newFakeUserStore(existing ...*storage.User) *fakeUserStore {
@@ -137,8 +144,24 @@ func (s *fakeUserStore) GetUserByUsername(_ context.Context, username string) (*
 func (s *fakeUserStore) UpdateUser(_ context.Context, user *storage.User) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.updateErr != nil {
+		return s.updateErr
+	}
+	snapshot := *user
+	snapshot.Metadata = make(map[string]interface{}, len(user.Metadata))
+	for k, v := range user.Metadata {
+		snapshot.Metadata[k] = v
+	}
+	s.updated = append(s.updated, snapshot)
 	s.byEmail[user.Email] = user
 	return nil
+}
+
+// updates returns the copies of every user written through UpdateUser.
+func (s *fakeUserStore) updates() []storage.User {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]storage.User(nil), s.updated...)
 }
 
 func (s *fakeUserStore) DeleteUser(_ context.Context, id string) error {
@@ -233,6 +256,13 @@ type harnessOptions struct {
 	allowlist  []string
 	httpClient *http.Client
 	info       *UserInfo
+
+	// createPolicy overrides the harness default, and noCreatePolicy removes it.
+	// The default is AllowAccountCreation so that a test about some other
+	// control still reaches the code it is about; the default itself — that a
+	// nil policy refuses — is pinned by its own tests below.
+	createPolicy   CreatePolicy
+	noCreatePolicy bool
 }
 
 func newHarness(t *testing.T, opts harnessOptions) *harness {
@@ -284,12 +314,18 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 		users = newFakeUserStore()
 	}
 
+	createPolicy := opts.createPolicy
+	if createPolicy == nil && !opts.noCreatePolicy {
+		createPolicy = AllowAccountCreation
+	}
+
 	states := newFakeStateStore()
 	cfg := Config{
 		Providers:      []Provider{provider},
 		StateStore:     states,
 		RedirectURL:    "https://app.example/home",
 		LinkPolicy:     opts.linkPolicy,
+		CreatePolicy:   createPolicy,
 		ClaimAllowlist: opts.allowlist,
 		HTTPClient:     opts.httpClient,
 	}
@@ -520,8 +556,14 @@ func TestUnboundFlowStillWorksThroughTheOldEntryPoint(t *testing.T) {
 	if stored == nil {
 		t.Fatal("state not stored")
 	}
-	if _, ok := stored.Metadata[StateMetadataKeyBinding]; ok {
-		t.Error("the unbound entry point issued a binding it cannot return to the caller")
+	// The unbound entry point records the marker, never a digest: it has no way
+	// to hand a binding value to the caller, and an absent field would be
+	// indistinguishable from a store that dropped one (F-16).
+	if got := stored.Metadata[StateMetadataKeyBinding]; got != StateBindingUnbound {
+		t.Errorf("recorded binding = %v, want %q", got, StateBindingUnbound)
+	}
+	if stored.BindingHash != StateBindingUnbound {
+		t.Errorf("BindingHash = %q, want %q", stored.BindingHash, StateBindingUnbound)
 	}
 	h.provider.info.RawClaims["nonce"] = stored.Nonce
 
@@ -639,8 +681,53 @@ func TestFindOrCreateRefusesSubjectMismatch(t *testing.T) {
 	}
 }
 
-func TestFindOrCreateRefusesAccountWithNoRecordedSubject(t *testing.T) {
+func TestAdoptionReadsTheRecordedSubjectFromEitherLocation(t *testing.T) {
 	t.Parallel()
+	// A user store keeps a ProviderSubject column, or a metadata blob, or both.
+	// Whichever it kept, the account it holds is the same identity and must be
+	// adopted outright — not re-pinned, which would mean the other copy was
+	// being ignored.
+	shapes := map[string]*storage.User{
+		"typed column only": {
+			ID: "u", Email: "user@example.com", Provider: "acme", ProviderSubject: "sub-1",
+		},
+		"metadata only": {
+			ID: "u", Email: "user@example.com", Provider: "acme",
+			Metadata: map[string]interface{}{UserMetadataKeyProviderSubject: "sub-1"},
+		},
+		"both": {
+			ID: "u", Email: "user@example.com", Provider: "acme", ProviderSubject: "sub-1",
+			Metadata: map[string]interface{}{UserMetadataKeyProviderSubject: "sub-1"},
+		},
+	}
+
+	for name, existing := range shapes {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			users := newFakeUserStore(existing)
+			h := newHarness(t, harnessOptions{users: users})
+
+			_, state, binding, _ := h.start(t)
+
+			result, err := h.client.HandleCallbackWithBinding(context.Background(), state, "code", binding)
+			if err != nil {
+				t.Fatalf("the recorded subject was not found: %v", err)
+			}
+			if result.User == nil || result.User.ID != "u" {
+				t.Fatalf("user = %+v, want the existing account", result.User)
+			}
+			if written := users.updates(); len(written) != 0 {
+				t.Errorf("an already-recorded account was written %d time(s)", len(written))
+			}
+		})
+	}
+}
+
+func TestFindOrCreateBackfillsAnAccountWithNoRecordedSubject(t *testing.T) {
+	t.Parallel()
+	// The shape every account created before F-01 was fixed has: a provider
+	// name and no subject anywhere. Refusing it locks its owner out for good,
+	// with nothing they can do about it, so it is adopted once and pinned.
 	users := newFakeUserStore(&storage.User{
 		ID:       "legacy",
 		Email:    "user@example.com",
@@ -650,9 +737,124 @@ func TestFindOrCreateRefusesAccountWithNoRecordedSubject(t *testing.T) {
 
 	_, state, binding, _ := h.start(t)
 
+	result, err := h.client.HandleCallbackWithBinding(context.Background(), state, "code", binding)
+	if err != nil {
+		t.Fatalf("an account created before subjects were recorded must not be locked out: %v", err)
+	}
+	if result.User == nil || result.User.ID != "legacy" {
+		t.Fatalf("user = %+v, want the existing account", result.User)
+	}
+	if result.IsNewUser {
+		t.Error("IsNewUser = true for an adopted account")
+	}
+
+	// The backfill must have reached the store, in BOTH locations: a store that
+	// keeps only one of them must still come away with a usable subject.
+	written := users.updates()
+	if len(written) != 1 {
+		t.Fatalf("UpdateUser called %d time(s), want exactly 1 — the backfill never left memory", len(written))
+	}
+	if written[0].ProviderSubject != "sub-1" {
+		t.Errorf("persisted ProviderSubject = %q, want the asserted subject", written[0].ProviderSubject)
+	}
+	if got := written[0].Metadata[UserMetadataKeyProviderSubject]; got != "sub-1" {
+		t.Errorf("persisted metadata subject = %v, want the asserted subject", got)
+	}
+}
+
+func TestBackfilledAccountRefusesADifferentSubjectAfterwards(t *testing.T) {
+	t.Parallel()
+	// Trust on first use lasts exactly one sign-in. Once the subject is
+	// recorded, the account is pinned to it and the F-01 check applies again.
+	existing := &storage.User{ID: "legacy", Email: "user@example.com", Provider: "acme"}
+	users := newFakeUserStore(existing)
+	h := newHarness(t, harnessOptions{users: users})
+
+	_, state, binding, _ := h.start(t)
+	if _, err := h.client.HandleCallbackWithBinding(context.Background(), state, "code", binding); err != nil {
+		t.Fatalf("first sign-in: %v", err)
+	}
+
+	h.provider.info.Subject = "sub-someone-else"
+	_, state, binding, _ = h.start(t)
+
 	_, err := h.client.HandleCallbackWithBinding(context.Background(), state, "code", binding)
 	if !errors.Is(err, ErrAccountLinkRequired) {
-		t.Fatalf("error = %v, want ErrAccountLinkRequired for an account with no recorded subject (F-01)", err)
+		t.Fatalf("error = %v, want ErrAccountLinkRequired once the subject is pinned (F-01)", err)
+	}
+}
+
+func TestBackfillFailureFailsTheSignIn(t *testing.T) {
+	t.Parallel()
+	// If the subject cannot be recorded, adopting anyway would leave the
+	// account unpinned and quietly downgrade every later sign-in to the
+	// provider-name check this exists to escape.
+	users := newFakeUserStore(&storage.User{ID: "legacy", Email: "user@example.com", Provider: "acme"})
+	users.updateErr = errors.New("user store is read-only")
+	h := newHarness(t, harnessOptions{users: users})
+
+	_, state, binding, _ := h.start(t)
+
+	_, err := h.client.HandleCallbackWithBinding(context.Background(), state, "code", binding)
+	if !errors.Is(err, users.updateErr) {
+		t.Fatalf("error = %v, want the store's own failure", err)
+	}
+}
+
+func TestBackfillIsGatedByTheLinkPolicyWhenOneIsConfigured(t *testing.T) {
+	t.Parallel()
+	users := newFakeUserStore(&storage.User{ID: "legacy", Email: "user@example.com", Provider: "acme"})
+	var seen *storage.User
+	h := newHarness(t, harnessOptions{
+		users: users,
+		linkPolicy: func(_ context.Context, u *storage.User, _ *UserInfo) (bool, error) {
+			seen = u
+			return false, nil
+		},
+	})
+
+	_, state, binding, _ := h.start(t)
+
+	_, err := h.client.HandleCallbackWithBinding(context.Background(), state, "code", binding)
+	if !errors.Is(err, ErrAccountLinkRequired) {
+		t.Fatalf("error = %v, want the policy's refusal to stand", err)
+	}
+	if seen == nil || seen.ID != "legacy" {
+		t.Error("LinkPolicy was not consulted before pinning an unrecorded account")
+	}
+	if written := users.updates(); len(written) != 0 {
+		t.Errorf("a refused adoption wrote %d update(s) to the store", len(written))
+	}
+}
+
+func TestFindOrCreateRefusesAnUnusableRecordedSubject(t *testing.T) {
+	t.Parallel()
+	// Present but unreadable is not the same as never recorded: reading it as
+	// absent would backfill the account to whichever assertion arrived next.
+	for name, value := range map[string]interface{}{
+		"wrong type after a JSON round trip": float64(1),
+		"empty string":                       "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			users := newFakeUserStore(&storage.User{
+				ID:       "damaged",
+				Email:    "user@example.com",
+				Provider: "acme",
+				Metadata: map[string]interface{}{UserMetadataKeyProviderSubject: value},
+			})
+			h := newHarness(t, harnessOptions{users: users})
+
+			_, state, binding, _ := h.start(t)
+
+			_, err := h.client.HandleCallbackWithBinding(context.Background(), state, "code", binding)
+			if !errors.Is(err, ErrAccountLinkRequired) {
+				t.Fatalf("error = %v, want ErrAccountLinkRequired (F-01)", err)
+			}
+			if written := users.updates(); len(written) != 0 {
+				t.Errorf("a damaged record was backfilled: %+v", written)
+			}
+		})
 	}
 }
 

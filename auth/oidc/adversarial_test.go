@@ -344,6 +344,17 @@ type advOptions struct {
 	linkPolicy LinkPolicy
 	allowlist  []string
 
+	// createPolicy overrides the harness default of AllowAccountCreation, and
+	// noCreatePolicy removes it so the shipped default — a nil policy refuses to
+	// provision — is what the test exercises.
+	createPolicy   CreatePolicy
+	noCreatePolicy bool
+
+	// stateStore replaces the record-keeping half of the state store, so a test
+	// can run the whole flow against a backend that persists only some of the
+	// fields the library writes.
+	stateStore storage.OIDCStateStore
+
 	// withForeignProvider registers a second connection so a mix-up between two
 	// tenants' providers can be attempted.
 	withForeignProvider bool
@@ -373,6 +384,9 @@ func newAdvFlow(t *testing.T, opts advOptions) *advFlow {
 		provider: provider,
 		tokens:   tokens,
 	}
+	if opts.stateStore != nil {
+		f.states.inner = opts.stateStore
+	}
 
 	providers := []Provider{provider}
 	if opts.withForeignProvider {
@@ -384,11 +398,17 @@ func newAdvFlow(t *testing.T, opts advOptions) *advFlow {
 		providers = append(providers, &advProvider{name: "misconfigured"})
 	}
 
+	createPolicy := opts.createPolicy
+	if createPolicy == nil && !opts.noCreatePolicy {
+		createPolicy = AllowAccountCreation
+	}
+
 	cfg := Config{
 		Providers:      providers,
 		StateStore:     f.states,
 		RedirectURL:    "https://app.example/home",
 		LinkPolicy:     opts.linkPolicy,
+		CreatePolicy:   createPolicy,
 		ClaimAllowlist: opts.allowlist,
 	}
 	if !opts.claimsOnly {
@@ -715,9 +735,14 @@ func TestOIDC_ForeignSubjectNeverSilentlyAdoptsAnAccount(t *testing.T) {
 			wantErr: ErrAccountLinkRequired,
 		},
 		{
+			// The only shape that adopts without a recorded subject, and it
+			// adopts once: the account was provisioned by this same registered
+			// connection before subjects were recorded at all, so refusing it
+			// locks its owner out for good. See
+			// TestOIDC_AccountPredatingSubjectRecordingIsPinnedOnFirstSignIn.
 			name:     "provider matches but no subject was ever recorded",
 			existing: &storage.User{ID: "u5", Email: advVictimEmail, Provider: advProviderName},
-			wantErr:  ErrAccountLinkRequired,
+			wantErr:  nil,
 		},
 		{
 			name: "recorded subject is the empty string",
@@ -2115,4 +2140,473 @@ func TestOIDC_ProviderFailureIsNotReportedAsAnIdentity(t *testing.T) {
 		advWantErr(t, err, sentinel)
 		advWantNoResult(t, result)
 	})
+}
+
+// --- the state store is not a black box -------------------------------------
+//
+// The findings above are all enforced against a store that keeps every field it
+// is given. A store is application code, and the one thing a library cannot
+// make it do is persist a column its author did not know to add. The tests in
+// this section run the whole flow against backends that keep only part of the
+// record, because a control that disappears with the field it lived in is a
+// control that was never there.
+
+// advShapedStateStore is a state store with a column list. strip removes, on
+// the way in, exactly the fields this backend has nowhere to put; everything
+// else round-trips through the real in-memory store.
+type advShapedStateStore struct {
+	inner storage.OIDCStateStore
+	strip func(*storage.OIDCState)
+}
+
+var _ storage.OIDCStateStore = (*advShapedStateStore)(nil)
+
+func newAdvShapedStateStore(strip func(*storage.OIDCState)) *advShapedStateStore {
+	return &advShapedStateStore{inner: storage.NewInMemoryOIDCStateStore(), strip: strip}
+}
+
+func (s *advShapedStateStore) StoreState(ctx context.Context, state string, data *storage.OIDCState, ttl time.Duration) error {
+	kept := advCloneState(data)
+	s.strip(kept)
+	return s.inner.StoreState(ctx, state, kept, ttl)
+}
+
+func (s *advShapedStateStore) GetState(ctx context.Context, state string) (*storage.OIDCState, error) {
+	return s.inner.GetState(ctx, state)
+}
+
+func (s *advShapedStateStore) DeleteState(ctx context.Context, state string) error {
+	return s.inner.DeleteState(ctx, state)
+}
+
+// advDropStateMetadata models the store a v1.2 implementor writes from the
+// documentation alone: one column per documented field of storage.OIDCState and
+// nowhere to put an opaque map. This is the store that passed the shipped
+// conformance suite while the binding check never fired and the token exchange
+// went out with no PKCE at all.
+func advDropStateMetadata(rec *storage.OIDCState) { rec.Metadata = nil }
+
+// advDropTypedStateFields models the store a v1.1.1 implementor wrote: it
+// predates CodeVerifier and BindingHash, so those columns do not exist, and it
+// persists the metadata map because that is where the library kept its controls
+// at the time.
+func advDropTypedStateFields(rec *storage.OIDCState) {
+	rec.CodeVerifier = ""
+	rec.BindingHash = ""
+	rec.Nonce = ""
+}
+
+// advDropControl removes one control from BOTH places it is written, which is
+// what a store that recognizes neither location does.
+func advDropControl(typed func(*storage.OIDCState), key string) func(*storage.OIDCState) {
+	return func(rec *storage.OIDCState) {
+		typed(rec)
+		delete(rec.Metadata, key)
+	}
+}
+
+// TestOIDC_PartialStoreStillEnforcesEveryControl: each control is written to a
+// typed field and to a mirrored metadata key, so a store that keeps either one
+// keeps the control. Reverting one of the two writes makes the matching half of
+// this test authenticate a callback that proves nothing.
+func TestOIDC_PartialStoreStillEnforcesEveryControl(t *testing.T) {
+	t.Parallel()
+
+	shapes := []struct {
+		name  string
+		strip func(*storage.OIDCState)
+	}{
+		{name: "typed columns only, no metadata", strip: advDropStateMetadata},
+		{name: "metadata only, no typed columns", strip: advDropTypedStateFields},
+	}
+
+	for _, shape := range shapes {
+		t.Run(shape.name, func(t *testing.T) {
+			t.Parallel()
+
+			newFlow := func(t *testing.T) *advFlow {
+				t.Helper()
+				return newAdvFlow(t, advOptions{
+					claimsOnly: true,
+					stateStore: newAdvShapedStateStore(shape.strip),
+				})
+			}
+
+			t.Run("the browser binding is still required", func(t *testing.T) {
+				t.Parallel()
+
+				f := newFlow(t)
+				req := f.begin(t, AuthURLOptions{})
+
+				result, err := f.client.HandleCallback(context.Background(), req.State, advCode)
+				advWantErr(t, err, ErrMissingBinding)
+				advWantNoResult(t, result)
+				advWantNoExchange(t, f.tokens)
+			})
+
+			t.Run("a forged browser binding is still refused", func(t *testing.T) {
+				t.Parallel()
+
+				f := newFlow(t)
+				req := f.begin(t, AuthURLOptions{})
+
+				result, err := f.callback(req.State, advFlipLast(req.Binding))
+				advWantErr(t, err, ErrBindingMismatch)
+				advWantNoResult(t, result)
+				advWantNoExchange(t, f.tokens)
+			})
+
+			t.Run("a replayed nonce is still refused", func(t *testing.T) {
+				t.Parallel()
+
+				f := newFlow(t)
+				req := f.begin(t, AuthURLOptions{})
+				f.idpAsserts(advHonestUserInfo(), map[string]interface{}{
+					"nonce": "nonce-minted-for-a-different-authentication",
+				})
+
+				result, err := f.callback(req.State, req.Binding)
+				advWantErr(t, err, ErrNonceMismatch)
+				advWantNoResult(t, result)
+			})
+
+			t.Run("the exchange still proves possession of the PKCE verifier", func(t *testing.T) {
+				t.Parallel()
+
+				f := newFlow(t)
+				req := f.begin(t, AuthURLOptions{})
+				verifier := f.verifierOf(t, req.State)
+
+				if _, err := f.callback(req.State, req.Binding); err != nil {
+					t.Fatalf("an honest callback must complete: %v", err)
+				}
+				form := f.tokens.lastForm(t)
+				if got := form.Get("code_verifier"); got != verifier {
+					t.Fatalf("token request code_verifier = %q, want the verifier for this flow (F-17)", got)
+				}
+			})
+		})
+	}
+}
+
+// TestOIDC_StoreThatDropsAControlFailsClosed: when NEITHER location survives,
+// there is nothing left to fall back on. The callback must refuse rather than
+// carry on with the control silently absent — the difference between a store
+// bug that stops sign-in and a store bug that removes PKCE from every exchange.
+func TestOIDC_StoreThatDropsAControlFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		strip func(*storage.OIDCState)
+	}{
+		{
+			name: "PKCE verifier",
+			strip: advDropControl(func(rec *storage.OIDCState) { rec.CodeVerifier = "" },
+				StateMetadataKeyPKCEVerifier),
+		},
+		{
+			name: "browser-binding marker",
+			strip: advDropControl(func(rec *storage.OIDCState) { rec.BindingHash = "" },
+				StateMetadataKeyBinding),
+		},
+		{
+			name: "nonce of an OIDC flow",
+			strip: advDropControl(func(rec *storage.OIDCState) { rec.Nonce = "" },
+				StateMetadataKeyNonce),
+		},
+		{
+			name: "every control at once",
+			strip: func(rec *storage.OIDCState) {
+				advDropTypedStateFields(rec)
+				advDropStateMetadata(rec)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newAdvFlow(t, advOptions{
+				claimsOnly: true,
+				stateStore: newAdvShapedStateStore(tc.strip),
+			})
+			req := f.begin(t, AuthURLOptions{})
+
+			result, err := f.callback(req.State, req.Binding)
+			advWantErr(t, err, ErrStateControlMissing)
+			advWantNoResult(t, result)
+			advWantNoExchange(t, f.tokens)
+		})
+	}
+}
+
+// TestOIDC_StateRecordFromAnEarlierReleaseIsRefusedNotDowngraded: a record
+// written before any of these controls existed carries none of them, and is
+// indistinguishable from a record a store stripped. Completing it would mean an
+// attacker who can plant a bare record gets a flow with no PKCE, no binding and
+// no nonce; refusing it costs at most one sign-in per caller mid-flow across a
+// deploy, inside the ten-minute state TTL.
+func TestOIDC_StateRecordFromAnEarlierReleaseIsRefusedNotDowngraded(t *testing.T) {
+	t.Parallel()
+
+	f := newAdvFlow(t, advOptions{claimsOnly: true})
+	planted := "state-written-by-an-earlier-release-" + advRandomValue(t, 8)
+	f.states.inject(t, planted, &storage.OIDCState{
+		Provider:    advProviderName,
+		RedirectURL: "https://app.example/home",
+	}, DefaultStateTTL)
+
+	result, err := f.client.HandleCallback(context.Background(), planted, advCode)
+	advWantErr(t, err, ErrStateControlMissing)
+	advWantNoResult(t, result)
+	advWantNoExchange(t, f.tokens)
+}
+
+// TestOIDC_TypedControlAndItsMirrorMustAgree: the two copies are written from
+// one variable in one call, so a disagreement cannot be something this package
+// produced. Preferring either half would let a writer who can reach one
+// location choose the verifier or the binding digest the callback uses.
+func TestOIDC_TypedControlAndItsMirrorMustAgree(t *testing.T) {
+	t.Parallel()
+
+	keys := []string{StateMetadataKeyPKCEVerifier, StateMetadataKeyBinding, StateMetadataKeyNonce}
+	for _, key := range keys {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+
+			f := newAdvFlow(t, advOptions{claimsOnly: true})
+			req := f.begin(t, AuthURLOptions{})
+			rewritten := key
+			f.states.onRead(func(rec *storage.OIDCState) {
+				rec.Metadata[rewritten] = "value-written-by-something-else"
+			})
+
+			result, err := f.callback(req.State, req.Binding)
+			advWantErr(t, err, ErrCorruptState)
+			advWantNoResult(t, result)
+			advWantNoExchange(t, f.tokens)
+		})
+	}
+}
+
+// --- F-01: provisioning is a decision the application owns -------------------
+
+// TestOIDC_AccountCreationRequiresAnExplicitPolicy: every control in this
+// package can pass and still leave one question open — whether the connection
+// that authenticated is entitled to the address it asserted. A tenant-configured
+// IdP asserting cfo@victim-corp.example with email_verified true satisfies every
+// other check; provisioning on that alone squats the address, and the real owner
+// meets ErrAccountLinkRequired forever after.
+func TestOIDC_AccountCreationRequiresAnExplicitPolicy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		opts     advOptions
+		wantErr  error
+		wantUser bool
+	}{
+		{
+			name:    "no policy configured refuses",
+			opts:    advOptions{noCreatePolicy: true},
+			wantErr: ErrAccountCreationRefused,
+		},
+		{
+			name: "policy returning false refuses",
+			opts: advOptions{createPolicy: func(context.Context, *UserInfo) (bool, error) {
+				return false, nil
+			}},
+			wantErr: ErrAccountCreationRefused,
+		},
+		{
+			name: "policy returning an error aborts",
+			opts: advOptions{createPolicy: func(context.Context, *UserInfo) (bool, error) {
+				return false, errAdvLinkPolicyExploded
+			}},
+			wantErr: errAdvLinkPolicyExploded,
+		},
+		{
+			name: "policy erroring while also returning true still aborts",
+			opts: advOptions{createPolicy: func(context.Context, *UserInfo) (bool, error) {
+				return true, errAdvLinkPolicyExploded
+			}},
+			wantErr: errAdvLinkPolicyExploded,
+		},
+		{
+			name:     "AllowAccountCreation restores the old behavior in one line",
+			opts:     advOptions{createPolicy: AllowAccountCreation},
+			wantUser: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newAdvFlow(t, tc.opts)
+			req := f.begin(t, AuthURLOptions{})
+
+			result, err := f.callback(req.State, req.Binding)
+			if !tc.wantUser {
+				advWantErr(t, err, tc.wantErr)
+				advWantNoResult(t, result)
+				if got := f.users.created(); got != 0 {
+					t.Fatalf("a refused provisioning created %d account(s), want 0", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("an authorized provisioning must succeed: %v", err)
+			}
+			if result.User == nil || !result.IsNewUser {
+				t.Fatalf("result = %#v, want a newly created account", result)
+			}
+			if got := f.users.created(); got != 1 {
+				t.Fatalf("created %d account(s), want 1", got)
+			}
+		})
+	}
+}
+
+// TestOIDC_CreatePolicySeesTheVerifiedAssertionAndOnlyWhenDeciding: a policy
+// handed an assertion stripped of its subject cannot tell one identity from
+// another, and a policy consulted when nothing needs deciding trains the
+// application to approve.
+func TestOIDC_CreatePolicySeesTheVerifiedAssertionAndOnlyWhenDeciding(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu    sync.Mutex
+		seen  []*UserInfo
+		calls atomic.Int64
+	)
+	policy := func(_ context.Context, info *UserInfo) (bool, error) {
+		calls.Add(1)
+		mu.Lock()
+		seen = append(seen, info)
+		mu.Unlock()
+		return true, nil
+	}
+
+	f := newAdvFlow(t, advOptions{createPolicy: policy})
+	req := f.begin(t, AuthURLOptions{})
+	if _, err := f.callback(req.State, req.Binding); err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("CreatePolicy called %d time(s), want exactly 1", got)
+	}
+	mu.Lock()
+	got := seen[0]
+	mu.Unlock()
+	switch {
+	case got == nil:
+		t.Fatal("CreatePolicy saw no assertion")
+	case got.Subject != advVictimSub:
+		t.Errorf("CreatePolicy saw subject %q, want %q", got.Subject, advVictimSub)
+	case got.Email != advVictimEmail:
+		t.Errorf("CreatePolicy saw email %q, want %q", got.Email, advVictimEmail)
+	case got.Provider != advProviderName:
+		t.Errorf("CreatePolicy saw provider %q, want the registered connection %q", got.Provider, advProviderName)
+	case !got.EmailVerified:
+		t.Error("CreatePolicy was consulted for an assertion that had not passed the email check")
+	}
+
+	// A second flow that resolves to the account just created decides nothing,
+	// so the policy must not be consulted again.
+	before := calls.Load()
+	req2 := f.begin(t, AuthURLOptions{})
+	if _, err := f.callback(req2.State, req2.Binding); err != nil {
+		t.Fatalf("returning sign-in: %v", err)
+	}
+	if after := calls.Load(); after != before {
+		t.Fatalf("CreatePolicy was consulted %d extra time(s) for an existing account", after-before)
+	}
+}
+
+// TestOIDC_CreatedAccountRecordsTheSubjectInBothPlaces: the subject is what
+// every later assertion is checked against. Written to only one of the two
+// locations, an account created here becomes unmatchable — and therefore
+// permanently locked out — on any store that keeps the other one.
+func TestOIDC_CreatedAccountRecordsTheSubjectInBothPlaces(t *testing.T) {
+	t.Parallel()
+
+	f := newAdvFlow(t, advOptions{})
+	req := f.begin(t, AuthURLOptions{})
+
+	result, err := f.callback(req.State, req.Binding)
+	if err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	if result.User.ProviderSubject != advVictimSub {
+		t.Errorf("User.ProviderSubject = %q, want the asserted subject %q",
+			result.User.ProviderSubject, advVictimSub)
+	}
+
+	stored, err := f.users.GetUserByEmail(context.Background(), advVictimEmail)
+	if err != nil {
+		t.Fatalf("read the account back: %v", err)
+	}
+	if stored.ProviderSubject != advVictimSub {
+		t.Errorf("persisted ProviderSubject = %q, want %q", stored.ProviderSubject, advVictimSub)
+	}
+	if got := stored.Metadata[UserMetadataKeyProviderSubject]; got != advVictimSub {
+		t.Errorf("persisted metadata subject = %v, want %q", got, advVictimSub)
+	}
+}
+
+// TestOIDC_AccountPredatingSubjectRecordingIsPinnedOnFirstSignIn: no account any
+// earlier release created carries a subject anywhere, so the F-01 check can
+// never match one and its owner is refused on every sign-in with no way to clear
+// it. The account was provisioned by this same registered connection, so it is
+// adopted once and pinned — and the pin is what makes it a one-time step rather
+// than a standing weakness.
+func TestOIDC_AccountPredatingSubjectRecordingIsPinnedOnFirstSignIn(t *testing.T) {
+	t.Parallel()
+
+	f := newAdvFlow(t, advOptions{})
+	f.users.seed(t, &storage.User{
+		ID: "legacy", Email: advVictimEmail, EmailVerified: true, Provider: advProviderName,
+	})
+
+	req := f.begin(t, AuthURLOptions{})
+	result, err := f.callback(req.State, req.Binding)
+	if err != nil {
+		t.Fatalf("an account created before subjects were recorded must not be locked out: %v", err)
+	}
+	if result.User == nil || result.User.ID != "legacy" {
+		t.Fatalf("adopted user = %#v, want the existing account", result.User)
+	}
+	if result.IsNewUser {
+		t.Error("IsNewUser = true for an adopted account")
+	}
+	if got := f.users.created(); got != 0 {
+		t.Errorf("adoption created %d account(s), want 0", got)
+	}
+
+	stored, err := f.users.GetUserByEmail(context.Background(), advVictimEmail)
+	if err != nil {
+		t.Fatalf("read the account back: %v", err)
+	}
+	if stored.ProviderSubject != advVictimSub {
+		t.Errorf("persisted ProviderSubject = %q, want the backfilled subject %q",
+			stored.ProviderSubject, advVictimSub)
+	}
+	if got := stored.Metadata[UserMetadataKeyProviderSubject]; got != advVictimSub {
+		t.Errorf("persisted metadata subject = %v, want %q", got, advVictimSub)
+	}
+
+	// Pinned: the same connection asserting a different subject for the same
+	// address is now the F-01 refusal again.
+	req2 := f.beginRaw(t, AuthURLOptions{})
+	other := advHonestUserInfo()
+	other.Subject = "provider-subject-someone-else"
+	f.idpAsserts(other, map[string]interface{}{"nonce": f.nonceOf(req2.State)})
+
+	result, err = f.callback(req2.State, req2.Binding)
+	advWantErr(t, err, ErrAccountLinkRequired)
+	advWantNoResult(t, result)
 }

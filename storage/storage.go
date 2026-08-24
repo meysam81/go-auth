@@ -13,6 +13,26 @@
 // re-encoding any of them breaks verification, and re-hashing an already-hashed
 // token breaks it silently.
 //
+// # Every field is load-bearing
+//
+// A store must round-trip a WHOLE record, not the fields it recognizes. Several
+// of the fields below are security controls: OIDCState.CodeVerifier,
+// OIDCState.BindingHash, OIDCState.Nonce and User.ProviderSubject each carry a
+// value the library will later refuse to proceed without, and Metadata carries
+// the library's own reserved keys alongside the application's. A backend that
+// maps a column per field it knows about, and drops the rest, does not fail
+// visibly: the record comes back looking valid with a control quietly missing
+// from it.
+//
+// The library defends what it can. It writes each OIDC flow control to both its
+// typed field and a mirrored key in Metadata, and refuses a state record that
+// comes back without either copy, so a partial store fails closed rather than
+// authenticating without PKCE or without a browser binding. That defense only
+// works if a store persists at least one of the two: a store that keeps neither
+// stops every sign-in. A store must therefore persist Metadata verbatim,
+// including keys it does not recognize, and must persist any field added by a
+// later release rather than reconstructing the struct from a known column list.
+//
 // # In-memory implementations
 //
 // The InMemory* types in this package implement every interface below and exist
@@ -67,6 +87,11 @@ var (
 // finding F-01.
 type UserStore interface {
 	// CreateUser creates a new user with the given identity.
+	//
+	// ProviderSubject and Metadata must be persisted and returned as given. For
+	// a federated account they are the two copies of the one value a later
+	// assertion is checked against, and an account stored without either can
+	// never be matched to the identity that created it.
 	CreateUser(ctx context.Context, user *User) error
 
 	// GetUserByID retrieves a user by their unique identifier.
@@ -83,6 +108,12 @@ type UserStore interface {
 	GetUserByUsername(ctx context.Context, username string) (*User, error)
 
 	// UpdateUser updates an existing user's information.
+	//
+	// It is also the path the OIDC client uses to record a provider subject on
+	// an account created before subjects were recorded at all, so an
+	// implementation that ignores changes to ProviderSubject or Metadata leaves
+	// those accounts permanently unpinned. A failure here fails the sign-in
+	// rather than being absorbed, so it must be reported and not swallowed.
 	UpdateUser(ctx context.Context, user *User) error
 
 	// DeleteUser removes a user by their ID.
@@ -259,6 +290,15 @@ type TokenStore interface {
 // Used to prevent CSRF attacks during OAuth2/OIDC flows.
 type OIDCStateStore interface {
 	// StoreState stores an OIDC state with associated data.
+	//
+	// Every field of data must come back from GetState, Metadata included and
+	// verbatim. The record is where three of the flow's four controls live
+	// between the authorization request and the callback, so a field this store
+	// declines to persist is a control the callback cannot enforce. The library
+	// writes each of them twice — the typed field and a mirrored "go-auth/" key
+	// in Metadata — and refuses a record that comes back with neither copy, so
+	// dropping one column is survivable and dropping both fails every sign-in
+	// rather than silently authenticating without the control.
 	StoreState(ctx context.Context, state string, data *OIDCState, ttl time.Duration) error
 
 	// GetState retrieves and deletes the state (one-time use).
@@ -288,6 +328,12 @@ type User struct {
 	// unverified one is attacker-chosen, so matching on email alone is the
 	// account-takeover path recorded as finding F-01 (the CVE-2023-28131
 	// "nOAuth" class, RFC 9700 section 4). Empty for locally-registered users.
+	//
+	// The OIDC client writes it here and mirrors it in Metadata under
+	// "provider_sub", and reads this field first. A store that persists neither
+	// leaves the account with nothing to check a later assertion against: the
+	// next sign-in is refused as needing an explicit link decision, every time,
+	// with no way for its owner to clear it.
 	ProviderSubject string `json:"provider_subject,omitempty"`
 
 	Metadata  map[string]interface{} `json:"metadata,omitempty"` // Extensible user metadata
@@ -326,15 +372,29 @@ type SessionData struct {
 // started a flow; it does not prove that the browser completing it is the
 // browser that started it, nor that the ID token handed back belongs to this
 // exchange.
+//
+// Nonce, CodeVerifier and BindingHash are each mirrored into Metadata under a
+// "go-auth/" key by the OIDC client, which reads the typed field first and the
+// mirror second. Persisting only the fields a given release happens to know
+// about is therefore survivable; persisting neither copy of one of them is not,
+// and the callback refuses such a record instead of running the flow without
+// the control.
 type OIDCState struct {
 	RedirectURL string `json:"redirect_url,omitempty"` // Post-auth redirect
-	Nonce       string `json:"nonce,omitempty"`        // OIDC nonce
-	Provider    string `json:"provider"`               // Provider name
+
+	// Nonce is the value the OIDC provider must echo in the ID token, which is
+	// what makes a token captured from one authentication useless in another
+	// (finding F-18, OIDC Core section 3.1.3.7). Empty for an OAuth2-only
+	// provider, which issues no ID token to carry one.
+	Nonce string `json:"nonce,omitempty"`
+
+	Provider string `json:"provider"` // Provider name
 
 	// CodeVerifier is the PKCE code_verifier whose S256 challenge was sent on the
 	// authorization request, held server-side until the token exchange. Without
 	// it an intercepted authorization code is redeemable by whoever holds it
-	// (finding F-17, RFC 9700 section 2.1.1).
+	// (finding F-17, RFC 9700 section 2.1.1). It is a secret for the lifetime of
+	// the flow and is never empty on a record this library wrote.
 	CodeVerifier string `json:"code_verifier,omitempty"`
 
 	// BindingHash is a SHA-256 digest of the single-use value written to the
@@ -343,6 +403,11 @@ type OIDCState struct {
 	// that began the flow and defeats the login-CSRF of finding F-16. The digest
 	// rather than the value is stored so a read of the state store does not yield
 	// something replayable.
+	//
+	// A flow deliberately started without a browser binding records the marker
+	// "unbound" here instead. "No binding was ever issued" and "the binding went
+	// missing" must not be the same empty string, or a store that drops this
+	// field turns every bound flow into an unbound one and nothing reports it.
 	BindingHash string `json:"binding_hash,omitempty"`
 
 	Metadata  map[string]interface{} `json:"metadata,omitempty"` // Additional state data

@@ -21,7 +21,28 @@
 //
 // A flow started with the older [Client.GetAuthorizationURL] carries state,
 // PKCE and a nonce but no browser binding, because that entry point has no way
-// to return the binding value to the caller. Applications should migrate.
+// to return the binding value to the caller. The binding is therefore OPT-IN:
+// an application still calling the unbound pair has the login-CSRF hole of
+// finding F-16 open, and both entry points are deprecated for that reason.
+//
+// # What the state store must persist
+//
+// Three of those four controls live in the [storage.OIDCState] record between
+// the authorization request and the callback, and the package cannot enforce a
+// control a store did not keep. Each one is therefore written twice: into its
+// typed field on the record — [storage.OIDCState].CodeVerifier, BindingHash and
+// Nonce — and into a reserved [StateMetadataPrefix] key in the record's
+// Metadata map, which is where a store written against v1.1.1 (before those
+// fields existed) still has somewhere to put it. The callback reads the typed
+// field first and the metadata copy second.
+//
+// A record that comes back with a control missing from both places is a record
+// a store silently dropped, and this package refuses it with
+// [ErrStateControlMissing] rather than continuing without the control. That is
+// the whole point of writing it twice: absence is never read as "this flow did
+// not have one". A flow deliberately started without a browser binding records
+// [StateBindingUnbound], so even "no binding" is a value the store must carry
+// rather than an absence anyone can manufacture.
 //
 // # Identity belongs to the application
 //
@@ -84,6 +105,19 @@ var (
 	// disappears is a control that can be removed by an attacker.
 	ErrCorruptState = errors.New("state record is malformed")
 
+	// ErrStateControlMissing is returned when a state record comes back without
+	// a control this package is known to have written into it — the PKCE
+	// verifier, the browser-binding marker, or the nonce of an OIDC flow —
+	// in either the typed [storage.OIDCState] field or the reserved metadata
+	// key that mirrors it.
+	//
+	// It means the store did not persist what it was given, which is
+	// indistinguishable from an attacker having removed the control. Treating
+	// it as "this flow had no such control" is how a store with one column per
+	// field it recognized turned PKCE, the browser binding and the nonce into
+	// decoration while every conformance test still passed.
+	ErrStateControlMissing = errors.New("state record is missing a control this package wrote")
+
 	// ErrMissingBinding is returned when the flow was started with
 	// [Client.GetAuthorizationURLWithBinding] but the callback presented no
 	// binding value. See finding F-16.
@@ -129,6 +163,19 @@ var (
 	// application code. See finding F-01.
 	ErrAccountLinkRequired = errors.New("existing account requires an explicit link decision")
 
+	// ErrAccountCreationRefused is returned when a verified assertion names no
+	// existing account and [Config.CreatePolicy] did not authorize provisioning
+	// one — either because it is nil, which is the default, or because it
+	// returned false.
+	//
+	// Provisioning on a provider's say-so alone lets any identity provider the
+	// deployment has configured squat an address it does not own: it asserts
+	// cfo@victim-corp.example with email_verified true, the library mints the
+	// account, and the real owner is met with [ErrAccountLinkRequired] forever
+	// after. Only the application knows which addresses a given connection is
+	// authoritative for, so only the application can answer. See finding F-01.
+	ErrAccountCreationRefused = errors.New("account creation was not authorized")
+
 	// ErrReservedMetadataKey is returned when [AuthURLOptions].Metadata carries
 	// a key under [StateMetadataPrefix], which this package reserves for the
 	// PKCE verifier and the browser-binding digest.
@@ -147,21 +194,42 @@ const (
 	// with [ErrReservedMetadataKey] when supplied by the caller.
 	StateMetadataPrefix = "go-auth/"
 
-	// StateMetadataKeyPKCEVerifier is the state metadata key holding the PKCE
-	// code verifier between authorization and callback (finding F-17). It is a
-	// secret for the lifetime of the flow: a state store must be at least as
-	// well protected as a session store.
+	// StateMetadataKeyPKCEVerifier is the state metadata key mirroring
+	// [storage.OIDCState].CodeVerifier, the PKCE code verifier held between
+	// authorization and callback (finding F-17). It is a secret for the
+	// lifetime of the flow: a state store must be at least as well protected as
+	// a session store.
 	StateMetadataKeyPKCEVerifier = StateMetadataPrefix + "pkce_verifier"
 
-	// StateMetadataKeyBinding is the state metadata key holding the SHA-256
-	// digest, base64url-encoded without padding, of the browser-binding value
-	// returned in [AuthorizationRequest].Binding (finding F-16). Only the
-	// digest is stored, so a reader of the state store cannot replay it.
+	// StateMetadataKeyBinding is the state metadata key mirroring
+	// [storage.OIDCState].BindingHash: the SHA-256 digest, base64url-encoded
+	// without padding, of the browser-binding value returned in
+	// [AuthorizationRequest].Binding (finding F-16), or [StateBindingUnbound]
+	// for a flow started without one. Only the digest is stored, so a reader of
+	// the state store cannot replay it.
 	StateMetadataKeyBinding = StateMetadataPrefix + "state_binding"
 
-	// UserMetadataKeyProviderSubject is the [storage.User].Metadata key holding
-	// the provider's subject identifier. It is the value compared against a
-	// later assertion before an existing account is adopted (finding F-01).
+	// StateMetadataKeyNonce is the state metadata key mirroring
+	// [storage.OIDCState].Nonce, the value an OIDC provider must echo in the ID
+	// token (finding F-18).
+	StateMetadataKeyNonce = StateMetadataPrefix + "nonce"
+
+	// StateBindingUnbound is recorded in place of a binding digest when a flow
+	// is started through [Client.GetAuthorizationURL], which cannot hand a
+	// binding value back to the caller.
+	//
+	// An explicit marker rather than an empty field is what makes the control
+	// auditable: without it, "this flow was deliberately unbound" and "the
+	// store dropped the digest" are the same empty string, and the second one
+	// silently reopens the login CSRF of finding F-16. It cannot be confused
+	// with a real digest, which is always 43 base64url characters, and a caller
+	// cannot plant it because the key it lives under is reserved.
+	StateBindingUnbound = "unbound"
+
+	// UserMetadataKeyProviderSubject is the [storage.User].Metadata key
+	// mirroring [storage.User].ProviderSubject, the provider's subject
+	// identifier. It is the value compared against a later assertion before an
+	// existing account is adopted (finding F-01).
 	UserMetadataKeyProviderSubject = "provider_sub"
 
 	// BindingCookieName is the recommended cookie name for
@@ -226,14 +294,41 @@ type UserInfo struct {
 // that the library refuses to adopt on its own.
 //
 // It is called only when an account already exists for the asserted email
-// address and either was created by a different provider or carries a different
-// subject identifier — in other words, exactly when silent adoption would be
-// the CVE-2023-28131 defect. Returning true accepts the link; returning false
-// yields [ErrAccountLinkRequired]; a returned error aborts the callback.
+// address and the library will not adopt it on its own: it was created by a
+// different provider, or it carries a different subject identifier — in other
+// words, exactly when silent adoption would be the CVE-2023-28131 defect — or
+// it predates subject recording entirely and is about to be pinned to this
+// assertion. Returning true accepts the link; returning false yields
+// [ErrAccountLinkRequired]; a returned error aborts the callback.
 //
 // An implementation is expected to have proved something the library cannot
 // see: that the person behind this flow already controls the existing account.
 type LinkPolicy func(ctx context.Context, existing *storage.User, info *UserInfo) (bool, error)
+
+// CreatePolicy authorizes provisioning a NEW account from a provider assertion.
+//
+// It is the creation-side counterpart of [LinkPolicy], and it is called only
+// after every control in this package has passed: the state, the browser
+// binding, PKCE, the nonce, a present subject, and an email address the
+// provider says it verified. What it decides is the one question none of those
+// answers — whether this connection may speak for this email address at all.
+//
+// Returning true provisions the account; returning false yields
+// [ErrAccountCreationRefused]; a returned error aborts the callback.
+type CreatePolicy func(ctx context.Context, info *UserInfo) (bool, error)
+
+// AllowAccountCreation is a [CreatePolicy] that provisions an account for every
+// assertion this package has already verified. It restores, in one line, the
+// behavior of releases that had no creation-side check at all.
+//
+// It is the right answer only where every configured provider is trusted to
+// speak for every email domain it asserts — a single first-party IdP over a
+// directory the deployment owns. It is the wrong answer for anything that lets
+// a customer bring their own connection, because there the email claim is
+// chosen by that customer's administrator. See finding F-01.
+func AllowAccountCreation(context.Context, *UserInfo) (bool, error) {
+	return true, nil
+}
 
 // Client handles OIDC authentication flows.
 type Client struct {
@@ -242,6 +337,7 @@ type Client struct {
 	stateStore     storage.OIDCStateStore
 	redirectURL    string // Default redirect URL
 	linkPolicy     LinkPolicy
+	createPolicy   CreatePolicy
 	httpClient     *http.Client
 	claimAllowlist []string
 }
@@ -267,6 +363,22 @@ type Config struct {
 	// package would otherwise refuse. Nil means refuse, which is the safe
 	// default. See finding F-01.
 	LinkPolicy LinkPolicy
+
+	// CreatePolicy authorizes provisioning a new account when a verified
+	// assertion matches none. Nil REFUSES creation with
+	// [ErrAccountCreationRefused].
+	//
+	// Refusing is the default because the library cannot answer the question
+	// creation asks. An assertion carries an email address and a flag saying
+	// the provider verified it; neither tells this package whether the
+	// connection that sent them is entitled to that address. In any deployment
+	// where a tenant configures its own IdP, that flag is set by the tenant's
+	// administrator, so believing it is how an address gets squatted before its
+	// owner ever signs in. A guard that cannot determine its answer refuses.
+	//
+	// Set [AllowAccountCreation] to keep the previous behavior, or supply a
+	// policy that checks the asserted domain against the connection.
+	CreatePolicy CreatePolicy
 
 	// HTTPClient performs the token exchange and user-info request. Nil means
 	// [DefaultHTTPClient]. Supply one to impose the egress policy the
@@ -326,6 +438,7 @@ func NewClient(cfg Config) (*Client, error) {
 		stateStore:     cfg.StateStore,
 		redirectURL:    cfg.RedirectURL,
 		linkPolicy:     cfg.LinkPolicy,
+		createPolicy:   cfg.CreatePolicy,
 		httpClient:     httpClient,
 		claimAllowlist: allowlist,
 	}, nil
@@ -379,8 +492,12 @@ type AuthorizationRequest struct {
 // The returned flow carries state, PKCE and a nonce, but no browser binding:
 // this signature has no way to hand the binding value back to the caller, so
 // the callback cannot prove it reached the user agent that started the flow.
-// Use [Client.GetAuthorizationURLWithBinding] with
-// [Client.HandleCallbackWithBinding] instead (finding F-16).
+//
+// Deprecated: use [Client.GetAuthorizationURLWithBinding] with
+// [Client.HandleCallbackWithBinding]. A flow started here is not protected
+// against the login CSRF of finding F-16 (CWE-352) and cannot be: the return
+// type has nowhere to put the binding value the browser must hold. This entry
+// point is kept only so existing callers keep compiling while they migrate.
 func (c *Client) GetAuthorizationURL(ctx context.Context, opts AuthURLOptions) (string, error) {
 	req, err := c.authorize(ctx, opts, false)
 	if err != nil {
@@ -421,22 +538,6 @@ func (c *Client) authorize(ctx context.Context, opts AuthURLOptions, bind bool) 
 		return nil, fmt.Errorf("failed to generate state: %w", err)
 	}
 
-	// F-17: RFC 9700 section 2.1.1 requires PKCE for every authorization-code
-	// client, confidential ones included. The verifier never leaves this
-	// process except into the state store; only the S256 challenge is sent.
-	verifier := oauth2.GenerateVerifier()
-	metadata[StateMetadataKeyPKCEVerifier] = verifier
-	authOpts := []oauth2.AuthCodeOption{oauth2.S256ChallengeOption(verifier)}
-
-	var binding string
-	if bind {
-		binding, err = randomValue(bindingEntropyBytes)
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate state binding: %w", err)
-		}
-		metadata[StateMetadataKeyBinding] = digest(binding)
-	}
-
 	redirectURL := opts.RedirectURL
 	if redirectURL == "" {
 		redirectURL = c.redirectURL
@@ -448,16 +549,48 @@ func (c *Client) authorize(ctx context.Context, opts AuthURLOptions, bind bool) 
 		Metadata:    metadata,
 	}
 
+	// F-17: RFC 9700 section 2.1.1 requires PKCE for every authorization-code
+	// client, confidential ones included. The verifier never leaves this
+	// process except into the state store; only the S256 challenge is sent.
+	//
+	// Here and below, each control is written to its typed field AND to the
+	// metadata key that mirrors it. The typed field is where a store built
+	// against the current documentation keeps it; the metadata key is where a
+	// store built against v1.1.1, which has no column for a field that did not
+	// exist then, still keeps it. Writing one and not the other leaves the
+	// control at the mercy of which release the store was written for.
+	verifier := oauth2.GenerateVerifier()
+	stateData.CodeVerifier = verifier
+	metadata[StateMetadataKeyPKCEVerifier] = verifier
+	authOpts := []oauth2.AuthCodeOption{oauth2.S256ChallengeOption(verifier)}
+
+	// F-16: an unbound flow records StateBindingUnbound rather than nothing, so
+	// the callback can tell a flow that never had a binding from a record that
+	// lost one.
+	var binding string
+	bindingRecord := StateBindingUnbound
+	if bind {
+		binding, err = randomValue(bindingEntropyBytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate state binding: %w", err)
+		}
+		bindingRecord = digest(binding)
+	}
+	stateData.BindingHash = bindingRecord
+	metadata[StateMetadataKeyBinding] = bindingRecord
+
 	// F-18: a nonce is only verifiable where an ID token will be verified. An
 	// OAuth2-only provider issues none, and demanding a nonce claim from a
 	// user-info response would fail every such flow, so the parameter is sent
-	// exactly when the assertion can carry it back.
+	// exactly when the assertion can carry it back. Which of the two it was is
+	// re-derived at callback time from the provider itself, not from the record.
 	if provider.GetOIDCProvider() != nil {
 		nonce, err := randomValue(nonceEntropyBytes)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate nonce: %w", err)
 		}
 		stateData.Nonce = nonce
+		metadata[StateMetadataKeyNonce] = nonce
 		authOpts = append(authOpts, oidc.Nonce(nonce))
 	}
 
@@ -511,7 +644,12 @@ type CallbackResult struct {
 //
 // It fails with [ErrMissingBinding] when the flow was started by
 // [Client.GetAuthorizationURLWithBinding], because the binding value cannot be
-// presented through this signature. Use [Client.HandleCallbackWithBinding].
+// presented through this signature.
+//
+// Deprecated: use [Client.HandleCallbackWithBinding]. This signature has no
+// parameter for the binding cookie, so a flow completed here is only as strong
+// as the entry point that started it — and [Client.GetAuthorizationURL], the
+// one that can start such a flow, leaves finding F-16 open.
 func (c *Client) HandleCallback(ctx context.Context, state, code string) (*CallbackResult, error) {
 	return c.handleCallback(ctx, state, code, "")
 }
@@ -544,10 +682,10 @@ func (c *Client) handleCallback(ctx context.Context, state, code, binding string
 		return nil, ErrInvalidState
 	}
 
-	if bindingErr := verifyBinding(stateData.Metadata, binding); bindingErr != nil {
-		return nil, bindingErr
-	}
-
+	// The provider is resolved before the controls are interpreted because it
+	// is what says whether this flow requested a nonce at all. Nothing outside
+	// this process happens until every control below has passed: the
+	// authorization code is not redeemed by a callback that fails one.
 	provider, exists := c.providers[stateData.Provider]
 	if !exists {
 		return nil, ErrProviderNotFound
@@ -558,10 +696,16 @@ func (c *Client) handleCallback(ctx context.Context, state, code, binding string
 		return nil, fmt.Errorf("provider %q has no OAuth2 config: %w", stateData.Provider, ErrProviderMisconfigured)
 	}
 
-	exchangeOpts, err := exchangeOptions(stateData.Metadata)
+	controls, err := readStateControls(stateData, provider.GetOIDCProvider() != nil)
 	if err != nil {
 		return nil, err
 	}
+
+	if bindingErr := verifyBinding(controls.binding, binding); bindingErr != nil {
+		return nil, bindingErr
+	}
+
+	exchangeOpts := []oauth2.AuthCodeOption{oauth2.VerifierOption(controls.verifier)}
 
 	// F-20: both the exchange below and the provider's user-info or JWKS
 	// traffic read the client from the context, so this is the one place that
@@ -583,7 +727,7 @@ func (c *Client) handleCallback(ctx context.Context, state, code, binding string
 
 	userInfo.Provider = stateData.Provider
 
-	if nonceErr := verifyNonce(stateData.Nonce, userInfo.RawClaims); nonceErr != nil {
+	if nonceErr := verifyNonce(controls.nonce, userInfo.RawClaims); nonceErr != nil {
 		return nil, nonceErr
 	}
 
@@ -640,7 +784,10 @@ func (c *Client) ListProviders() []string {
 // the provider has not verified is a claim the provider's administrator can
 // choose (CVE-2023-28131, RFC 9700 section 4). An existing account is adopted
 // only when it was created by this same provider and already carries this
-// subject identifier; anything else needs [Config.LinkPolicy] to say so.
+// subject identifier, or carries none yet and is pinned to this one on the way
+// through; anything else needs [Config.LinkPolicy] to say so. An assertion that
+// matches no account provisions one only where [Config.CreatePolicy] allows it,
+// which by default is nowhere.
 //
 // Deprecated: creating and owning user records is the application's job, not a
 // library's — only the application knows its tenancy and provisioning rules. v2
@@ -672,6 +819,10 @@ func (c *Client) findOrCreateUser(ctx context.Context, userInfo *UserInfo) (*sto
 		return nil, false, fmt.Errorf("failed to query user: %w", err)
 	}
 
+	if createErr := c.authorizeCreation(ctx, userInfo); createErr != nil {
+		return nil, false, createErr
+	}
+
 	userID, err := generateUserID()
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to generate user ID: %w", err)
@@ -684,7 +835,12 @@ func (c *Client) findOrCreateUser(ctx context.Context, userInfo *UserInfo) (*sto
 		Username:      userInfo.Username,
 		Name:          userInfo.Name,
 		Provider:      userInfo.Provider,
-		Metadata:      c.userMetadata(userInfo),
+		// The subject is recorded in both places for the same reason the state
+		// controls are: a store with no column for one of them must still have
+		// the other, or the next sign-in has nothing to compare against and the
+		// account becomes unreachable to the very identity that created it.
+		ProviderSubject: userInfo.Subject,
+		Metadata:        c.userMetadata(userInfo),
 	}
 
 	if err := c.userStore.CreateUser(ctx, user); err != nil {
@@ -694,15 +850,61 @@ func (c *Client) findOrCreateUser(ctx context.Context, userInfo *UserInfo) (*sto
 	return user, true, nil
 }
 
+// authorizeCreation asks [Config.CreatePolicy] whether a verified assertion
+// that matches no account may provision one (finding F-01).
+//
+// A nil policy refuses. Every other control in this package answers a question
+// about the flow; this one answers a question about the deployment — whether
+// the connection that just authenticated is entitled to the address it
+// asserted — and the library has no way to know it.
+func (c *Client) authorizeCreation(ctx context.Context, userInfo *UserInfo) error {
+	if c.createPolicy == nil {
+		return fmt.Errorf("no Config.CreatePolicy is set: %w", ErrAccountCreationRefused)
+	}
+
+	allowed, err := c.createPolicy(ctx, userInfo)
+	if err != nil {
+		return fmt.Errorf("create policy: %w", err)
+	}
+	if !allowed {
+		return ErrAccountCreationRefused
+	}
+	return nil
+}
+
 // adopt decides whether an assertion may be attached to an account that already
 // exists for the same email address.
 func (c *Client) adopt(ctx context.Context, existing *storage.User, userInfo *UserInfo) (*storage.User, error) {
 	if existing == nil {
 		return nil, fmt.Errorf("user store returned a nil user for a known email address: %w", ErrAccountLinkRequired)
 	}
-	if assertsSameIdentity(existing, userInfo) {
-		return existing, nil
+
+	recorded, err := recordedProviderSubject(existing)
+	if err != nil {
+		return nil, err
 	}
+
+	// Both comparisons are plain equality. A connection name and a subject
+	// identifier are public — the subject travels in the ID token the browser
+	// just presented, and both end up in logs — so there is no secret for a
+	// timing oracle to recover. Constant-time comparison is reserved in this
+	// package for the browser binding and the nonce, and using it here, on the
+	// far side of a branch that has already tested the provider name, would
+	// advertise a protection that is not being provided.
+	sameProvider := existing.Provider != "" && existing.Provider == userInfo.Provider
+
+	// The recorded != "" guard is not redundant with the case below it: without
+	// it, an assertion that somehow reached here with no subject would match an
+	// account that has none and adopt it on the strength of two empty strings.
+	// The callback rejects an empty subject long before this, and this is what
+	// keeps that true if it ever stops being.
+	switch {
+	case sameProvider && recorded != "" && recorded == userInfo.Subject:
+		return existing, nil
+	case sameProvider && recorded == "":
+		return c.adoptUnrecorded(ctx, existing, userInfo)
+	}
+
 	if c.linkPolicy == nil {
 		return nil, ErrAccountLinkRequired
 	}
@@ -717,10 +919,51 @@ func (c *Client) adopt(ctx context.Context, existing *storage.User, userInfo *Us
 	return existing, nil
 }
 
+// adoptUnrecorded adopts an account created by this same connection before this
+// package recorded subject identifiers at all, and records the subject on it.
+//
+// Without this, every account any earlier release created is locked out for
+// good: those records carry a provider name and no subject, the subject check
+// can never match, and their owners meet [ErrAccountLinkRequired] on every
+// sign-in with no way to clear it. The account was provisioned by this same
+// registered connection, so adopting it grants that connection nothing it did
+// not already have — but it IS trust on first use, and it lasts exactly one
+// sign-in: from the backfill onwards the account is pinned to a subject and a
+// different one is refused. An application that wants to police even that
+// single step supplies [Config.LinkPolicy], which is consulted here.
+//
+// A failed write is fatal to the callback. Adopting anyway would leave the
+// account permanently unpinned, quietly downgrading every future sign-in to the
+// provider-name check this exists to escape.
+func (c *Client) adoptUnrecorded(ctx context.Context, existing *storage.User, userInfo *UserInfo) (*storage.User, error) {
+	if c.linkPolicy != nil {
+		allowed, err := c.linkPolicy(ctx, existing, userInfo)
+		if err != nil {
+			return nil, fmt.Errorf("link policy: %w", err)
+		}
+		if !allowed {
+			return nil, ErrAccountLinkRequired
+		}
+	}
+
+	existing.ProviderSubject = userInfo.Subject
+	if existing.Metadata == nil {
+		existing.Metadata = make(map[string]interface{}, 1)
+	}
+	existing.Metadata[UserMetadataKeyProviderSubject] = userInfo.Subject
+
+	if err := c.userStore.UpdateUser(ctx, existing); err != nil {
+		return nil, fmt.Errorf("failed to record the provider subject on an existing account: %w", err)
+	}
+	return existing, nil
+}
+
 // userMetadata builds the metadata stored on a newly created user.
 //
-// F-01/F-21: the subject identifier is stored because a later assertion is
-// checked against it. Nothing else is stored unless the application named it in
+// F-01/F-21: the subject identifier is stored here as well as in
+// [storage.User].ProviderSubject because a later assertion is checked against
+// it, and a store that keeps only one of the two must still have that one.
+// Nothing else is stored unless the application named it in
 // [Config].ClaimAllowlist — the previous behavior copied the entire raw claim
 // set, which then traveled into the application's own JWT and out to the
 // browser, base64-decodable by anyone who saw it.
@@ -737,39 +980,126 @@ func (c *Client) userMetadata(userInfo *UserInfo) map[string]interface{} {
 	return metadata
 }
 
-// assertsSameIdentity reports whether an existing account was created by this
-// provider and already carries this provider's subject identifier.
-func assertsSameIdentity(existing *storage.User, userInfo *UserInfo) bool {
-	if existing.Provider == "" || existing.Provider != userInfo.Provider {
-		return false
+// recordedProviderSubject returns the subject identifier an account was last
+// seen with, from [storage.User].ProviderSubject first and the metadata copy
+// second.
+//
+// An empty return means the account never had one recorded, which the caller
+// may backfill. A value that is present but unusable — the wrong type after a
+// JSON round trip, or an empty string where a subject should be — is NOT that:
+// it is a record that was written and then damaged, and reading it as "never
+// recorded" would hand the account to whichever assertion arrives next. Those
+// fail closed.
+func recordedProviderSubject(user *storage.User) (string, error) {
+	if user.ProviderSubject != "" {
+		return user.ProviderSubject, nil
 	}
-	stored, ok := existing.Metadata[UserMetadataKeyProviderSubject].(string)
-	if !ok || stored == "" {
-		return false
+
+	raw, ok := user.Metadata[UserMetadataKeyProviderSubject]
+	if !ok {
+		return "", nil
 	}
-	return subtle.ConstantTimeCompare([]byte(stored), []byte(userInfo.Subject)) == 1
+
+	subject, ok := raw.(string)
+	if !ok || subject == "" {
+		return "", fmt.Errorf("recorded provider subject is %T, want a non-empty string: %w",
+			raw, ErrAccountLinkRequired)
+	}
+	return subject, nil
+}
+
+// stateControls holds the per-flow controls recovered from a state record.
+type stateControls struct {
+	verifier string // PKCE code verifier (finding F-17)
+	binding  string // browser-binding digest, or StateBindingUnbound (finding F-16)
+	nonce    string // the nonce an OIDC provider must echo (finding F-18)
+}
+
+// readStateControls recovers the three controls this package wrote when the
+// flow started, and refuses a record that lost any of them.
+//
+// wantNonce reports whether the provider this flow ran against issues ID
+// tokens, which is the only trustworthy witness of whether a nonce was
+// requested: it comes from the registered provider rather than from the record
+// under examination, so a store that dropped the nonce cannot also erase the
+// evidence that there was one.
+//
+// The verifier and the binding marker are written on EVERY flow, so their
+// absence needs no witness at all — it can only mean the record did not survive
+// the round trip. Refusing here costs a caller mid-flow across a deploy from a
+// release that wrote neither location one failed sign-in inside the ten-minute
+// state TTL. Accepting would cost every caller the control itself.
+func readStateControls(state *storage.OIDCState, wantNonce bool) (stateControls, error) {
+	verifier, err := readStateControl(state.CodeVerifier, state.Metadata, StateMetadataKeyPKCEVerifier)
+	if err != nil {
+		return stateControls{}, err
+	}
+	if verifier == "" {
+		return stateControls{}, fmt.Errorf("no PKCE code verifier: %w", ErrStateControlMissing)
+	}
+
+	binding, err := readStateControl(state.BindingHash, state.Metadata, StateMetadataKeyBinding)
+	if err != nil {
+		return stateControls{}, err
+	}
+	if binding == "" {
+		return stateControls{}, fmt.Errorf("no browser-binding marker: %w", ErrStateControlMissing)
+	}
+
+	nonce, err := readStateControl(state.Nonce, state.Metadata, StateMetadataKeyNonce)
+	if err != nil {
+		return stateControls{}, err
+	}
+	if wantNonce && nonce == "" {
+		return stateControls{}, fmt.Errorf("no nonce for an OIDC flow: %w", ErrStateControlMissing)
+	}
+
+	return stateControls{verifier: verifier, binding: binding, nonce: nonce}, nil
+}
+
+// readStateControl reads one control from the typed field this package writes
+// it to, falling back to the metadata key that mirrors it.
+//
+// Both copies come from one variable in one call, so two different non-empty
+// values cannot be something this package produced: the record was rewritten,
+// merged, or written by another library, and reading either half of a
+// contradiction is guessing. It is reported as corruption instead.
+func readStateControl(typed string, metadata map[string]interface{}, key string) (string, error) {
+	mirrored, err := metadataString(metadata, key)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case typed == "":
+		return mirrored, nil
+	case mirrored == "" || mirrored == typed:
+		return typed, nil
+	default:
+		return "", fmt.Errorf("state control %q disagrees with its typed field: %w", key, ErrCorruptState)
+	}
 }
 
 // verifyBinding compares the presented browser-binding value against the digest
 // recorded when the flow started (finding F-16).
 //
-// A flow with no recorded digest was started by [Client.GetAuthorizationURL],
-// which issues none; it is not failed here, so the two entry points can coexist
-// during a migration. An application that has migrated should never call the
-// unbound one again, because a state record without a digest is a state record
-// with no browser binding.
-func verifyBinding(metadata map[string]interface{}, presented string) error {
-	stored, err := metadataString(metadata, StateMetadataKeyBinding)
-	if err != nil {
-		return err
-	}
-	if stored == "" {
+// recorded is never empty: readStateControls has already refused a record that
+// carries no marker, so the only way to reach the "this flow had no binding"
+// branch is for the flow to have said so at authorization time. That is what
+// keeps the two entry points able to coexist during a migration without the
+// unbound one becoming a way to strip the control off a bound flow.
+//
+// The comparison is constant-time because the value being compared is a secret:
+// the browser holds it, the state store holds only its digest, and an attacker
+// who could recover it byte by byte from a timing difference would hold
+// everything the control asks for.
+func verifyBinding(recorded, presented string) error {
+	if recorded == StateBindingUnbound {
 		return nil
 	}
 	if presented == "" {
 		return ErrMissingBinding
 	}
-	if subtle.ConstantTimeCompare([]byte(digest(presented)), []byte(stored)) != 1 {
+	if subtle.ConstantTimeCompare([]byte(digest(presented)), []byte(recorded)) != 1 {
 		return ErrBindingMismatch
 	}
 	return nil
@@ -783,6 +1113,14 @@ func verifyBinding(metadata map[string]interface{}, presented string) error {
 // widening that interface would break every implementor. RawClaims is populated
 // from the same verified token, so the value is as trustworthy as the
 // signature check that produced it.
+//
+// An empty requested value here means an OAuth2-only flow, which issues no ID
+// token to carry a nonce back: readStateControls has already refused an OIDC
+// flow whose nonce went missing, so absence at this point is a fact about the
+// provider and not about the record. The comparison is constant-time for the
+// same reason as the binding: the requested nonce is an unguessable value held
+// server-side, and the party supplying the other operand is the one this
+// control exists to catch.
 func verifyNonce(requested string, claims map[string]interface{}) error {
 	if requested == "" {
 		return nil
@@ -801,26 +1139,11 @@ func verifyNonce(requested string, claims map[string]interface{}) error {
 	return nil
 }
 
-// exchangeOptions rebuilds the PKCE proof for the token request (finding F-17).
-func exchangeOptions(metadata map[string]interface{}) ([]oauth2.AuthCodeOption, error) {
-	verifier, err := metadataString(metadata, StateMetadataKeyPKCEVerifier)
-	if err != nil {
-		return nil, err
-	}
-	if verifier == "" {
-		// A state record written by an older release of this package, still
-		// inside its ten-minute TTL across a deploy. Failing it would sign out
-		// everyone mid-flow; the window closes on its own.
-		return nil, nil
-	}
-	return []oauth2.AuthCodeOption{oauth2.VerifierOption(verifier)}, nil
-}
-
 // reserveStateMetadata copies the caller's metadata so the library's own keys
 // are never written into a map the caller still holds, and refuses a caller key
 // that would collide with them.
 func reserveStateMetadata(src map[string]interface{}) (map[string]interface{}, error) {
-	out := make(map[string]interface{}, len(src)+2)
+	out := make(map[string]interface{}, len(src)+3)
 	for key, value := range src {
 		if strings.HasPrefix(key, StateMetadataPrefix) {
 			return nil, fmt.Errorf("metadata key %q: %w", key, ErrReservedMetadataKey)
