@@ -12,13 +12,13 @@ After comprehensive research into OIDC server (Identity Provider) implementation
 
 ### Key Findings
 
-| Factor | Assessment | Risk Level |
-|--------|------------|------------|
-| Technical Feasibility | Achievable via `zitadel/oidc` | Medium |
-| Security Risk | High if built from scratch | High |
-| Maintenance Burden | Significant ongoing commitment | High |
-| Strategic Fit | Marginal - serves niche use case | Medium |
-| Scope Estimation | XL effort (roadmap accurate) | High |
+| Factor                | Assessment                       | Risk Level |
+| --------------------- | -------------------------------- | ---------- |
+| Technical Feasibility | Achievable via `zitadel/oidc`    | Medium     |
+| Security Risk         | High if built from scratch       | High       |
+| Maintenance Burden    | Significant ongoing commitment   | High       |
+| Strategic Fit         | Marginal - serves niche use case | Medium     |
+| Scope Estimation      | XL effort (roadmap accurate)     | High       |
 
 ---
 
@@ -28,25 +28,27 @@ After comprehensive research into OIDC server (Identity Provider) implementation
 
 An OpenID Provider must implement these endpoints per the [OpenID Connect Core 1.0 specification](https://openid.net/specs/openid-connect-core-1_0.html):
 
-| Endpoint | Required | Purpose |
-|----------|----------|---------|
-| Authorization Endpoint | Yes | Initiates authentication, returns authorization code |
-| Token Endpoint | Yes | Exchanges code for tokens (access, ID, refresh) |
-| UserInfo Endpoint | Yes | Returns claims about authenticated user |
-| JWKS Endpoint | Yes | Publishes signing keys for token verification |
-| Discovery Endpoint | Recommended | `/.well-known/openid-configuration` metadata |
-| Revocation Endpoint | Optional | Token revocation |
-| Introspection Endpoint | Optional | Token introspection |
-| End Session Endpoint | Optional | Logout/session termination |
+| Endpoint               | Required    | Purpose                                              |
+| ---------------------- | ----------- | ---------------------------------------------------- |
+| Authorization Endpoint | Yes         | Initiates authentication, returns authorization code |
+| Token Endpoint         | Yes         | Exchanges code for tokens (access, ID, refresh)      |
+| UserInfo Endpoint      | Yes         | Returns claims about authenticated user              |
+| JWKS Endpoint          | Yes         | Publishes signing keys for token verification        |
+| Discovery Endpoint     | Recommended | `/.well-known/openid-configuration` metadata         |
+| Revocation Endpoint    | Optional    | Token revocation                                     |
+| Introspection Endpoint | Optional    | Token introspection                                  |
+| End Session Endpoint   | Optional    | Logout/session termination                           |
 
 ### Required Flows
 
 At minimum, an OIDC server should support:
+
 - **Authorization Code Flow** (most secure, recommended)
 - **PKCE Extension** (required for public clients per OAuth 2.1)
 - **Client Credentials Flow** (machine-to-machine)
 
 Optional but commonly expected:
+
 - Implicit Flow (deprecated but some legacy clients require it)
 - Hybrid Flow
 - Device Authorization Flow
@@ -66,13 +68,13 @@ Optional but commonly expected:
 
 The existing go-auth architecture has several components that could be reused:
 
-| Component | Reusability | Notes |
-|-----------|-------------|-------|
-| `auth/jwt` | **High** | Token generation/validation patterns exist |
-| `storage/` interfaces | **Medium** | Needs extension for clients, grants |
-| `session/` | **Medium** | Challenge/state management patterns |
-| `audit/` | **High** | Compliance logging ready |
-| `middleware/` | **Low** | Designed for RP, not OP |
+| Component             | Reusability | Notes                                      |
+| --------------------- | ----------- | ------------------------------------------ |
+| `auth/jwt`            | **High**    | Token generation/validation patterns exist |
+| `storage/` interfaces | **Medium**  | Needs extension for clients, grants        |
+| `session/`            | **Medium**  | Challenge/state management patterns        |
+| `audit/`              | **High**    | Compliance logging ready                   |
+| `middleware/`         | **Low**     | Designed for RP, not OP                    |
 
 ### New Components Required for OIDC Server
 
@@ -99,14 +101,14 @@ New Core Components:
 
 ### Gap Analysis
 
-| Requirement | Current State | Gap |
-|-------------|---------------|-----|
-| Client Management | Not implemented | **Large** - Need full OAuth2 client registry |
-| Key Management | Basic (symmetric JWT) | **Large** - Need asymmetric keys, rotation, JWKS |
-| Authorization Flows | N/A (client-side only) | **Large** - Complete implementation needed |
-| Consent Management | N/A | **Medium** - Needs UI integration hooks |
-| Token Introspection | N/A | **Medium** - New endpoint |
-| Discovery | N/A | **Small** - Metadata generation |
+| Requirement         | Current State          | Gap                                              |
+| ------------------- | ---------------------- | ------------------------------------------------ |
+| Client Management   | Not implemented        | **Large** - Need full OAuth2 client registry     |
+| Key Management      | Basic (symmetric JWT)  | **Large** - Need asymmetric keys, rotation, JWKS |
+| Authorization Flows | N/A (client-side only) | **Large** - Complete implementation needed       |
+| Consent Management  | N/A                    | **Medium** - Needs UI integration hooks          |
+| Token Introspection | N/A                    | **Medium** - New endpoint                        |
+| Discovery           | N/A                    | **Small** - Metadata generation                  |
 
 ---
 
@@ -114,12 +116,12 @@ New Core Components:
 
 ### Comparison Matrix
 
-| Library | Type | Certification | Complexity | Best For |
-|---------|------|---------------|------------|----------|
-| [zitadel/oidc](https://github.com/zitadel/oidc) | Library | **RP Certified** | Medium | Embedding in Go apps |
-| [ory/fosite](https://github.com/ory/fosite) | Low-level SDK | Used by Hydra | High | Custom OAuth2/OIDC |
-| [ory/hydra](https://github.com/ory/hydra) | Standalone service | **OpenID Certified** | Low (ops) | Production IdP service |
-| Keycloak | Full IAM | **OpenID Certified** | Low (ops) | Enterprise IAM |
+| Library                                         | Type               | Certification        | Complexity | Best For               |
+| ----------------------------------------------- | ------------------ | -------------------- | ---------- | ---------------------- |
+| [zitadel/oidc](https://github.com/zitadel/oidc) | Library            | **RP Certified**     | Medium     | Embedding in Go apps   |
+| [ory/fosite](https://github.com/ory/fosite)     | Low-level SDK      | Used by Hydra        | High       | Custom OAuth2/OIDC     |
+| [ory/hydra](https://github.com/ory/hydra)       | Standalone service | **OpenID Certified** | Low (ops)  | Production IdP service |
+| Keycloak                                        | Full IAM           | **OpenID Certified** | Low (ops)  | Enterprise IAM         |
 
 ### zitadel/oidc: Recommended Foundation
 
@@ -132,6 +134,7 @@ New Core Components:
 5. **Active maintenance** - Regular updates, security patches
 
 **Trade-offs:**
+
 - Adds a significant dependency
 - Still requires implementing storage interfaces
 - Not yet certified as OP (only RP)
@@ -139,6 +142,7 @@ New Core Components:
 ### ory/fosite: Alternative Consideration
 
 Per the [fosite documentation](https://github.com/ory/fosite):
+
 - More low-level, requires implementing many handlers
 - Does not use standard Go OAuth2 package (divergent approach)
 - Better suited for building Hydra-like services
@@ -151,14 +155,14 @@ Per the [fosite documentation](https://github.com/ory/fosite):
 
 Building an OIDC server introduces attack surface that doesn't exist in a client-only library:
 
-| Vulnerability Class | Risk | Mitigation |
-|---------------------|------|------------|
-| [Token Injection/Forgery](https://security.lauritz-holtmann.de/post/sso-security-overview/) | **Critical** | Proper signature validation, key rotation |
-| [SSRF via request_uri](https://security.lauritz-holtmann.de/post/sso-security-overview/) | **High** | Disable or strictly validate request_uri |
-| [Redirect URI Manipulation](https://www.vaadata.com/blog/understanding-oauth-2-0-and-its-common-vulnerabilities/) | **High** | Strict URI validation, no wildcards |
-| [Authorization Code Interception](https://guptadeepak.com/security-vulnerabilities-in-saml-oauth-2-0-openid-connect-and-jwt/) | **High** | PKCE mandatory, short-lived codes |
-| [Session Fixation](https://www.slashid.dev/blog/oauth-security/) | **Medium** | Proper session binding |
-| [Mix-Up Attacks](https://guptadeepak.com/security-vulnerabilities-in-saml-oauth-2-0-openid-connect-and-jwt/) | **Medium** | Issuer validation, state binding |
+| Vulnerability Class                                                                                                           | Risk         | Mitigation                                |
+| ----------------------------------------------------------------------------------------------------------------------------- | ------------ | ----------------------------------------- |
+| [Token Injection/Forgery](https://security.lauritz-holtmann.de/post/sso-security-overview/)                                   | **Critical** | Proper signature validation, key rotation |
+| [SSRF via request_uri](https://security.lauritz-holtmann.de/post/sso-security-overview/)                                      | **High**     | Disable or strictly validate request_uri  |
+| [Redirect URI Manipulation](https://www.vaadata.com/blog/understanding-oauth-2-0-and-its-common-vulnerabilities/)             | **High**     | Strict URI validation, no wildcards       |
+| [Authorization Code Interception](https://guptadeepak.com/security-vulnerabilities-in-saml-oauth-2-0-openid-connect-and-jwt/) | **High**     | PKCE mandatory, short-lived codes         |
+| [Session Fixation](https://www.slashid.dev/blog/oauth-security/)                                                              | **Medium**   | Proper session binding                    |
+| [Mix-Up Attacks](https://guptadeepak.com/security-vulnerabilities-in-saml-oauth-2-0-openid-connect-and-jwt/)                  | **Medium**   | Issuer validation, state binding          |
 
 ### Recent CVEs in OIDC Implementations (2025)
 
@@ -168,6 +172,7 @@ Building an OIDC server introduces attack surface that doesn't exist in a client
 ### Security Maintenance Burden
 
 An OIDC server requires:
+
 - Ongoing security monitoring for protocol-level vulnerabilities
 - Cryptographic key rotation procedures
 - Regular dependency updates for crypto libraries
@@ -183,21 +188,23 @@ An OIDC server requires:
 
 Per the [OpenID Foundation](https://openid.net/certification/):
 
-| Profile | Testing | Fee (Members) | Fee (Non-Members) |
-|---------|---------|---------------|-------------------|
-| Basic OP | Required | $700/year | $3,500/year |
-| Config OP | Required | Included | Included |
-| Dynamic OP | Optional | Included | Included |
-| FAPI | Optional | $1,000/year | $5,000/year |
+| Profile    | Testing  | Fee (Members) | Fee (Non-Members) |
+| ---------- | -------- | ------------- | ----------------- |
+| Basic OP   | Required | $700/year     | $3,500/year       |
+| Config OP  | Required | Included      | Included          |
+| Dynamic OP | Optional | Included      | Included          |
+| FAPI       | Optional | $1,000/year   | $5,000/year       |
 
 ### Should go-auth Pursue Certification?
 
 **Arguments For:**
+
 - Increases trust and adoption
 - Marketing differentiation
 - Forces rigorous testing
 
 **Arguments Against:**
+
 - Ongoing cost (~$700-1000/year)
 - Maintenance commitment to pass future tests
 - zitadel/oidc already certified (can leverage)
@@ -211,13 +218,14 @@ Per the [OpenID Foundation](https://openid.net/certification/):
 ### Does OIDC Server Fit go-auth's Value Proposition?
 
 **Current Value Proposition** (from ROADMAP.md):
+
 > "go-auth is the comprehensive authentication library for Go developers who need production-ready, compliance-aware authentication **without the complexity of full identity platforms**."
 
-| Consideration | Assessment |
-|---------------|------------|
-| **Adds complexity** | Yes - significantly |
-| **Serves core ICPs** | Partially - niche use case |
-| **Maintains minimal deps** | No - adds zitadel/oidc (~significant) |
+| Consideration                  | Assessment                              |
+| ------------------------------ | --------------------------------------- |
+| **Adds complexity**            | Yes - significantly                     |
+| **Serves core ICPs**           | Partially - niche use case              |
+| **Maintains minimal deps**     | No - adds zitadel/oidc (~significant)   |
 | **Follows library philosophy** | Yes - if implemented as optional module |
 
 ### Target Use Cases
@@ -232,11 +240,11 @@ Who would actually use go-auth as an OIDC server?
 
 ### Competitive Positioning Impact
 
-| If Implemented | Positive | Negative |
-|----------------|----------|----------|
+| If Implemented  | Positive                                | Negative                        |
+| --------------- | --------------------------------------- | ------------------------------- |
 | Differentiation | Only Go auth library with client+server | Scope creep, maintenance burden |
-| Adoption | May attract platform developers | May confuse core audience |
-| Trust | Enhanced if certified | Damaged if security issues |
+| Adoption        | May attract platform developers         | May confuse core audience       |
+| Trust           | Enhanced if certified                   | Damaged if security issues      |
 
 ---
 
@@ -256,6 +264,7 @@ Instead of building OIDC server capability:
 ### Option B: Thin Wrapper Around zitadel/oidc (Recommended if Proceeding)
 
 Create `auth/oidcserver` package that:
+
 1. Wraps zitadel/oidc with go-auth's storage interface patterns
 2. Integrates with existing audit logging
 3. Provides opinionated defaults for common use cases
@@ -292,16 +301,16 @@ Build OIDC server from scratch using ory/fosite or raw implementation.
 
 ### Option B (zitadel/oidc Wrapper) Breakdown
 
-| Component | Effort | Notes |
-|-----------|--------|-------|
-| Storage interface adapters | 2-3 weeks | Map go-auth storage to zitadel interfaces |
-| Key management | 1-2 weeks | JWKS generation, rotation |
-| Audit integration | 1 week | Wrap operations with audit events |
-| Configuration/defaults | 1 week | Sensible defaults for common cases |
-| HTTP handlers | 1-2 weeks | Route setup, error handling |
-| Testing | 2-3 weeks | Unit + integration + conformance |
-| Documentation | 1-2 weeks | Usage docs, security considerations |
-| **Total** | **10-16 weeks** | Single experienced developer |
+| Component                  | Effort          | Notes                                     |
+| -------------------------- | --------------- | ----------------------------------------- |
+| Storage interface adapters | 2-3 weeks       | Map go-auth storage to zitadel interfaces |
+| Key management             | 1-2 weeks       | JWKS generation, rotation                 |
+| Audit integration          | 1 week          | Wrap operations with audit events         |
+| Configuration/defaults     | 1 week          | Sensible defaults for common cases        |
+| HTTP handlers              | 1-2 weeks       | Route setup, error handling               |
+| Testing                    | 2-3 weeks       | Unit + integration + conformance          |
+| Documentation              | 1-2 weeks       | Usage docs, security considerations       |
+| **Total**                  | **10-16 weeks** | Single experienced developer              |
 
 **Roadmap Assessment**: The "XL" effort rating is accurate.
 
@@ -312,6 +321,7 @@ Build OIDC server from scratch using ory/fosite or raw implementation.
 ### Primary Recommendation
 
 **Defer OIDC server implementation** in favor of higher-value Phase 1 and Phase 2 features:
+
 - Rate limiting middleware (P0)
 - PostgreSQL/Redis storage adapters (P0)
 - SAML 2.0 SP (P0)

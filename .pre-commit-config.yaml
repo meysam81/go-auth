@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/oxc-project/mirrors-oxlint
-    rev: v1.28.0
+    rev: v1.79.0
     hooks:
       - id: oxlint
         verbose: false
@@ -57,7 +57,7 @@ repos:
             renovate.json
           )$
   - repo: https://github.com/alessandrojcm/commitlint-pre-commit-hook
-    rev: v9.23.0
+    rev: v9.26.0
     hooks:
       - id: commitlint
         stages: [commit-msg]
@@ -79,11 +79,11 @@ repos:
       # - id: go-build
       - id: go-mod-tidy
   - repo: https://github.com/rhysd/actionlint
-    rev: v1.7.8
+    rev: v1.7.12
     hooks:
       - id: actionlint
   - repo: https://github.com/reteps/dockerfmt
-    rev: v0.3.9
+    rev: v0.5.4
     hooks:
       - id: dockerfmt
         args:
@@ -92,6 +92,6 @@ repos:
     hooks:
       - id: prettier
         name: prettier
-        entry: bunx prettier -w .
+        entry: bunx prettier -u --write
         language: system
-        pass_filenames: false
+        pass_filenames: true
