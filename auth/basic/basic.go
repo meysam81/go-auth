@@ -945,21 +945,37 @@ func (a *Authenticator) AuthenticateWithTOTP(ctx context.Context, identifier, pa
 // finished setting up. Use IsTOTPPending to tell "never enrolled" from "enrolled,
 // not confirmed".
 //
-// It reports false, not an error, when no TOTP manager is configured.
+// With no TOTP manager configured it answers from the credential store instead of
+// reporting false. Reporting false was finding F-35: an application that enrolled
+// users through a totp.Manager it built separately, and left Config.TOTPManager
+// unset, got "no factor enrolled" for a user who had one -- and because
+// RequireMFAWhenEnrolled defaults to EnforceMFA, Authenticate's gate believed it
+// and returned the user on the password alone. The store is the authority on
+// whether a factor exists; how the caller wired its objects is not.
 func (a *Authenticator) IsTOTPEnabled(ctx context.Context, userID string) (bool, error) {
 	if a.totpManager == nil {
-		return false, nil
+		state, err := totp.LookupEnrollment(ctx, a.credentialStore, userID)
+		if err != nil {
+			return false, fmt.Errorf("failed to check second factor: %w", err)
+		}
+		return state == totp.EnrollmentConfirmed, nil
 	}
 
 	return a.totpManager.IsEnabled(ctx, userID)
 }
 
 // IsTOTPPending reports whether a user has a TOTP enrollment that is stored but
-// not yet confirmed. It reports false when there is no enrollment at all, and
-// false when no TOTP manager is configured.
+// not yet confirmed. It reports false when there is no enrollment at all, and,
+// like IsTOTPEnabled, answers from the credential store when no TOTP manager is
+// configured rather than assuming the absence of one means the absence of a
+// factor (F-35).
 func (a *Authenticator) IsTOTPPending(ctx context.Context, userID string) (bool, error) {
 	if a.totpManager == nil {
-		return false, nil
+		state, err := totp.LookupEnrollment(ctx, a.credentialStore, userID)
+		if err != nil {
+			return false, fmt.Errorf("failed to check second factor: %w", err)
+		}
+		return state == totp.EnrollmentPending, nil
 	}
 
 	return a.totpManager.IsPending(ctx, userID)

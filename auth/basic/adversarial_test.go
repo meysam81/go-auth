@@ -1821,3 +1821,113 @@ func TestNewAuthenticator_BcryptCostOutsideRangeIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// TestMFA_HalfWiredAuthenticatorStillDemandsTheSecondFactor covers finding F-35:
+// a second factor that exists in the store must gate a sign-in even when the
+// Authenticator was never handed a TOTP manager.
+//
+// The bypass this guards was live in v1.1.2 and needed no attacker sophistication
+// at all -- only an ordinary wiring mistake. An application builds one
+// totp.Manager for its enrollment endpoints, builds basic.Authenticator for
+// sign-in, and forgets Config.TOTPManager. RequireMFAWhenEnrolled defaults to
+// EnforceMFA, so the deployment believes MFA is on. IsTOTPEnabled answered false
+// because *it* had no manager, the gate in Authenticate read that as "no factor
+// enrolled", and the password alone returned the user. The store said the factor
+// was confirmed the whole time.
+//
+// The class is broader than TOTP: a security question whose wrong answer is a
+// bypass must not be answered from optional wiring. That is why the fix moves the
+// lookup to the credential store, which is the authority on what exists, rather
+// than adding a constructor check -- a constructor check would also have to break
+// every deployment that legitimately has no second factor at all.
+func TestMFA_HalfWiredAuthenticatorStillDemandsTheSecondFactor(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	userStore := storage.NewInMemoryUserStore()
+	credStore := storage.NewInMemoryCredentialStore()
+
+	// The manager the application DID wire, for its enrollment endpoints.
+	enroller, err := totp.NewManager(totp.Config{CredentialStore: credStore, Issuer: "App"})
+	if err != nil {
+		t.Fatalf("build enrollment manager: %v", err)
+	}
+
+	// The authenticator the application wired for sign-in, with TOTPManager unset
+	// and RequireMFAWhenEnrolled left at its zero value, which is EnforceMFA.
+	auth, err := NewAuthenticator(Config{UserStore: userStore, CredentialStore: credStore})
+	if err != nil {
+		t.Fatalf("build authenticator: %v", err)
+	}
+
+	const email, password = "victim@example.test", "correct-horse-battery-staple"
+	user, err := auth.Register(ctx, RegisterRequest{Email: email, Password: password})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	secret, err := enroller.GenerateSecret(ctx, user.ID, email)
+	if err != nil {
+		t.Fatalf("generate secret: %v", err)
+	}
+	code, err := totpLib.GenerateCode(secret.Secret, time.Now())
+	if err != nil {
+		t.Fatalf("generate code: %v", err)
+	}
+	if confirmErr := enroller.Confirm(ctx, user.ID, code); confirmErr != nil {
+		t.Fatalf("confirm enrollment: %v", confirmErr)
+	}
+
+	// Ground truth, read through the manager that owns the enrollment.
+	confirmed, stateErr := enroller.IsEnabled(ctx, user.ID)
+	if stateErr != nil {
+		t.Fatalf("read enrollment state: %v", stateErr)
+	}
+	if !confirmed {
+		t.Fatal("precondition failed: the factor should be confirmed before the sign-in attempt")
+	}
+
+	// The authenticator must agree with the store, not with its own wiring.
+	if enabled, lookupErr := auth.IsTOTPEnabled(ctx, user.ID); lookupErr != nil {
+		t.Fatalf("IsTOTPEnabled: %v", lookupErr)
+	} else if !enabled {
+		t.Error("IsTOTPEnabled reported no second factor while the store holds a confirmed one: " +
+			"the enrollment check is answering from optional wiring instead of from the store (F-35)")
+	}
+
+	// The bypass itself.
+	if _, gateErr := auth.Authenticate(ctx, email, password); !errors.Is(gateErr, ErrMFARequired) {
+		t.Fatalf("password alone returned %v, want ErrMFARequired: a confirmed second factor "+
+			"did not gate the sign-in, so MFA is bypassed for every user of a deployment that "+
+			"enrolls through a manager it did not also hand to the Authenticator (F-35)", err)
+	}
+
+	// A user with no factor must still sign in, or the fix has simply moved the
+	// outage: locking out everyone who never enrolled is not a security win.
+	other, err := auth.Register(ctx, RegisterRequest{Email: "nofactor@example.test", Password: password})
+	if err != nil {
+		t.Fatalf("register second user: %v", err)
+	}
+	if _, signInErr := auth.Authenticate(ctx, "nofactor@example.test", password); signInErr != nil {
+		t.Errorf("a user with no enrolled factor could not sign in: %v", signInErr)
+	}
+	if pending, pendErr := auth.IsTOTPPending(ctx, other.ID); pendErr != nil || pending {
+		t.Errorf("IsTOTPPending = %v, %v; want false, nil for a user who never enrolled", pending, pendErr)
+	}
+
+	// And a pending enrollment must NOT gate, or a half-finished setup locks the
+	// user out of their own account (F-07).
+	third, err := auth.Register(ctx, RegisterRequest{Email: "pending@example.test", Password: password})
+	if err != nil {
+		t.Fatalf("register third user: %v", err)
+	}
+	if _, pendingErr := enroller.GenerateSecret(ctx, third.ID, "pending@example.test"); pendingErr != nil {
+		t.Fatalf("generate pending secret: %v", pendingErr)
+	}
+	if _, signInErr := auth.Authenticate(ctx, "pending@example.test", password); signInErr != nil {
+		t.Errorf("an unconfirmed enrollment gated the sign-in: %v (F-07 regression)", signInErr)
+	}
+	if pending, pendErr := auth.IsTOTPPending(ctx, third.ID); pendErr != nil || !pending {
+		t.Errorf("IsTOTPPending = %v, %v; want true, nil for a stored-but-unconfirmed factor", pending, pendErr)
+	}
+}

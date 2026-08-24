@@ -69,6 +69,12 @@ touching its configuration does not get them:
   `GetAuthorizationURL`/`HandleCallback` pair is deprecated and still exposed.
 - **TOTP secret encryption (F-06).** `totp.Config.Cipher` encrypts the shared
   secret at rest. Backup codes are hashed either way.
+- **The second factor itself, if you enrol outside the Authenticator.** Enrolment
+  and sign-in must agree on what exists. `basic.Authenticator` reads enrolment
+  from the credential store, so it is correct whether or not you set
+  `Config.TOTPManager` — but only from v1.1.3. In v1.1.2 an Authenticator with no
+  manager reported every user as having no second factor and let the password
+  alone through (F-35). Upgrade.
 - **JWT issuer and audience checks (F-03).** Enforced only when
   `jwt.Config.Issuer` / `.Audience` are set.
 - **Microsoft multi-tenant issuer check (F-30).** `provider.NewMicrosoftProvider`
