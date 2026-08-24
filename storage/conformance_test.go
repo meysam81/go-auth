@@ -23,12 +23,21 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	// The suite asserts the metadata keys the library ACTUALLY reads and writes,
+	// so it takes them from the package that defines them rather than retyping
+	// the strings. A copy here would keep passing after auth/oidc moved on, which
+	// is the failure this import exists to prevent. An external test package may
+	// import a package that imports the package under test, so this is not a
+	// cycle.
+	authoidc "github.com/meysam81/go-auth/auth/oidc"
 	"github.com/meysam81/go-auth/storage"
 )
 
@@ -43,6 +52,124 @@ func waitPastDeadline() { time.Sleep(15 * time.Millisecond) }
 // past is a deadline that has already gone by, for the interfaces that take an
 // absolute expiry rather than a TTL.
 func past() time.Time { return time.Now().Add(-time.Hour) }
+
+// ---------------------------------------------------------------------------
+// Whole-record round trip
+// ---------------------------------------------------------------------------
+//
+// storage.go states the property these helpers enforce: "A store must round-trip
+// a WHOLE record, not the fields it recognizes." A backend that maps one column
+// per field it knows about and rebuilds the struct from that list does not fail
+// visibly. The record comes back looking valid with a security control quietly
+// missing from it -- no error, no log line, and a sign-in that proceeds without
+// PKCE or without a browser binding.
+//
+// The two helpers below walk a record REFLECTIVELY rather than naming its
+// fields, so a field added to storage.OIDCState or storage.User in a later
+// release is asserted without anybody remembering to come back here. That is the
+// only shape of assertion that can catch the backend written against an older
+// release of this library, which is the case the contract is actually worried
+// about.
+
+// storeManagedFields names the fields a store stamps from its own clock rather
+// than preserving. Every interface that carries one takes a TTL or an absolute
+// expiry as a separate argument, so the caller's value in the struct is not a
+// fact the store was asked to keep.
+//
+// Nothing else may be skipped. A timestamp added later is checked rather than
+// ignored, which fails in the safe direction: the suite reports it and somebody
+// decides which side owns the field, instead of a new field being certified by
+// never having been looked at.
+var storeManagedFields = map[string]bool{
+	"CreatedAt": true,
+	"UpdatedAt": true,
+	"ExpiresAt": true,
+}
+
+// fillRecord sets every exported, non-store-managed field of the struct pointed
+// to by record to a distinctive non-zero value derived from the field's name.
+//
+// The values are deterministic, so calling it twice yields two independent
+// records that compare equal -- which is how a test gets an untouched "want"
+// alongside the struct it hands to the store.
+//
+// A field whose type this suite cannot fill is a FAILURE rather than a skip. A
+// silently unfilled field is a field the round-trip assertion below can never
+// catch a store dropping, which would rebuild the very hole this suite exists to
+// close.
+func fillRecord(t *testing.T, record any) {
+	t.Helper()
+
+	value := reflect.ValueOf(record).Elem()
+	recordType := value.Type()
+
+	for i := 0; i < recordType.NumField(); i++ {
+		field := recordType.Field(i)
+		if !field.IsExported() || storeManagedFields[field.Name] {
+			continue
+		}
+
+		filled, ok := distinctFieldValue(field)
+		if !ok {
+			t.Fatalf("%s.%s is of type %s, which fillRecord cannot fill: teach it that type, "+
+				"or the field is certified by never being tested",
+				recordType.Name(), field.Name, field.Type)
+		}
+		value.Field(i).Set(filled)
+	}
+}
+
+// distinctFieldValue returns a non-zero value for one field, derived from the
+// field's NAME so that two fields of the same type carry different values and a
+// store that swaps them is caught alongside one that drops them.
+//
+// A bool is the exception: it has one non-zero value and cannot carry that
+// signal. The round-trip assertion still catches a bool the store discarded,
+// which is the failure the contract is about.
+func distinctFieldValue(field reflect.StructField) (reflect.Value, bool) {
+	switch field.Type {
+	case reflect.TypeOf(""):
+		return reflect.ValueOf("conformance-" + field.Name), true
+	case reflect.TypeOf(false):
+		return reflect.ValueOf(true), true
+	case reflect.TypeOf(uint32(0)):
+		return reflect.ValueOf(uint32(len(field.Name)) + 1), true
+	case reflect.TypeOf([]byte(nil)):
+		// A NUL and a high byte up front: a store that routes this through a
+		// text column, trims it or re-encodes it corrupts it HERE, in a named
+		// assertion, rather than later inside somebody's signature check.
+		return reflect.ValueOf(append([]byte{0x00, 0xff}, field.Name...)), true
+	case reflect.TypeOf([]string(nil)):
+		return reflect.ValueOf([]string{field.Name + "-a", field.Name + "-b"}), true
+	case reflect.TypeOf(map[string]interface{}(nil)):
+		return reflect.ValueOf(map[string]interface{}{"conformance/" + field.Name: field.Name}), true
+	}
+	return reflect.Value{}, false
+}
+
+// recordDiff reports the exported fields of want that got did not preserve.
+//
+// It returns names instead of failing, so the suite can point it in both
+// directions: at a store that must keep everything, and at a deliberately lossy
+// store that must be CAUGHT. An assertion nobody has ever seen fail is not
+// evidence that it can.
+func recordDiff(want, got any) []string {
+	wantValue := reflect.ValueOf(want).Elem()
+	gotValue := reflect.ValueOf(got).Elem()
+	recordType := wantValue.Type()
+
+	var dropped []string
+	for i := 0; i < recordType.NumField(); i++ {
+		field := recordType.Field(i)
+		if !field.IsExported() || storeManagedFields[field.Name] {
+			continue
+		}
+		if !reflect.DeepEqual(wantValue.Field(i).Interface(), gotValue.Field(i).Interface()) {
+			dropped = append(dropped, field.Name)
+		}
+	}
+	return dropped
+}
 
 // ConformanceSuite names the constructors an implementation supplies. Each one
 // must return a store with no state carried over from a previous call: the suite
@@ -245,6 +372,31 @@ func conformSessionStore(t *testing.T, newStore func() storage.SessionStore) {
 		}
 		if second.UserID != "u1" || second.Metadata["role"] != "user" {
 			t.Fatalf("writing to a returned session mutated the store: %+v", second)
+		}
+	})
+
+	// The whole session record, field by field, including fields this suite was
+	// not written for. Every authenticated request reads back through here, so a
+	// field this store declines to keep is a fact the application loses on every
+	// request rather than once.
+	t.Run("every field of session data survives the round trip", func(t *testing.T) {
+		t.Parallel()
+		store := newStore()
+
+		stored := &storage.SessionData{}
+		fillRecord(t, stored)
+		want := &storage.SessionData{}
+		fillRecord(t, want)
+
+		if err := store.CreateSession(ctx, "s1", stored, time.Hour); err != nil {
+			t.Fatalf("CreateSession: %v", err)
+		}
+		got, err := store.GetSession(ctx, "s1")
+		if err != nil {
+			t.Fatalf("GetSession: %v", err)
+		}
+		if dropped := recordDiff(want, got); len(dropped) > 0 {
+			t.Fatalf("the store did not round-trip %v\n got: %+v\nwant: %+v", dropped, got, want)
 		}
 	})
 
@@ -491,9 +643,10 @@ func conformOIDCStateStore(t *testing.T, newStore func() storage.OIDCStateStore)
 	})
 
 	// Nonce, code verifier and binding hash are the values that tie the two legs
-	// of the flow together. A store that keeps the caller's struct rather than a
-	// copy lets a later mutation -- or a caller reusing one struct across flows --
-	// rewrite the bindings of a flow already in progress.
+	// of the flow together, and the client mirrors each of them into Metadata as
+	// well. A store that keeps the caller's struct rather than a copy lets a later
+	// mutation -- or a caller reusing one struct across flows -- rewrite the
+	// bindings of a flow already in progress, through either copy.
 	t.Run("stored state does not alias the caller's struct", func(t *testing.T) {
 		t.Parallel()
 		store := newStore()
@@ -503,7 +656,12 @@ func conformOIDCStateStore(t *testing.T, newStore func() storage.OIDCStateStore)
 			Nonce:        "nonce-1",
 			CodeVerifier: "verifier-1",
 			BindingHash:  "hash-1",
-			Metadata:     map[string]interface{}{"tenant": "acme"},
+			Metadata: map[string]interface{}{
+				"tenant":                              "acme",
+				authoidc.StateMetadataKeyPKCEVerifier: "verifier-1",
+				authoidc.StateMetadataKeyBinding:      "hash-1",
+				authoidc.StateMetadataKeyNonce:        "nonce-1",
+			},
 		}
 		if err := store.StoreState(ctx, "s1", original, time.Hour); err != nil {
 			t.Fatalf("StoreState: %v", err)
@@ -513,6 +671,9 @@ func conformOIDCStateStore(t *testing.T, newStore func() storage.OIDCStateStore)
 		original.CodeVerifier = "verifier-2"
 		original.BindingHash = "hash-2"
 		original.Metadata["tenant"] = "attacker"
+		original.Metadata[authoidc.StateMetadataKeyPKCEVerifier] = "verifier-2"
+		original.Metadata[authoidc.StateMetadataKeyBinding] = "hash-2"
+		original.Metadata[authoidc.StateMetadataKeyNonce] = "nonce-2"
 
 		got, err := store.GetState(ctx, "s1")
 		if err != nil {
@@ -521,8 +682,183 @@ func conformOIDCStateStore(t *testing.T, newStore func() storage.OIDCStateStore)
 		if got.Nonce != "nonce-1" || got.CodeVerifier != "verifier-1" || got.BindingHash != "hash-1" {
 			t.Fatalf("the store aliased the caller's struct: %+v", got)
 		}
-		if got.Metadata["tenant"] != "acme" {
-			t.Fatalf("the store aliased the caller's metadata map: %+v", got.Metadata)
+		for key, want := range map[string]string{
+			"tenant":                              "acme",
+			authoidc.StateMetadataKeyPKCEVerifier: "verifier-1",
+			authoidc.StateMetadataKeyBinding:      "hash-1",
+			authoidc.StateMetadataKeyNonce:        "nonce-1",
+		} {
+			if got.Metadata[key] != want {
+				t.Errorf("the store aliased metadata key %q: got %v, want %q", key, got.Metadata[key], want)
+			}
+		}
+	})
+
+	// The whole record, field by field, including fields this suite was not
+	// written for. See the fillRecord comment: a backend that rebuilds the struct
+	// from a fixed column list is the failure mode the OIDC controls were lost to,
+	// and it is invisible from the happy path.
+	t.Run("every field of a state record survives the round trip", func(t *testing.T) {
+		t.Parallel()
+		store := newStore()
+
+		stored := &storage.OIDCState{}
+		fillRecord(t, stored)
+		stored.Metadata = flowStateMetadata()
+
+		// Filled from the same deterministic rule, so it is the record as handed
+		// over -- untouched by whatever StoreState does to the struct it is given.
+		want := &storage.OIDCState{}
+		fillRecord(t, want)
+		want.Metadata = flowStateMetadata()
+
+		if err := store.StoreState(ctx, "s1", stored, time.Hour); err != nil {
+			t.Fatalf("StoreState: %v", err)
+		}
+		got, err := store.GetState(ctx, "s1")
+		if err != nil {
+			t.Fatalf("GetState: %v", err)
+		}
+		if dropped := recordDiff(want, got); len(dropped) > 0 {
+			t.Fatalf("the store did not round-trip %v\n got: %+v\nwant: %+v", dropped, got, want)
+		}
+	})
+
+	// The three flow controls, asserted at BOTH addresses the OIDC client writes
+	// them to and reads them from. This is the assertion the suite was missing:
+	// auth/oidc reads each control from its typed field and falls back to the
+	// mirrored key, and readStateControls refuses the callback when both copies
+	// are gone. A store that keeps one location is survivable; a store that keeps
+	// neither stops every sign-in; a store that keeps the typed field and drops
+	// Metadata has silently spent the library's whole tolerance for the NEXT
+	// field it does not know about.
+	t.Run("the flow controls survive in both places the client writes them", func(t *testing.T) {
+		t.Parallel()
+
+		const (
+			verifier = "H1yYQ0d5cQ1eJ2Yq0wV8Zl3nB7tG4sK9pR6xM2cA0uE"
+			digest   = "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU"
+			nonce    = "aG9sZC1teS1ub25jZS12YWx1ZS1mb3ItdGhpcy10ZXN0"
+		)
+
+		// binding is either a digest or the explicit "unbound" marker. They are
+		// not interchangeable and neither may become the empty string: an empty
+		// BindingHash is how "the store dropped the digest" is told apart from
+		// "this flow was deliberately started without a browser binding", and
+		// collapsing the two silently reopens the login CSRF of finding F-16.
+		for _, binding := range []string{digest, authoidc.StateBindingUnbound} {
+			t.Run("binding="+binding, func(t *testing.T) {
+				t.Parallel()
+				store := newStore()
+
+				if err := store.StoreState(ctx, "s1", &storage.OIDCState{
+					RedirectURL:  "https://app.example.test/after-login",
+					Provider:     "google",
+					Nonce:        nonce,
+					CodeVerifier: verifier,
+					BindingHash:  binding,
+					Metadata: map[string]interface{}{
+						authoidc.StateMetadataKeyPKCEVerifier: verifier,
+						authoidc.StateMetadataKeyBinding:      binding,
+						authoidc.StateMetadataKeyNonce:        nonce,
+						"tenant":                              "acme",
+					},
+				}, time.Hour); err != nil {
+					t.Fatalf("StoreState: %v", err)
+				}
+
+				got, err := store.GetState(ctx, "s1")
+				if err != nil {
+					t.Fatalf("GetState: %v", err)
+				}
+
+				controls := []struct {
+					name     string
+					typed    string
+					key      string
+					want     string
+					protects string
+				}{
+					{"PKCE code verifier", got.CodeVerifier, authoidc.StateMetadataKeyPKCEVerifier, verifier,
+						"F-17: without it an intercepted authorization code is redeemable by whoever holds it"},
+					{"browser-binding marker", got.BindingHash, authoidc.StateMetadataKeyBinding, binding,
+						"F-16: without it the callback cannot tell the victim's browser from the attacker's"},
+					{"nonce", got.Nonce, authoidc.StateMetadataKeyNonce, nonce,
+						"F-18: without it an ID token captured from one authentication is replayable into another"},
+				}
+				for _, control := range controls {
+					if control.typed != control.want {
+						t.Errorf("%s: typed field = %q, want %q (%s)",
+							control.name, control.typed, control.want, control.protects)
+					}
+					raw, ok := got.Metadata[control.key]
+					if !ok {
+						t.Errorf("%s: metadata key %q is absent (%s)", control.name, control.key, control.protects)
+						continue
+					}
+					// auth/oidc reports a mirrored control of any other type as
+					// corrupt state and refuses the callback, so a store that
+					// re-encodes the value -- []byte, json.Number -- fails the
+					// sign-in as surely as one that dropped it.
+					mirrored, ok := raw.(string)
+					if !ok {
+						t.Errorf("%s: metadata key %q came back as %T, want string (%s)",
+							control.name, control.key, raw, control.protects)
+						continue
+					}
+					if mirrored != control.want {
+						t.Errorf("%s: metadata key %q = %q, want %q (%s)",
+							control.name, control.key, mirrored, control.want, control.protects)
+					}
+				}
+
+				// The two fields that decide what the callback does with the
+				// record at all: an unknown provider is refused outright, and the
+				// redirect URL is where the user lands afterwards.
+				if got.Provider != "google" {
+					t.Errorf("Provider = %q, want %q: the callback cannot resolve the flow's provider", got.Provider, "google")
+				}
+				if got.RedirectURL != "https://app.example.test/after-login" {
+					t.Errorf("RedirectURL = %q, want the URL the flow started with", got.RedirectURL)
+				}
+				if got.Metadata["tenant"] != "acme" {
+					t.Errorf("the application's own metadata key did not survive: %+v", got.Metadata)
+				}
+			})
+		}
+	})
+
+	// The suite's own mutation check. recordDiff is the assertion every
+	// round-trip case above rests on, and an assertion nobody has watched fail is
+	// not evidence that it can: a store built the ordinary way -- a column per
+	// field its author knew about -- must be CAUGHT here, naming the fields it
+	// silently discarded.
+	t.Run("a store that keeps only the fields it recognizes is caught", func(t *testing.T) {
+		t.Parallel()
+		store := &columnMappedStateStore{inner: newStore()}
+
+		stored := &storage.OIDCState{}
+		fillRecord(t, stored)
+		stored.Metadata = flowStateMetadata()
+
+		want := &storage.OIDCState{}
+		fillRecord(t, want)
+		want.Metadata = flowStateMetadata()
+
+		if err := store.StoreState(ctx, "s1", stored, time.Hour); err != nil {
+			t.Fatalf("StoreState: %v", err)
+		}
+		got, err := store.GetState(ctx, "s1")
+		if err != nil {
+			t.Fatalf("GetState: %v", err)
+		}
+
+		dropped := recordDiff(want, got)
+		for _, field := range []string{"CodeVerifier", "BindingHash", "Metadata"} {
+			if !slices.Contains(dropped, field) {
+				t.Errorf("recordDiff did not report %s as dropped; it reported %v. "+
+					"The round-trip cases above are certifying nothing.", field, dropped)
+			}
 		}
 	})
 
@@ -538,6 +874,75 @@ func conformOIDCStateStore(t *testing.T, newStore func() storage.OIDCStateStore)
 			t.Fatalf("GetState returned %+v for an unknown state", state)
 		}
 	})
+}
+
+// flowStateMetadata is the metadata map the OIDC client actually writes onto a
+// state record: one mirrored copy of each flow control under the reserved
+// prefix, the application's own key, and a reserved key from no release that
+// exists yet.
+//
+// The last one is the point. storage.go asks a store to persist "any field added
+// by a later release rather than reconstructing the struct from a known column
+// list", and a metadata key is where that promise is cheapest to break -- a
+// backend that filters the map to the keys its author had heard of drops
+// tomorrow's control while passing every test written today.
+func flowStateMetadata() map[string]interface{} {
+	return map[string]interface{}{
+		authoidc.StateMetadataKeyPKCEVerifier:    "conformance-pkce-verifier",
+		authoidc.StateMetadataKeyBinding:         "conformance-binding-digest",
+		authoidc.StateMetadataKeyNonce:           "conformance-nonce",
+		"tenant":                                 "acme",
+		authoidc.StateMetadataPrefix + "unknown": "a control from a release this store has never seen",
+	}
+}
+
+// columnMappedStateStore is a store written the way backends usually are: a
+// column per field its author knew about, and a metadata map filtered to the
+// keys its author recognized.
+//
+// It is not a strawman. It is exactly what storage.OIDCStateStore looked like to
+// anyone who implemented it before the PKCE verifier and the browser-binding
+// digest existed, and the record it hands back is indistinguishable from a valid
+// one until the callback tries to enforce a control that is no longer there. The
+// suite uses it to prove recordDiff can fail.
+type columnMappedStateStore struct {
+	inner storage.OIDCStateStore
+}
+
+// StoreState delegates: the loss is on the way out, which is what makes it hard
+// to see.
+func (s *columnMappedStateStore) StoreState(ctx context.Context, state string, data *storage.OIDCState, ttl time.Duration) error {
+	return s.inner.StoreState(ctx, state, data, ttl)
+}
+
+// GetState rebuilds the record from the columns this backend was written for.
+func (s *columnMappedStateStore) GetState(ctx context.Context, state string) (*storage.OIDCState, error) {
+	full, err := s.inner.GetState(ctx, state)
+	if err != nil {
+		return nil, err
+	}
+
+	rebuilt := &storage.OIDCState{
+		RedirectURL: full.RedirectURL,
+		Provider:    full.Provider,
+		Nonce:       full.Nonce,
+		CreatedAt:   full.CreatedAt,
+	}
+	for key, value := range full.Metadata {
+		if key != "tenant" { // the one key this backend has a column for
+			continue
+		}
+		if rebuilt.Metadata == nil {
+			rebuilt.Metadata = make(map[string]interface{}, 1)
+		}
+		rebuilt.Metadata[key] = value
+	}
+	return rebuilt, nil
+}
+
+// DeleteState delegates.
+func (s *columnMappedStateStore) DeleteState(ctx context.Context, state string) error {
+	return s.inner.DeleteState(ctx, state)
 }
 
 // ---------------------------------------------------------------------------
@@ -1081,6 +1486,34 @@ func conformWebAuthnCredentials(t *testing.T, newStore func() storage.Credential
 		}
 	})
 
+	// The whole credential, field by field, including fields this suite was not
+	// written for. AAGUID and Transports are the ones a backend is most likely to
+	// have no column for, and both are inputs to an authenticator policy the
+	// application may enforce later.
+	t.Run("every field of a credential survives the round trip", func(t *testing.T) {
+		t.Parallel()
+		store := newStore()
+
+		stored := &storage.WebAuthnCredential{}
+		fillRecord(t, stored)
+		want := &storage.WebAuthnCredential{}
+		fillRecord(t, want)
+
+		if err := store.StoreWebAuthnCredential(ctx, want.UserID, stored); err != nil {
+			t.Fatalf("StoreWebAuthnCredential: %v", err)
+		}
+		creds, err := store.GetWebAuthnCredentials(ctx, want.UserID)
+		if err != nil {
+			t.Fatalf("GetWebAuthnCredentials: %v", err)
+		}
+		if len(creds) != 1 {
+			t.Fatalf("GetWebAuthnCredentials returned %d credentials, want 1", len(creds))
+		}
+		if dropped := recordDiff(want, creds[0]); len(dropped) > 0 {
+			t.Fatalf("the store did not round-trip %v\n got: %+v\nwant: %+v", dropped, creds[0], want)
+		}
+	})
+
 	t.Run("reads do not alias stored state", func(t *testing.T) {
 		t.Parallel()
 		store := newStore()
@@ -1257,6 +1690,123 @@ func conformUserStore(t *testing.T, newStore func() storage.UserStore) {
 		}
 		if again.Email != "victim@example.test" || again.Metadata["role"] != "user" {
 			t.Fatalf("writing to a returned user mutated the store: %+v", again)
+		}
+	})
+
+	// The whole user record, field by field, including fields this suite was not
+	// written for. ProviderSubject is the one that matters most and the one a
+	// backend written against an older release has no column for: without it a
+	// federated account has nothing to check the next assertion against.
+	t.Run("every field of a user survives the round trip", func(t *testing.T) {
+		t.Parallel()
+		store := newStore()
+
+		stored := &storage.User{}
+		fillRecord(t, stored)
+		stored.Metadata = map[string]interface{}{
+			authoidc.UserMetadataKeyProviderSubject: "conformance-ProviderSubject",
+			"department":                            "engineering",
+		}
+
+		want := &storage.User{}
+		fillRecord(t, want)
+		want.Metadata = map[string]interface{}{
+			authoidc.UserMetadataKeyProviderSubject: "conformance-ProviderSubject",
+			"department":                            "engineering",
+		}
+
+		if err := store.CreateUser(ctx, stored); err != nil {
+			t.Fatalf("CreateUser: %v", err)
+		}
+		got, err := store.GetUserByID(ctx, want.ID)
+		if err != nil {
+			t.Fatalf("GetUserByID: %v", err)
+		}
+		if dropped := recordDiff(want, got); len(dropped) > 0 {
+			t.Fatalf("the store did not round-trip %v\n got: %+v\nwant: %+v", dropped, got, want)
+		}
+	})
+
+	// F-01. The provider's subject identifier is the only stable join key a
+	// federated identity offers, and the OIDC client writes it twice: to
+	// User.ProviderSubject and to the mirrored metadata key. It writes it on
+	// CREATE for a new account and, for an account that predates subject
+	// recording, through UPDATE -- a write the interface doc calls out because a
+	// store that ignores changes to those two leaves such accounts permanently
+	// unpinned, refusing their owners on every sign-in with no way to clear it.
+	//
+	// The re-read is by EMAIL as well as by ID because that is the lookup the
+	// client performs: a store that writes the row but leaves a stale copy behind
+	// the email index answers the next sign-in with the un-backfilled record.
+	t.Run("a backfilled provider subject survives in both places", func(t *testing.T) {
+		t.Parallel()
+		store := newStore()
+
+		const (
+			email   = "federated@example.test"
+			subject = "104291849132384795121"
+		)
+
+		// An account from a release that recorded no subject at all.
+		if err := store.CreateUser(ctx, &storage.User{
+			ID:       "u1",
+			Email:    email,
+			Provider: "google",
+		}); err != nil {
+			t.Fatalf("CreateUser: %v", err)
+		}
+
+		existing, err := store.GetUserByEmail(ctx, email)
+		if err != nil {
+			t.Fatalf("GetUserByEmail: %v", err)
+		}
+		if existing.ProviderSubject != "" {
+			t.Fatalf("ProviderSubject = %q on an account created without one", existing.ProviderSubject)
+		}
+
+		// Exactly what auth/oidc does when it adopts such an account.
+		existing.ProviderSubject = subject
+		if existing.Metadata == nil {
+			existing.Metadata = make(map[string]interface{}, 1)
+		}
+		existing.Metadata[authoidc.UserMetadataKeyProviderSubject] = subject
+		if err := store.UpdateUser(ctx, existing); err != nil {
+			t.Fatalf("UpdateUser: %v", err)
+		}
+
+		lookups := map[string]func() (*storage.User, error){
+			"by ID":    func() (*storage.User, error) { return store.GetUserByID(ctx, "u1") },
+			"by email": func() (*storage.User, error) { return store.GetUserByEmail(ctx, email) },
+		}
+		for name, lookup := range lookups {
+			user, err := lookup()
+			if err != nil {
+				t.Errorf("%s: %v", name, err)
+				continue
+			}
+			if user.ProviderSubject != subject {
+				t.Errorf("%s: ProviderSubject = %q, want %q: the backfill was dropped and the account "+
+					"is unpinned again (F-01)", name, user.ProviderSubject, subject)
+			}
+			raw, ok := user.Metadata[authoidc.UserMetadataKeyProviderSubject]
+			if !ok {
+				t.Errorf("%s: metadata key %q is absent after the backfill (F-01)",
+					name, authoidc.UserMetadataKeyProviderSubject)
+				continue
+			}
+			// A present value of the wrong type is reported by auth/oidc as a
+			// damaged record and fails the sign-in closed, so it is no better
+			// than an absent one.
+			mirrored, ok := raw.(string)
+			if !ok {
+				t.Errorf("%s: metadata key %q came back as %T, want string (F-01)",
+					name, authoidc.UserMetadataKeyProviderSubject, raw)
+				continue
+			}
+			if mirrored != subject {
+				t.Errorf("%s: metadata key %q = %q, want %q (F-01)",
+					name, authoidc.UserMetadataKeyProviderSubject, mirrored, subject)
+			}
 		}
 	})
 

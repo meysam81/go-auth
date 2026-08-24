@@ -27,11 +27,22 @@ linters:
     - gosec
     - misspell
     - nilnil
+    # F-20 was an outbound request built without a context and without a
+    # timeout. noctx is the rule that would have caught it: it flags every
+    # http.Get/http.NewRequest/client.Do that carries no context, in the
+    # library and in the tests alike.
+    - noctx
     - paralleltest
     - prealloc
     - revive
     - unconvert
     - wastedassign
+    # docs/security-hardening.md §5 also names testifylint. It is deliberately
+    # absent: nothing in this module imports stretchr/testify -- the go.sum
+    # entry is a transitive test dependency of another module, not an import of
+    # ours -- so the linter would have nothing to inspect. Enabling a rule that
+    # cannot fire is the defect the closing comment of this file describes, so
+    # the claim in the docs is what needs correcting, not the config.
 
   settings:
     errcheck:
@@ -165,9 +176,70 @@ linters:
         text: "G404"
         linters:
           - gosec
-      # F-09's timing test and the store-conformance suites deliberately run
-      # serially: t.Parallel() would make the measurements meaningless.
+      # noctx also flags httptest.NewRequest, which predates
+      # httptest.NewRequestWithContext and cannot carry one. The request it
+      # builds is handed straight to a handler in the same process and never
+      # crosses a network, so there is no call for a context to cancel and no
+      # F-20 to catch. Only that constructor is exempt: an outbound request
+      # built without a context is still reported inside a test.
       - path: _test\.go$
+        text: "httptest\\.NewRequest must not be called"
+        linters:
+          - noctx
+
+      # paralleltest, exclusion 1 of 3: tests that must NOT run in parallel,
+      # named one at a time so every other test in the same file stays under the
+      # rule. Each makes an observation that a test running beside it would
+      # destroy, and Go releases a package's parallel tests only after its
+      # sequential ones have returned -- running sequentially IS the isolation.
+      #   auth/basic: the F-09 pair times bcrypt on the account-not-found path,
+      #     and counts entropy draws against a swapped process-global
+      #     crypto/rand.Reader.
+      #   auth/jwt: a TotalAlloc delta bounding the CVE-2025-30204 decode.
+      #   provider: a swapped package-level default HTTP client.
+      - path: auth/basic/adversarial_test\.go$
+        text: "Test(Authenticate_AccountExistenceIsNotMeasurable|GeneratePasswordResetToken_UnknownAccountPaysForTheSameCeremony)"
+        linters:
+          - paralleltest
+      - path: auth/jwt/adversarial_test\.go$
+        text: "TestJWT_DeeplyPaddedTokenRejectedWithoutUnboundedAllocation"
+        linters:
+          - paralleltest
+      - path: provider/adversarial_test\.go$
+        text: "TestVendorConstructors_OIDCIssuerAndScopesPinned"
+        linters:
+          - paralleltest
+
+      # paralleltest, exclusion 2 of 3: a LEDGER of suites that have not adopted
+      # t.Parallel -- not a claim that they cannot. It replaces a blanket
+      # `path: _test\.go$` exclusion, which matched every file the linter can
+      # fire on and so made it a rule that could never report anything: the
+      # shape this file's closing comment warns about.
+      #
+      # Naming the files keeps the rule live everywhere else. It is enforced
+      # today on storage/conformance_test.go, auth/oidc/adversarial_test.go,
+      # auth/oidc/oidc_hardening_test.go, auth/webauthn/adversarial_test.go,
+      # auth/basic/adversarial_test.go, auth/jwt/adversarial_test.go,
+      # middleware/adversarial_test.go, session/adversarial_test.go,
+      # provider/{adversarial,hardening}_test.go, and on every test file added
+      # from here on.
+      #
+      # The list shrinks, it does not grow. To retire an entry, add t.Parallel
+      # to that file's tests and delete its alternative below; to see what is
+      # left in one, run:
+      #   golangci-lint run --enable-only=paralleltest ./<pkg>/...
+      - path: (audit/(audit|noop|stdlib|wrapper)|auth/basic/basic|auth/jwt/jwt|auth/totp/(totp|adversarial)|middleware/middleware|session/session|storage/memory)_test\.go$
+        linters:
+          - paralleltest
+
+      # paralleltest, exclusion 3 of 3: the same debt inside a file that is
+      # otherwise converted, so it is recorded test by test rather than by
+      # dropping the whole file out of the rule -- a test added to
+      # auth/basic/adversarial_test.go tomorrow is still checked. These three are
+      # t.Run bodies nobody has got to yet, NOT tests that need to be sequential;
+      # the ones that do are exclusion 1.
+      - path: auth/basic/adversarial_test\.go$
+        text: "Test(GeneratePasswordResetToken_UnknownAccountIsIndistinguishable|PasswordResetToken_MalformedTokensAreRejected|Authenticate_ConfirmedSecondFactorBlocksPasswordOnlySignIn)"
         linters:
           - paralleltest
 
