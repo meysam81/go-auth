@@ -1,0 +1,22 @@
+# Per-package statement-coverage floor, in percent.
+#
+# F-23 (docs/security-hardening.md §3): three of the packages that handle
+# untrusted input shipped at 0.0 % coverage. This file is the ratchet -- CI
+# fails when a package drops below its recorded floor, so coverage can only go
+# up. The values are the measured baseline of the v1.1.1 audit, rounded down.
+#
+# auth/oidc, auth/webauthn and provider sit at 0 deliberately: the §6 test
+# programme raises them in a later phase, and the gate is written to read this
+# file so raising a floor is a one-line change here, not a code change.
+#
+# Format: <package path relative to the module root> <floor percent>
+audit 50
+auth/basic 80
+auth/jwt 85
+auth/oidc 0
+auth/totp 78
+auth/webauthn 0
+middleware 30
+provider 0
+session 80
+storage 75

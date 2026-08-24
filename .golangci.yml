@@ -1,0 +1,187 @@
+# golangci-lint configuration for go-auth.
+#
+# F-23 (docs/security-hardening.md §5): before this file existed the linter ran
+# on defaults, so nothing checked for weak randomness, blank-identifier error
+# suppression, leaked response bodies or context-less requests -- the exact
+# classes that produced findings F-11, F-12 and F-20. The rules below are the
+# enforcement half of that finding; the test programme in §6 is the other half.
+version: "2"
+
+run:
+  timeout: 5m
+  # Tests exercise the adversarial suites in §6 and are held to the same bar as
+  # the library, except where a rule is meaningless there (see exclusions).
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - contextcheck
+    - copyloopvar
+    - depguard
+    - errorlint
+    - exhaustive
+    - forbidigo
+    - gocritic
+    - gosec
+    - misspell
+    - nilnil
+    - paralleltest
+    - prealloc
+    - revive
+    - unconvert
+    - wastedassign
+
+  settings:
+    errcheck:
+      # F-11/F-12: `_ = a.userStore.DeleteUser(...)` and a discarded
+      # DeletePasswordResetToken were both findings. A blank assignment is an
+      # unhandled error wearing a disguise, so it is an error here.
+      check-blank: true
+      check-type-assertions: true
+
+    govet:
+      enable-all: true
+      disable:
+        # fieldalignment optimises struct padding; it fights the readability of
+        # config structs whose field order is part of the documented API.
+        - fieldalignment
+
+    gosec:
+      severity: low
+      confidence: low
+      excludes:
+        # G115 (integer overflow conversion) is handled by govet's own
+        # conversion checks and fires on every int->int64 in the codebase.
+        - G115
+
+    depguard:
+      rules:
+        main:
+          # A minimal dependency set is a stated design value of this library
+          # (docs/security-hardening.md §5): every module here is either a
+          # cryptographic primitive we must not reimplement or a protocol
+          # implementation. Anything else expands the attack surface of every
+          # consumer, so the set is enforced by rule rather than by discipline.
+          list-mode: strict
+          allow:
+            - $gostd
+            - github.com/meysam81/go-auth
+            - golang.org/x/crypto
+            - golang.org/x/oauth2
+            - github.com/golang-jwt/jwt/v5
+            - github.com/coreos/go-oidc/v3
+            - github.com/go-webauthn/webauthn
+            - github.com/pquerna/otp
+
+    forbidigo:
+      # Needed so `pkg` below matches the resolved import path rather than the
+      # local identifier, which an alias could otherwise dodge.
+      analyze-types: true
+      forbid:
+        # CWE-338. Every value this library generates -- session IDs, OIDC
+        # state, PKCE verifiers, nonces, reset tokens, TOTP secrets and backup
+        # codes -- is a security token. math/rand is seeded predictably and its
+        # v2 stream is still not unpredictable to an attacker who observes
+        # output. crypto/rand only.
+        - pattern: ^rand\..*$
+          pkg: ^math/rand$
+          msg: "F-23/CWE-338: math/rand is not cryptographically secure. Use crypto/rand."
+        - pattern: ^rand\..*$
+          pkg: ^math/rand/v2$
+          msg: "F-23/CWE-338: math/rand/v2 is not cryptographically secure. Use crypto/rand."
+
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+
+    exhaustive:
+      # A switch that ends in `default` has stated what it does with the values
+      # it did not name; one that does not is a silent fall-through.
+      default-signifies-exhaustive: true
+
+    nilnil:
+      detect-opposite: true
+
+    revive:
+      # Google Go Style Guide: naming, error strings, and a doc comment on every
+      # exported symbol that starts with the symbol name.
+      severity: error
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: empty-block
+        - name: error-naming
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: exported
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-naming
+        - name: unexported-return
+        - name: unreachable-code
+        - name: var-declaration
+        - name: var-naming
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+      disabled-checks:
+        # Conflicts with the doc-comment style the Google guide prescribes.
+        - commentFormatting
+        # Named results are how the deferred-rollback shape in F-11 is written.
+        - unnamedResult
+        - hugeParam
+
+    misspell:
+      locale: US
+
+    staticcheck:
+      checks:
+        - all
+
+  exclusions:
+    generated: lax
+    rules:
+      # A test may legitimately need a deterministic, reproducible pseudo-random
+      # stream (fuzz corpora, table shuffling). No token minted in a test is a
+      # real credential, so the crypto/rand mandate does not apply there.
+      - path: _test\.go$
+        linters:
+          - forbidigo
+      - path: _test\.go$
+        text: "G404"
+        linters:
+          - gosec
+      # F-09's timing test and the store-conformance suites deliberately run
+      # serially: t.Parallel() would make the measurements meaningless.
+      - path: _test\.go$
+        linters:
+          - paralleltest
+
+issues:
+  # golangci-lint reports at most one issue per line by default, so when gosec's
+  # G404 and forbidigo's math/rand ban both land on the same call, one of them is
+  # silently dropped -- and which one survives is an ordering accident. A rule
+  # that cannot be observed firing is not a control, which is the shape of F-23
+  # itself, so every finding is surfaced.
+  uniq-by-line: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
