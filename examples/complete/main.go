@@ -78,13 +78,18 @@ func (s *PostgresUserStore) GetUserByID(ctx context.Context, id string) (*storag
 		`SELECT id, email, email_verified, username, name, provider, metadata, created_at, updated_at
 		 FROM users WHERE id = $1`, id,
 	).Scan(&user.ID, &user.Email, &user.EmailVerified, &user.Username, &user.Name, &user.Provider, &metadata, &user.CreatedAt, &user.UpdatedAt)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, storage.ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal(metadata, &user.Metadata)
+	// A row whose metadata column does not parse is corrupt, not empty. Silently
+	// continuing would hand the caller a user with the metadata field missing,
+	// which downstream code cannot distinguish from a user who has none.
+	if err := json.Unmarshal(metadata, &user.Metadata); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal user metadata: %w", err)
+	}
 	return user, nil
 }
 
@@ -95,13 +100,18 @@ func (s *PostgresUserStore) GetUserByEmail(ctx context.Context, email string) (*
 		`SELECT id, email, email_verified, username, name, provider, metadata, created_at, updated_at
 		 FROM users WHERE email = $1`, email,
 	).Scan(&user.ID, &user.Email, &user.EmailVerified, &user.Username, &user.Name, &user.Provider, &metadata, &user.CreatedAt, &user.UpdatedAt)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, storage.ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal(metadata, &user.Metadata)
+	// A row whose metadata column does not parse is corrupt, not empty. Silently
+	// continuing would hand the caller a user with the metadata field missing,
+	// which downstream code cannot distinguish from a user who has none.
+	if err := json.Unmarshal(metadata, &user.Metadata); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal user metadata: %w", err)
+	}
 	return user, nil
 }
 
@@ -112,19 +122,27 @@ func (s *PostgresUserStore) GetUserByUsername(ctx context.Context, username stri
 		`SELECT id, email, email_verified, username, name, provider, metadata, created_at, updated_at
 		 FROM users WHERE username = $1`, username,
 	).Scan(&user.ID, &user.Email, &user.EmailVerified, &user.Username, &user.Name, &user.Provider, &metadata, &user.CreatedAt, &user.UpdatedAt)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, storage.ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal(metadata, &user.Metadata)
+	// A row whose metadata column does not parse is corrupt, not empty. Silently
+	// continuing would hand the caller a user with the metadata field missing,
+	// which downstream code cannot distinguish from a user who has none.
+	if err := json.Unmarshal(metadata, &user.Metadata); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal user metadata: %w", err)
+	}
 	return user, nil
 }
 
 func (s *PostgresUserStore) UpdateUser(ctx context.Context, user *storage.User) error {
-	metadata, _ := json.Marshal(user.Metadata)
-	_, err := s.db.ExecContext(ctx,
+	metadata, err := json.Marshal(user.Metadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal user metadata: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx,
 		`UPDATE users SET email = $2, email_verified = $3, username = $4, name = $5, provider = $6, metadata = $7, updated_at = $8
 		 WHERE id = $1`,
 		user.ID, user.Email, user.EmailVerified, user.Username, user.Name, user.Provider, metadata, time.Now(),
@@ -158,15 +176,18 @@ func (s *PostgresCredentialStore) StorePasswordHash(ctx context.Context, userID 
 func (s *PostgresCredentialStore) GetPasswordHash(ctx context.Context, userID string) ([]byte, error) {
 	var hash []byte
 	err := s.db.QueryRowContext(ctx, `SELECT hash FROM password_hashes WHERE user_id = $1`, userID).Scan(&hash)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, storage.ErrNotFound
 	}
 	return hash, err
 }
 
 func (s *PostgresCredentialStore) StoreWebAuthnCredential(ctx context.Context, userID string, cred *storage.WebAuthnCredential) error {
-	metadata, _ := json.Marshal(cred.Metadata)
-	_, err := s.db.ExecContext(ctx,
+	metadata, err := json.Marshal(cred.Metadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal credential metadata: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO webauthn_credentials (id, user_id, public_key, attestation_type, aaguid, sign_count, transports, metadata, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		cred.ID, userID, cred.PublicKey, cred.AttestationType, cred.AAGUID, cred.SignCount, pq.Array(cred.Transports), metadata, cred.CreatedAt, cred.UpdatedAt,
@@ -182,7 +203,14 @@ func (s *PostgresCredentialStore) GetWebAuthnCredentials(ctx context.Context, us
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		// A leaked *sql.Rows holds its connection until the finalizer runs. The
+		// close error cannot change what this function already returned, so it
+		// is logged rather than discarded.
+		if err := rows.Close(); err != nil {
+			log.Printf("close webauthn credential rows: %v", err)
+		}
+	}()
 
 	var credentials []*storage.WebAuthnCredential
 	for rows.Next() {
@@ -228,7 +256,7 @@ func (s *PostgresCredentialStore) ValidatePasswordResetToken(ctx context.Context
 	err := s.db.QueryRowContext(ctx,
 		`SELECT user_id FROM password_reset_tokens WHERE token = $1 AND expires_at > NOW()`, token,
 	).Scan(&userID)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", storage.ErrNotFound
 	}
 	return userID, err
@@ -252,7 +280,7 @@ func (s *PostgresCredentialStore) ValidateEmailVerificationToken(ctx context.Con
 	err := s.db.QueryRowContext(ctx,
 		`SELECT user_id FROM email_verification_tokens WHERE token = $1 AND expires_at > NOW()`, token,
 	).Scan(&userID)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", storage.ErrNotFound
 	}
 	return userID, err
@@ -278,7 +306,7 @@ func (s *PostgresCredentialStore) GetTOTPSecret(ctx context.Context, userID stri
 	err := s.db.QueryRowContext(ctx,
 		`SELECT secret, backup_codes FROM totp_secrets WHERE user_id = $1`, userID,
 	).Scan(&secret, pq.Array(&backupCodes))
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil, storage.ErrNotFound
 	}
 	return secret, backupCodes, err
@@ -323,9 +351,12 @@ func NewPostgresSessionStore(db *sql.DB) *PostgresSessionStore {
 }
 
 func (s *PostgresSessionStore) CreateSession(ctx context.Context, sessionID string, data *storage.SessionData, ttl time.Duration) error {
-	metadata, _ := json.Marshal(data.Metadata)
+	metadata, err := json.Marshal(data.Metadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal session metadata: %w", err)
+	}
 	expiresAt := time.Now().Add(ttl)
-	_, err := s.db.ExecContext(ctx,
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO sessions (id, user_id, email, provider, metadata, created_at, expires_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		sessionID, data.UserID, data.Email, data.Provider, metadata, data.CreatedAt, expiresAt,
@@ -340,7 +371,7 @@ func (s *PostgresSessionStore) GetSession(ctx context.Context, sessionID string)
 		`SELECT user_id, email, provider, metadata, created_at, expires_at
 		 FROM sessions WHERE id = $1 AND expires_at > NOW()`, sessionID,
 	).Scan(&data.UserID, &data.Email, &data.Provider, &metadata, &data.CreatedAt, &data.ExpiresAt)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, storage.ErrNotFound
 	}
 	if err != nil {
@@ -353,9 +384,12 @@ func (s *PostgresSessionStore) GetSession(ctx context.Context, sessionID string)
 }
 
 func (s *PostgresSessionStore) UpdateSession(ctx context.Context, sessionID string, data *storage.SessionData, ttl time.Duration) error {
-	metadata, _ := json.Marshal(data.Metadata)
+	metadata, err := json.Marshal(data.Metadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal session metadata: %w", err)
+	}
 	expiresAt := time.Now().Add(ttl)
-	_, err := s.db.ExecContext(ctx,
+	_, err = s.db.ExecContext(ctx,
 		`UPDATE sessions SET email = $2, provider = $3, metadata = $4, expires_at = $5 WHERE id = $1`,
 		sessionID, data.Email, data.Provider, metadata, expiresAt,
 	)
@@ -395,7 +429,7 @@ func (s *PostgresTokenStore) ValidateRefreshToken(ctx context.Context, tokenID s
 	err := s.db.QueryRowContext(ctx,
 		`SELECT user_id FROM refresh_tokens WHERE token_id = $1 AND expires_at > NOW() AND revoked = FALSE`, tokenID,
 	).Scan(&userID)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", storage.ErrNotFound
 	}
 	return userID, err
@@ -421,9 +455,12 @@ func NewPostgresOIDCStateStore(db *sql.DB) *PostgresOIDCStateStore {
 }
 
 func (s *PostgresOIDCStateStore) StoreState(ctx context.Context, state string, data *storage.OIDCState, ttl time.Duration) error {
-	metadata, _ := json.Marshal(data.Metadata)
+	metadata, err := json.Marshal(data.Metadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal state metadata: %w", err)
+	}
 	expiresAt := time.Now().Add(ttl)
-	_, err := s.db.ExecContext(ctx,
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO oidc_states (state, redirect_url, nonce, provider, metadata, created_at, expires_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		state, data.RedirectURL, data.Nonce, data.Provider, metadata, data.CreatedAt, expiresAt,
@@ -438,7 +475,7 @@ func (s *PostgresOIDCStateStore) GetState(ctx context.Context, state string) (*s
 		`SELECT redirect_url, nonce, provider, metadata, created_at
 		 FROM oidc_states WHERE state = $1 AND expires_at > NOW()`, state,
 	).Scan(&data.RedirectURL, &data.Nonce, &data.Provider, &metadata, &data.CreatedAt)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, storage.ErrNotFound
 	}
 	if err != nil {
@@ -509,7 +546,15 @@ type App struct {
 	credStore     storage.CredentialStore
 	auditLogger   *SlogAuditLogger
 	signingKey    []byte
+
+	// oidcBinding writes the cookie that binds an OIDC flow to the browser that
+	// started it (finding F-16).
+	oidcBinding middleware.SessionTokenWriter
 }
+
+// googleIssuerURL is all that is needed to configure Google: OIDC discovery
+// supplies the authorization, token, userinfo and JWKS endpoints.
+const googleIssuerURL = "https://accounts.google.com"
 
 func main() {
 	// Command line flags
@@ -535,14 +580,26 @@ func main() {
 		tokenStore = storage.NewInMemoryTokenStore()
 		stateStore = storage.NewInMemoryOIDCStateStore()
 	} else {
-		log.Printf("Connecting to PostgreSQL: %s", *dbURL)
+		// The connection string is not logged. A libpq DSN carries the password
+		// in the clear, so echoing it publishes a credential to wherever the
+		// logs go.
+		log.Println("Connecting to PostgreSQL")
 		db, err := sql.Open("postgres", *dbURL)
 		if err != nil {
 			log.Fatalf("Failed to connect to database: %v", err)
 		}
-		defer db.Close()
+		defer func() {
+			if err := db.Close(); err != nil {
+				log.Printf("close database: %v", err)
+			}
+		}()
 
 		if err := db.Ping(); err != nil {
+			// log.Fatalf exits without running deferred functions, so the handle
+			// is closed here rather than left to the deferred close above.
+			if closeErr := db.Close(); closeErr != nil {
+				log.Printf("close database after failed ping: %v", closeErr)
+			}
 			log.Fatalf("Failed to ping database: %v", err)
 		}
 
@@ -566,10 +623,38 @@ func main() {
 	// Initialize audit logger
 	auditLogger := NewSlogAuditLogger()
 
-	// Create basic authenticator
+	// Create TOTP manager first: the authenticator needs it to enforce the
+	// second factor.
+	//
+	// Cipher is nil here because the example has no key management to show. A
+	// real deployment must supply one, or the shared secret is written to the
+	// credential store in plaintext and one read of that store yields a working
+	// second factor for every enrolled user (finding F-06, CWE-522). Backup
+	// codes are hashed either way. ReplayGuard is left nil, which installs the
+	// in-memory guard that closes code replay (finding F-08) for a
+	// single-process deployment; a multi-instance one needs a shared guard.
+	totpManager, err := totp.NewManager(totp.Config{
+		CredentialStore: credStore,
+		Issuer:          "GoAuthExample",
+	})
+	if err != nil {
+		log.Fatalf("Failed to create TOTP manager: %v", err)
+	}
+
+	// Create basic authenticator.
+	//
+	// TOTPManager is wired in so Authenticate knows about the second factor.
+	// Without it, IsTOTPEnabled always reports false and a user who has enrolled
+	// signs in on the password alone — the factor is enrolled, the user believes
+	// it protects them, and this call site decides it does not.
+	//
+	// RequireMFAWhenEnrolled is left at its zero value, basic.EnforceMFA, so
+	// Authenticate returns basic.ErrMFARequired for an enrolled user rather than
+	// returning the user. handleLogin below acts on that explicitly.
 	basicAuth, err := basic.NewAuthenticator(basic.Config{
 		UserStore:       userStore,
 		CredentialStore: credStore,
+		TOTPManager:     totpManager,
 	})
 	if err != nil {
 		log.Fatalf("Failed to create basic authenticator: %v", err)
@@ -582,19 +667,16 @@ func main() {
 		SigningKey:      signingKey,
 		AccessTokenTTL:  15 * time.Minute,
 		RefreshTokenTTL: 7 * 24 * time.Hour,
-		Issuer:          "go-auth-complete-example",
+		// Issuer and Audience are both minted and, because they are set, both
+		// required at validation (finding F-03). Without them two services
+		// sharing one signing secret accept each other's tokens.
+		Issuer:   "go-auth-complete-example",
+		Audience: []string{"go-auth-complete-example-api"},
+		// MetadataAllowlist is deliberately empty: no storage.User.Metadata key
+		// reaches a token. A JWT is base64, not encrypted (finding F-21).
 	})
 	if err != nil {
 		log.Fatalf("Failed to create JWT manager: %v", err)
-	}
-
-	// Create TOTP manager
-	totpManager, err := totp.NewManager(totp.Config{
-		CredentialStore: credStore,
-		Issuer:          "GoAuthExample",
-	})
-	if err != nil {
-		log.Fatalf("Failed to create TOTP manager: %v", err)
 	}
 
 	// Create session manager
@@ -635,18 +717,28 @@ func main() {
 	googleClientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
 	if googleClientID != "" && googleClientSecret != "" {
 		ctx := context.Background()
-		googleProvider, err := provider.NewGoogleProvider(
+		// provider.NewGoogleProvider is deprecated: it is this call with the
+		// issuer URL and scopes filled in. OIDC discovery configures any
+		// OIDC-capable provider from its issuer URL alone.
+		googleProvider, err := provider.NewOIDCProvider(
 			ctx,
+			"google",
+			googleIssuerURL,
 			googleClientID,
 			googleClientSecret,
 			fmt.Sprintf("http://localhost:%s/auth/google/callback", *port),
+			[]string{"openid", "profile", "email"},
 		)
 		if err != nil {
 			log.Printf("Failed to create Google provider: %v", err)
 		} else {
+			// UserStore is deliberately absent. The deprecated find-or-create
+			// path resolved an account from the email claim, which is the
+			// nOAuth account-takeover class (finding F-01, CVE-2023-28131).
+			// The callback below receives verified claims and this application
+			// decides what they mean.
 			oidcClient, err = authoidc.NewClient(authoidc.Config{
 				Providers:  []authoidc.Provider{googleProvider},
-				UserStore:  userStore,
 				StateStore: stateStore,
 			})
 			if err != nil {
@@ -655,6 +747,18 @@ func main() {
 		}
 	} else {
 		log.Println("Google SSO disabled (set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)")
+	}
+
+	// The OIDC browser-binding cookie. Its lifetime matches the state record's:
+	// a cookie that outlives the state it is paired with has nothing left to
+	// prove.
+	oidcBinding, err := middleware.NewSecureCookieWriter(middleware.SecureCookieConfig{
+		CookieName: authoidc.BindingCookieName,
+		MaxAge:     int(authoidc.DefaultStateTTL.Seconds()),
+		SameSite:   http.SameSiteLaxMode,
+	})
+	if err != nil {
+		log.Fatalf("Failed to create OIDC binding cookie writer: %v", err)
 	}
 
 	// Create app
@@ -670,6 +774,7 @@ func main() {
 		credStore:     credStore,
 		auditLogger:   auditLogger,
 		signingKey:    signingKey,
+		oidcBinding:   oidcBinding,
 	}
 
 	// Setup routes
@@ -691,6 +796,7 @@ func main() {
 
 	// TOTP endpoints
 	mux.HandleFunc("POST /auth/totp/setup", app.handleTOTPSetup)
+	mux.HandleFunc("POST /auth/totp/confirm", app.handleTOTPConfirm)
 	mux.HandleFunc("POST /auth/totp/verify", app.handleTOTPVerify)
 	mux.HandleFunc("POST /auth/totp/disable", app.handleTOTPDisable)
 
@@ -716,7 +822,20 @@ func main() {
 	addr := ":" + *port
 	log.Printf("Server starting on %s", addr)
 	log.Printf("Try: curl -X POST http://localhost:%s/auth/register -d '{\"email\":\"test@example.com\",\"password\":\"password123\",\"name\":\"Test User\"}'", *port)
-	log.Fatal(http.ListenAndServe(addr, mux))
+	// A bare http.ListenAndServe sets no header, read or write deadline, so a
+	// client that opens a connection and never finishes a request holds a
+	// goroutine and a file descriptor for as long as it likes.
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatalf("Server failed: %v", err)
+	}
 }
 
 // =============================================================================
@@ -739,7 +858,8 @@ func (app *App) handleHome(w http.ResponseWriter, r *http.Request) {
 			"POST /auth/logout":                 "Logout (revoke tokens)",
 			"POST /auth/password/reset/request": "Request password reset",
 			"POST /auth/password/reset/confirm": "Confirm password reset",
-			"POST /auth/totp/setup":             "Setup TOTP 2FA",
+			"POST /auth/totp/setup":             "Begin TOTP enrollment (stored pending)",
+			"POST /auth/totp/confirm":           "Arm the pending enrollment with one valid code",
 			"POST /auth/totp/verify":            "Verify TOTP code",
 			"POST /auth/totp/disable":           "Disable TOTP 2FA",
 			"GET /auth/google/login":            "Login with Google",
@@ -749,12 +869,12 @@ func (app *App) handleHome(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(endpoints)
+	encodeJSON(w, endpoints)
 }
 
 func (app *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	encodeJSON(w, map[string]string{"status": "ok"})
 }
 
 func (app *App) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -770,6 +890,10 @@ func (app *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Register is deprecated: v2 drops storage.UserStore from auth/basic and
+	// leaves the application to own the user row, asking the library only to
+	// hash and verify the password. v1 ships no replacement, so it stays.
+	//nolint:staticcheck // SA1019: no v1 replacement exists.
 	user, err := app.basicAuth.Register(r.Context(), basic.RegisterRequest{
 		Email:    req.Email,
 		Username: req.Username,
@@ -780,7 +904,7 @@ func (app *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 	app.auditLogger.LogAuth("auth.register", boolToResult(err == nil), "", req.Email, "local", r.RemoteAddr, r.UserAgent(), err)
 
 	if err != nil {
-		app.jsonError(w, fmt.Sprintf("Registration failed: %v", err), http.StatusBadRequest)
+		app.jsonErrorf(w, "Registration failed", http.StatusBadRequest, err)
 		return
 	}
 
@@ -793,7 +917,7 @@ func (app *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	encodeJSON(w, map[string]interface{}{
 		"user":          user,
 		"access_token":  tokenPair.AccessToken,
 		"refresh_token": tokenPair.RefreshToken,
@@ -813,31 +937,36 @@ func (app *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := app.basicAuth.Authenticate(r.Context(), req.Email, req.Password)
+	// Both factors are verified in one call when the client already supplied a
+	// code. Otherwise the password alone is checked, and an enrolled user comes
+	// back as basic.ErrMFARequired.
+	//
+	// The previous shape called Authenticate and then ran its own TOTP step off
+	// the result of totpManager.IsEnabled with the error discarded. That is an
+	// MFA bypass on a store fault: a failing credential store made IsEnabled
+	// report false, the second factor was skipped, and the sign-in succeeded on
+	// the password alone.
+	user, err := app.authenticate(r.Context(), req.Email, req.Password, req.TOTPCode)
 	if err != nil {
-		app.auditLogger.LogAuth("auth.login", "failure", "", req.Email, "local", r.RemoteAddr, r.UserAgent(), err)
-		app.jsonError(w, "Invalid credentials", http.StatusUnauthorized)
-		return
-	}
-
-	// Check if TOTP is enabled
-	totpEnabled, _ := app.totpManager.IsEnabled(r.Context(), user.ID)
-	if totpEnabled {
-		if req.TOTPCode == "" {
+		if errors.Is(err, basic.ErrMFARequired) {
+			// Not a failed sign-in. Reporting it as one locks out every enrolled
+			// user; the client is expected to collect a code and retry.
+			app.auditLogger.LogAuth("auth.login", "failure", "", req.Email, "local", r.RemoteAddr, r.UserAgent(), err)
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			w.WriteHeader(http.StatusUnauthorized)
+			encodeJSON(w, map[string]interface{}{
 				"requires_2fa": true,
 				"message":      "TOTP code required",
 			})
 			return
 		}
-
-		valid, err := app.totpManager.Validate(r.Context(), user.ID, req.TOTPCode)
-		if err != nil || !valid {
-			app.auditLogger.LogAuth("auth.login.2fa", "failure", user.ID, user.Email, "local", r.RemoteAddr, r.UserAgent(), err)
-			app.jsonError(w, "Invalid TOTP code", http.StatusUnauthorized)
-			return
-		}
+		app.auditLogger.LogAuth("auth.login", "failure", "", req.Email, "local", r.RemoteAddr, r.UserAgent(), err)
+		// One message for a wrong password, an unknown account and a bad TOTP
+		// code alike. The library equalizes the timing of the first two
+		// (finding F-09); distinguishing them here would hand the
+		// account-enumeration oracle straight back.
+		app.jsonError(w, "Invalid credentials", http.StatusUnauthorized)
+		return
 	}
 
 	// Generate tokens
@@ -850,7 +979,7 @@ func (app *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	app.auditLogger.LogAuth("auth.login", "success", user.ID, user.Email, "local", r.RemoteAddr, r.UserAgent(), nil)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	encodeJSON(w, map[string]interface{}{
 		"user":          user,
 		"access_token":  tokenPair.AccessToken,
 		"refresh_token": tokenPair.RefreshToken,
@@ -878,7 +1007,7 @@ func (app *App) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	app.auditLogger.LogAuth("token.refresh", "success", "", "", "", r.RemoteAddr, r.UserAgent(), nil)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(tokenPair)
+	encodeJSON(w, tokenPair)
 }
 
 func (app *App) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -901,7 +1030,7 @@ func (app *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 	app.auditLogger.LogAuth("auth.logout", "success", "", "", "", r.RemoteAddr, r.UserAgent(), nil)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"message": "Logged out successfully"})
+	encodeJSON(w, map[string]string{"message": "Logged out successfully"})
 }
 
 func (app *App) handlePasswordResetRequest(w http.ResponseWriter, r *http.Request) {
@@ -919,7 +1048,7 @@ func (app *App) handlePasswordResetRequest(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		// Don't reveal if user exists
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
+		encodeJSON(w, map[string]string{
 			"message": "If the email exists, a reset link will be sent",
 		})
 		return
@@ -944,7 +1073,7 @@ func (app *App) handlePasswordResetRequest(w http.ResponseWriter, r *http.Reques
 
 	// In production, send email with token
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
+	encodeJSON(w, map[string]string{
 		"message":     "If the email exists, a reset link will be sent",
 		"reset_token": token, // Only for demo - don't return in production!
 	})
@@ -984,7 +1113,7 @@ func (app *App) handlePasswordResetConfirm(w http.ResponseWriter, r *http.Reques
 	app.auditLogger.LogAuth("auth.password_reset.confirm", "success", userID, "", "local", r.RemoteAddr, r.UserAgent(), nil)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"message": "Password updated successfully"})
+	encodeJSON(w, map[string]string{"message": "Password updated successfully"})
 }
 
 func (app *App) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
@@ -1000,18 +1129,50 @@ func (app *App) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
 
 	secret, err := app.totpManager.GenerateSecret(r.Context(), req.UserID, req.AccountName)
 	if err != nil {
-		app.jsonError(w, fmt.Sprintf("Failed to setup TOTP: %v", err), http.StatusBadRequest)
+		app.jsonErrorf(w, "Failed to setup TOTP", http.StatusBadRequest, err)
 		return
 	}
 
 	app.auditLogger.LogAuth("auth.totp.setup", "success", req.UserID, "", "local", r.RemoteAddr, r.UserAgent(), nil)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	encodeJSON(w, map[string]interface{}{
 		"secret":       secret.Secret,
 		"qr_code_url":  secret.QRCode,
 		"backup_codes": secret.BackupCodes,
+		// The enrollment is stored pending and is NOT yet a live factor
+		// (finding F-07). Until the user submits one valid code to
+		// /auth/totp/confirm, Validate refuses it and Authenticate does not
+		// demand it — which is what stops a user who never scanned the QR code
+		// from being locked out of their own account.
+		"pending":     secret.Pending,
+		"confirm_url": "/auth/totp/confirm",
 	})
+}
+
+// handleTOTPConfirm arms a pending enrollment once the user proves possession of
+// the secret (finding F-07).
+func (app *App) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UserID string `json:"user_id"`
+		Code   string `json:"code"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		app.jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if err := app.totpManager.Confirm(r.Context(), req.UserID, req.Code); err != nil {
+		app.auditLogger.LogAuth("auth.totp.confirm", "failure", req.UserID, "", "local", r.RemoteAddr, r.UserAgent(), err)
+		app.jsonErrorf(w, "Failed to confirm TOTP enrollment", http.StatusBadRequest, err)
+		return
+	}
+
+	app.auditLogger.LogAuth("auth.totp.confirm", "success", req.UserID, "", "local", r.RemoteAddr, r.UserAgent(), nil)
+
+	w.Header().Set("Content-Type", "application/json")
+	encodeJSON(w, map[string]string{"message": "TOTP enabled"})
 }
 
 func (app *App) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
@@ -1027,7 +1188,7 @@ func (app *App) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 
 	valid, err := app.totpManager.Validate(r.Context(), req.UserID, req.Code)
 	if err != nil {
-		app.jsonError(w, fmt.Sprintf("Validation failed: %v", err), http.StatusBadRequest)
+		app.jsonErrorf(w, "Validation failed", http.StatusBadRequest, err)
 		return
 	}
 
@@ -1038,7 +1199,7 @@ func (app *App) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 	app.auditLogger.LogAuth("auth.totp.verify", result, req.UserID, "", "local", r.RemoteAddr, r.UserAgent(), nil)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]bool{"valid": valid})
+	encodeJSON(w, map[string]bool{"valid": valid})
 }
 
 func (app *App) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
@@ -1053,14 +1214,14 @@ func (app *App) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 
 	err := app.totpManager.Disable(r.Context(), req.UserID)
 	if err != nil {
-		app.jsonError(w, fmt.Sprintf("Failed to disable TOTP: %v", err), http.StatusBadRequest)
+		app.jsonErrorf(w, "Failed to disable TOTP", http.StatusBadRequest, err)
 		return
 	}
 
 	app.auditLogger.LogAuth("auth.totp.disable", "success", req.UserID, "", "local", r.RemoteAddr, r.UserAgent(), nil)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"message": "TOTP disabled successfully"})
+	encodeJSON(w, map[string]string{"message": "TOTP disabled successfully"})
 }
 
 func (app *App) handleWebAuthnRegisterBegin(w http.ResponseWriter, r *http.Request) {
@@ -1075,12 +1236,12 @@ func (app *App) handleWebAuthnRegisterBegin(w http.ResponseWriter, r *http.Reque
 
 	options, sessionID, err := app.webauthnAuth.BeginRegistration(r.Context(), req.UserID)
 	if err != nil {
-		app.jsonError(w, fmt.Sprintf("Failed to begin registration: %v", err), http.StatusBadRequest)
+		app.jsonErrorf(w, "Failed to begin registration", http.StatusBadRequest, err)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	encodeJSON(w, map[string]interface{}{
 		"options":    options,
 		"session_id": sessionID,
 	})
@@ -1092,7 +1253,7 @@ func (app *App) handleWebAuthnRegisterFinish(w http.ResponseWriter, r *http.Requ
 	// Parse the WebAuthn response
 	parsedResponse, err := protocol.ParseCredentialCreationResponseBody(r.Body)
 	if err != nil {
-		app.jsonError(w, fmt.Sprintf("Failed to parse WebAuthn response: %v", err), http.StatusBadRequest)
+		app.jsonErrorf(w, "Failed to parse WebAuthn response", http.StatusBadRequest, err)
 		return
 	}
 
@@ -1105,12 +1266,12 @@ func (app *App) handleWebAuthnRegisterFinish(w http.ResponseWriter, r *http.Requ
 
 	credential, err := app.webauthnAuth.FinishRegistration(r.Context(), sessionID, parsedResponse)
 	if err != nil {
-		app.jsonError(w, fmt.Sprintf("Failed to finish registration: %v", err), http.StatusBadRequest)
+		app.jsonErrorf(w, "Failed to finish registration", http.StatusBadRequest, err)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	encodeJSON(w, map[string]interface{}{
 		"credential_id": base64.URLEncoding.EncodeToString(credential.ID),
 		"message":       "WebAuthn credential registered successfully",
 	})
@@ -1128,12 +1289,12 @@ func (app *App) handleWebAuthnLoginBegin(w http.ResponseWriter, r *http.Request)
 
 	options, sessionID, err := app.webauthnAuth.BeginLogin(r.Context(), req.UserID)
 	if err != nil {
-		app.jsonError(w, fmt.Sprintf("Failed to begin login: %v", err), http.StatusBadRequest)
+		app.jsonErrorf(w, "Failed to begin login", http.StatusBadRequest, err)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	encodeJSON(w, map[string]interface{}{
 		"options":    options,
 		"session_id": sessionID,
 	})
@@ -1145,7 +1306,7 @@ func (app *App) handleWebAuthnLoginFinish(w http.ResponseWriter, r *http.Request
 	// Parse the WebAuthn response
 	parsedResponse, err := protocol.ParseCredentialRequestResponseBody(r.Body)
 	if err != nil {
-		app.jsonError(w, fmt.Sprintf("Failed to parse WebAuthn response: %v", err), http.StatusBadRequest)
+		app.jsonErrorf(w, "Failed to parse WebAuthn response", http.StatusBadRequest, err)
 		return
 	}
 
@@ -1158,7 +1319,7 @@ func (app *App) handleWebAuthnLoginFinish(w http.ResponseWriter, r *http.Request
 
 	user, err := app.webauthnAuth.FinishLogin(r.Context(), sessionID, parsedResponse)
 	if err != nil {
-		app.jsonError(w, fmt.Sprintf("Failed to finish login: %v", err), http.StatusBadRequest)
+		app.jsonErrorf(w, "Failed to finish login", http.StatusBadRequest, err)
 		return
 	}
 
@@ -1170,7 +1331,7 @@ func (app *App) handleWebAuthnLoginFinish(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	encodeJSON(w, map[string]interface{}{
 		"user":          user,
 		"access_token":  tokenPair.AccessToken,
 		"refresh_token": tokenPair.RefreshToken,
@@ -1178,16 +1339,30 @@ func (app *App) handleWebAuthnLoginFinish(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// handleGoogleLogin starts an authorization flow bound to this browser.
+//
+// GetAuthorizationURLWithBinding is used rather than GetAuthorizationURL: the
+// unbound entry point cannot hand the binding value back, so the callback has no
+// way to prove it reached the user agent that started the flow. Without that
+// proof an attacker starts a flow, authenticates against their own account, and
+// induces the victim to visit the resulting callback URL — the victim's browser
+// is then signed in as the attacker (finding F-16, CWE-352).
+//
+// PKCE (F-17) and the ID token nonce (F-18) are applied by the library and need
+// no wiring here.
 func (app *App) handleGoogleLogin(w http.ResponseWriter, r *http.Request) {
-	authURL, err := app.oidcClient.GetAuthorizationURL(r.Context(), authoidc.AuthURLOptions{
+	authReq, err := app.oidcClient.GetAuthorizationURLWithBinding(r.Context(), authoidc.AuthURLOptions{
 		Provider: "google",
 	})
 	if err != nil {
-		app.jsonError(w, "Failed to get authorization URL", http.StatusInternalServerError)
+		app.jsonErrorf(w, "Failed to get authorization URL", http.StatusInternalServerError, err)
 		return
 	}
 
-	http.Redirect(w, r, authURL, http.StatusTemporaryRedirect)
+	// The cookie must be on the wire before the redirect, or the callback has
+	// nothing to verify against.
+	app.oidcBinding.Write(w, authReq.Binding)
+	http.Redirect(w, r, authReq.URL, http.StatusTemporaryRedirect)
 }
 
 func (app *App) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
@@ -1195,34 +1370,123 @@ func (app *App) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
-		app.jsonError(w, fmt.Sprintf("OAuth error: %s", errParam), http.StatusBadRequest)
+		// Provider-controlled text. It is quoted into the log, never reflected
+		// into the response body.
+		//nolint:gosec // G706: the interpolated value is quoted and escaped.
+		log.Printf("google callback: provider returned error %q", errParam)
+		app.jsonError(w, "The provider declined the sign-in", http.StatusBadRequest)
 		return
 	}
 
-	result, err := app.oidcClient.HandleCallback(r.Context(), state, code)
+	// An absent cookie yields "", which HandleCallbackWithBinding rejects for a
+	// bound flow. That is the login-CSRF case: the callback arrived at a browser
+	// that did not start the flow.
+	binding := ""
+	if cookie, cookieErr := r.Cookie(authoidc.BindingCookieName); cookieErr == nil {
+		binding = cookie.Value
+	}
+
+	result, err := app.oidcClient.HandleCallbackWithBinding(r.Context(), state, code, binding)
+
+	// The state record is one-time use, so the flow is over either way and the
+	// cookie has nothing left to prove.
+	app.oidcBinding.Clear(w)
+
 	if err != nil {
 		app.auditLogger.LogAuth("auth.sso.google", "failure", "", "", "google", r.RemoteAddr, r.UserAgent(), err)
-		app.jsonError(w, fmt.Sprintf("Authentication failed: %v", err), http.StatusUnauthorized)
+		app.jsonErrorf(w, "Authentication failed", http.StatusUnauthorized, err)
+		return
+	}
+
+	// Identity is this application's to own. The library reports what the
+	// provider asserted, after every control it applies has passed; resolving
+	// that to a local account is a policy decision only the application can make
+	// (finding F-01).
+	user, isNewUser, err := app.resolveSSOUser(r.Context(), result.UserInfo)
+	if err != nil {
+		app.auditLogger.LogAuth("auth.sso.google", "failure", "", result.UserInfo.Email, "google", r.RemoteAddr, r.UserAgent(), err)
+		app.jsonErrorf(w, "Could not resolve an account for this identity", http.StatusUnauthorized, err)
 		return
 	}
 
 	// Generate JWT tokens
-	tokenPair, err := app.jwtManager.GenerateTokenPair(r.Context(), result.User)
+	tokenPair, err := app.jwtManager.GenerateTokenPair(r.Context(), user)
 	if err != nil {
-		app.jsonError(w, "Failed to generate tokens", http.StatusInternalServerError)
+		app.jsonErrorf(w, "Failed to generate tokens", http.StatusInternalServerError, err)
 		return
 	}
 
-	app.auditLogger.LogAuth("auth.sso.google", "success", result.User.ID, result.User.Email, "google", r.RemoteAddr, r.UserAgent(), nil)
+	app.auditLogger.LogAuth("auth.sso.google", "success", user.ID, user.Email, "google", r.RemoteAddr, r.UserAgent(), nil)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"user":          result.User,
-		"is_new_user":   result.IsNewUser,
+	encodeJSON(w, map[string]interface{}{
+		"user":          user,
+		"is_new_user":   isNewUser,
 		"access_token":  tokenPair.AccessToken,
 		"refresh_token": tokenPair.RefreshToken,
 		"expires_in":    tokenPair.ExpiresIn,
 	})
+}
+
+// resolveSSOUser maps a verified assertion to a local account, creating one on
+// first sight, and reports whether it created it.
+//
+// The lookup is keyed on the provider subject, never on the email address alone.
+// An account resolved by email is takeable over by any provider that can be
+// induced to assert that address, which is what made the deprecated
+// find-or-create path an account-takeover vector.
+func (app *App) resolveSSOUser(ctx context.Context, info *authoidc.UserInfo) (*storage.User, bool, error) {
+	if info.Subject == "" {
+		return nil, false, errors.New("provider asserted no subject identifier")
+	}
+	// An unverified address is not evidence of control of the mailbox, so it is
+	// never used to provision or link.
+	if info.Email == "" || !info.EmailVerified {
+		return nil, false, errors.New("provider asserted no verified email address")
+	}
+
+	existing, err := app.userStore.GetUserByEmail(ctx, info.Email)
+	switch {
+	case err == nil:
+		// The address matches an account. Adopt it only when the same provider
+		// asserted the same subject the account was first seen with.
+		storedSub, ok := existing.Metadata[authoidc.UserMetadataKeyProviderSubject].(string)
+		if !ok || existing.Provider != info.Provider || storedSub != info.Subject {
+			return nil, false, fmt.Errorf("account %q belongs to a different provider identity", existing.ID)
+		}
+		return existing, false, nil
+	case errors.Is(err, storage.ErrNotFound):
+		// Fall through to provisioning.
+	default:
+		return nil, false, fmt.Errorf("look up user by email: %w", err)
+	}
+
+	idBytes := make([]byte, 16)
+	if _, err := rand.Read(idBytes); err != nil {
+		return nil, false, fmt.Errorf("generate user ID: %w", err)
+	}
+
+	now := time.Now()
+	user := &storage.User{
+		ID:            hex.EncodeToString(idBytes),
+		Email:         info.Email,
+		EmailVerified: info.EmailVerified,
+		Username:      info.Username,
+		Name:          info.Name,
+		Provider:      info.Provider,
+		Metadata: map[string]interface{}{
+			// Only the subject is stored. Copying the provider's raw claim set
+			// would put every group membership and internal identifier the
+			// directory released into this application's own tokens (F-21).
+			authoidc.UserMetadataKeyProviderSubject: info.Subject,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := app.userStore.CreateUser(ctx, user); err != nil {
+		return nil, false, fmt.Errorf("create user: %w", err)
+	}
+	return user, true, nil
 }
 
 func (app *App) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -1238,11 +1502,17 @@ func (app *App) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check TOTP status
-	totpEnabled, _ := app.totpManager.IsEnabled(r.Context(), user.ID)
+	// Check TOTP status. A store fault is reported, not folded into "false":
+	// telling a user their second factor is off when the store simply could not
+	// be read is how someone concludes they never enrolled.
+	totpEnabled, err := app.totpManager.IsEnabled(r.Context(), user.ID)
+	if err != nil {
+		app.jsonErrorf(w, "Failed to read second-factor status", http.StatusInternalServerError, err)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	encodeJSON(w, map[string]interface{}{
 		"user":         user,
 		"totp_enabled": totpEnabled,
 	})
@@ -1256,7 +1526,7 @@ func (app *App) handleProtected(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	encodeJSON(w, map[string]interface{}{
 		"message":    "You have accessed a protected resource",
 		"user_id":    claims.UserID,
 		"email":      claims.Email,
@@ -1269,10 +1539,46 @@ func (app *App) handleProtected(w http.ResponseWriter, r *http.Request) {
 // Helpers
 // =============================================================================
 
+// jsonError writes an error body.
+//
+// message is a fixed string chosen by the handler, never err.Error(): a Go error
+// string carries wrapped context — a driver message, a URL, an internal
+// identifier — and a response body is the one place that must not leak it. The
+// raw error is logged instead.
 func (app *App) jsonError(w http.ResponseWriter, message string, status int) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]string{"error": message})
+	encodeJSON(w, map[string]string{"error": message})
+}
+
+// authenticate verifies the first factor and, when the request carried a code,
+// the second — in one call, so no branch here can decide the factor does not
+// apply.
+func (app *App) authenticate(ctx context.Context, identifier, password, totpCode string) (*storage.User, error) {
+	if totpCode != "" {
+		return app.basicAuth.AuthenticateWithTOTP(ctx, identifier, password, totpCode)
+	}
+	return app.basicAuth.Authenticate(ctx, identifier, password)
+}
+
+// jsonErrorf logs err with the handler's own message and returns only that
+// message to the client, so the wrapped context in a Go error string — a driver
+// message, an issuer URL, an internal identifier — stays server-side.
+func (app *App) jsonErrorf(w http.ResponseWriter, message string, status int, err error) {
+	log.Printf("%s: %v", message, err)
+	app.jsonError(w, message, status)
+}
+
+// encodeJSON writes body as the response payload.
+//
+// The encode error cannot become a status code — the header is already on the
+// wire — so it is logged rather than discarded. A dropped error here turns a
+// truncated body into an unexplained client-side parse failure.
+func encodeJSON(w http.ResponseWriter, body any) {
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		log.Printf("write JSON response: %v", err)
+	}
 }
 
 func boolToResult(success bool) string {
