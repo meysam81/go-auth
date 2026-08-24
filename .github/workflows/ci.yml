@@ -27,9 +27,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  GO_VERSION: "1.24"
-
 jobs:
   test:
     permissions:
@@ -41,7 +38,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: "${{ env.GO_VERSION }}"
+          go-version-file: go.mod
       - name: Cache Go modules
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
@@ -140,7 +137,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: "${{ env.GO_VERSION }}"
+          go-version-file: go.mod
       - name: Cache Go modules
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
@@ -183,7 +180,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: "${{ env.GO_VERSION }}"
+          go-version-file: go.mod
       - name: Cache Go modules
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
@@ -205,11 +202,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # Deliberately NOT GO_VERSION. The module targets Go 1.24 and must keep
-      # compiling there, which the other jobs prove. But golang.org/x/vuln needs
-      # a newer toolchain to build at all -- v1.7.0 requires >= 1.25 and
-      # setup-go pins GOTOOLCHAIN=local, so pinning 1.24 here fails the install
-      # outright -- and the standard-library half of the report is only
+      # Deliberately NOT go.mod. The standard-library half of the report is only
       # meaningful against a current toolchain: scanning with an old Go reports
       # every stdlib advisory fixed since, which is noise about the scanner
       # rather than signal about this code.
@@ -250,7 +243,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: "${{ env.GO_VERSION }}"
+          go-version-file: go.mod
       - name: Cache Go modules
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
@@ -302,7 +295,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: "${{ env.GO_VERSION }}"
+          go-version-file: go.mod
       - name: Cache Go modules
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
