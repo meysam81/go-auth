@@ -91,12 +91,12 @@ go run main.go
 
 ### TOTP Two-Factor Authentication
 
-| Method | Endpoint             | Description                                            |
-| ------ | -------------------- | ------------------------------------------------------ |
-| POST   | `/auth/totp/setup`   | Begin enrollment; secret is stored **pending**         |
-| POST   | `/auth/totp/confirm` | Arm the pending enrollment with one valid code         |
-| POST   | `/auth/totp/verify`  | Verify a TOTP code against an armed factor             |
-| POST   | `/auth/totp/disable` | Disable TOTP for user                                  |
+| Method | Endpoint             | Description                                    |
+| ------ | -------------------- | ---------------------------------------------- |
+| POST   | `/auth/totp/setup`   | Begin enrollment; secret is stored **pending** |
+| POST   | `/auth/totp/confirm` | Arm the pending enrollment with one valid code |
+| POST   | `/auth/totp/verify`  | Verify a TOTP code against an armed factor     |
+| POST   | `/auth/totp/disable` | Disable TOTP for user                          |
 
 Enrollment is two steps on purpose. `/auth/totp/setup` stores the secret in a
 pending state: it is not yet a live factor, `verify` refuses it, and sign-in does
@@ -116,10 +116,10 @@ they then lost.
 
 ### Google SSO
 
-| Method | Endpoint                | Description                                     |
-| ------ | ----------------------- | ----------------------------------------------- |
-| GET    | `/auth/google/login`    | Redirect to Google, setting the binding cookie  |
-| GET    | `/auth/google/callback` | OAuth callback handler; requires that cookie    |
+| Method | Endpoint                | Description                                    |
+| ------ | ----------------------- | ---------------------------------------------- |
+| GET    | `/auth/google/login`    | Redirect to Google, setting the binding cookie |
+| GET    | `/auth/google/callback` | OAuth callback handler; requires that cookie   |
 
 The flow is bound to the browser that started it. `/auth/google/login` issues a
 binding value as a `__Host-` cookie alongside the redirect, and the callback
