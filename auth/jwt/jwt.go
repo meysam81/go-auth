@@ -109,8 +109,16 @@ type Config struct {
 	// *rsa.PrivateKey or *ecdsa.PrivateKey when signing, so a []byte here with
 	// an RS*/ES*/PS* method is a configuration error and NewTokenManager now
 	// rejects it rather than failing on the first token minted (F-04). Use
-	// PrivateKey for those. RFC 7518 section 3.2 requires a secret at least as
-	// long as the hash output: 32 bytes for HS256.
+	// PrivateKey for those.
+	//
+	// RFC 7518 section 3.2 requires a secret at least as long as the hash
+	// output — 32 bytes for HS256, 48 for HS384, 64 for HS512 — and
+	// NewTokenManager now enforces that minimum. This rejects configurations
+	// v1.1 accepted: a deployment whose secret is a passphrase must lengthen it
+	// (32 bytes of crypto/rand, hex- or base64-encoded into the environment, is
+	// the intended shape) before upgrading. The alternative is a library that
+	// documents a floor it does not apply, which is how a one-byte HS256 secret
+	// reached production without a word.
 	SigningKey []byte
 
 	// PrivateKey is the signer for an asymmetric SigningMethod (F-04).
@@ -157,7 +165,11 @@ type Config struct {
 //
 // It fails closed on a key/method mismatch (F-04): an asymmetric SigningMethod
 // carrying only a []byte SigningKey is a configuration error that used to
-// surface as a signing failure in production, and is now reported here.
+// surface as a signing failure in production, and is now reported here. The
+// same check covers the symmetric half, which is the default every deployment
+// uses: an HMAC SigningKey shorter than the method's hash output is rejected
+// (see Config.SigningKey), so a secret too weak to protect the tokens it signs
+// cannot reach a running process.
 func NewTokenManager(cfg Config) (*TokenManager, error) {
 	if cfg.UserStore == nil {
 		return nil, ErrUserStoreRequired
@@ -237,7 +249,7 @@ func resolveKeys(cfg Config, method jwt.SigningMethod) (signKey, verifyKey any, 
 
 	switch m := method.(type) {
 	case *jwt.SigningMethodHMAC:
-		return hmacKeys(cfg)
+		return hmacKeys(cfg, m)
 	case *jwt.SigningMethodRSA, *jwt.SigningMethodRSAPSS:
 		return rsaKeys(cfg)
 	case *jwt.SigningMethodECDSA:
@@ -249,13 +261,30 @@ func resolveKeys(cfg Config, method jwt.SigningMethod) (signKey, verifyKey any, 
 	}
 }
 
-func hmacKeys(cfg Config) (signKey, verifyKey any, err error) {
+func hmacKeys(cfg Config, method *jwt.SigningMethodHMAC) (signKey, verifyKey any, err error) {
 	if cfg.PrivateKey != nil || cfg.PublicKey != nil {
 		return nil, nil, fmt.Errorf("%w: an HMAC signing method takes SigningKey; PrivateKey and PublicKey are for asymmetric methods", ErrInvalidKeyConfig)
 	}
 	if len(cfg.SigningKey) == 0 {
 		return nil, nil, fmt.Errorf("%w: signing key is required", ErrInvalidKeyConfig)
 	}
+
+	// A hash the binary does not link cannot report its output size, and a
+	// minimum that cannot be computed must not be assumed to be met (F-04).
+	if !method.Hash.Available() {
+		return nil, nil, fmt.Errorf("%w: %s uses a hash that is not linked into this binary, so its key-length minimum cannot be enforced", ErrInvalidKeyConfig, method.Alg())
+	}
+
+	// RFC 7518 section 3.2: "A key of the same size as the hash output ... or
+	// larger MUST be used". HMAC's strength is bounded by the secret's entropy,
+	// and a short secret is recoverable offline from a single captured token —
+	// after which the holder mints tokens this manager verifies. The size comes
+	// from the method's own hash so HS256, HS384 and HS512 stay correct without
+	// a table that has to be kept in step with golang-jwt.
+	if minKeyBytes := method.Hash.Size(); len(cfg.SigningKey) < minKeyBytes {
+		return nil, nil, fmt.Errorf("%w: %s requires a signing key of at least %d bytes (RFC 7518 section 3.2), got %d", ErrInvalidKeyConfig, method.Alg(), minKeyBytes, len(cfg.SigningKey))
+	}
+
 	return cfg.SigningKey, cfg.SigningKey, nil
 }
 
@@ -456,7 +485,19 @@ func (m *TokenManager) validate(ctx context.Context, tokenString string, want To
 		return nil, err
 	}
 
-	if want == RefreshToken && m.tokenStore != nil && claims.TokenID != "" {
+	if want == RefreshToken && m.tokenStore != nil {
+		// A refresh token with no jti cannot be looked up, so it cannot be shown
+		// to be unrevoked. The guard used to skip the store entirely in that
+		// case, which turned a missing claim into an exemption from revocation:
+		// the one credential class this check exists for. Every refresh token
+		// this library mints carries a jti (GenerateTokenPair), so a token
+		// without one was minted elsewhere against the same secret, and refusing
+		// it costs nothing. RevokeRefreshToken already refuses on the same
+		// grounds.
+		if claims.TokenID == "" {
+			return nil, ErrInvalidToken
+		}
+
 		userID, err := m.tokenStore.ValidateRefreshToken(ctx, claims.TokenID)
 		if err != nil {
 			if errors.Is(err, storage.ErrNotFound) {
@@ -640,7 +681,15 @@ func generateTokenID() (string, error) {
 }
 
 // ParseUnverified parses a token without verifying the signature (for debugging).
-// WARNING: Do not use for authentication - this is unsafe!
+//
+// Deprecated: nothing here is verified. The signature, the algorithm, iss, aud,
+// exp and the token type are all unchecked, so every field of the returned
+// Claims is whatever the presenter typed — including UserID. The warning in the
+// previous doc comment was the only thing standing between that and an
+// authorization decision, and a comment is not a control; the deprecation marker
+// makes a call site visible to a linter and to review. Use ValidateAccessToken
+// or ValidateRefreshToken to authenticate a token, and decode the payload
+// yourself for a debugging tool. v2 removes it.
 func ParseUnverified(tokenString string) (*Claims, error) {
 	token, _, err := jwt.NewParser().ParseUnverified(tokenString, &Claims{})
 	if err != nil {

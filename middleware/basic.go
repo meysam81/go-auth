@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/meysam81/go-auth/auth/basic"
@@ -42,7 +43,30 @@ type BasicAuthConfig struct {
 // request (F-15, CWE-400) and cannot carry a second factor, so it must not be
 // mounted on any route reachable by an untrusted client. v2 removes it; use
 // SessionMiddleware or JWTMiddleware.
+//
+// It panics when cfg.Authenticator is nil, for the reason given on
+// [NewJWTMiddleware]. Use [NewBasicAuthMiddlewareWithError] to handle that as a
+// value instead.
 func NewBasicAuthMiddleware(cfg BasicAuthConfig) *BasicAuthMiddleware {
+	m, err := NewBasicAuthMiddlewareWithError(cfg)
+	if err != nil {
+		panic(err)
+	}
+	return m
+}
+
+// NewBasicAuthMiddlewareWithError is [NewBasicAuthMiddleware] reporting a
+// configuration error rather than panicking.
+//
+// Deprecated: see BasicAuthMiddleware (F-15). v2 removes both constructors; the
+// error-returning form exists only so a caller that must keep this middleware
+// through the v1 line can refuse to start on a nil authenticator instead of
+// nil-dereferencing on the first request.
+func NewBasicAuthMiddlewareWithError(cfg BasicAuthConfig) (*BasicAuthMiddleware, error) {
+	if cfg.Authenticator == nil {
+		return nil, fmt.Errorf("%w: BasicAuthConfig.Authenticator is nil, so no credential can be verified", ErrMissingDependency)
+	}
+
 	errorHandler := cfg.ErrorHandler
 	if errorHandler == nil {
 		errorHandler = DefaultErrorHandler
@@ -57,7 +81,7 @@ func NewBasicAuthMiddleware(cfg BasicAuthConfig) *BasicAuthMiddleware {
 		authenticator: cfg.Authenticator,
 		errorHandler:  errorHandler,
 		realm:         realm,
-	}
+	}, nil
 }
 
 // Middleware returns an HTTP middleware function.

@@ -935,3 +935,101 @@ func TestMiddleware_TypeConfusionInContextValues(t *testing.T) {
 		t.Error("a by-value User was accepted where a pointer belongs")
 	}
 }
+
+// TestMiddleware_NilDependencyIsRefusedAtConstruction covers the shape all
+// three middlewares shared: the constructor accepted a nil manager, returned no
+// error, and the dereference happened in the handler -- on a request carrying
+// nothing but a syntactically valid credential, so an unauthenticated caller
+// chose the moment the server panicked. Every other constructor on this branch
+// was hardened to fail at startup; these three return no error to fail with,
+// which is why the plain form panics and a WithError sibling was added
+// alongside it.
+func TestMiddleware_NilDependencyIsRefusedAtConstruction(t *testing.T) {
+	t.Parallel()
+
+	constructors := []struct {
+		name      string
+		build     func()
+		buildErr  func() error
+		dependent string
+	}{
+		{
+			name:      "JWTMiddleware",
+			build:     func() { NewJWTMiddleware(JWTConfig{}) },
+			buildErr:  func() error { _, err := NewJWTMiddlewareWithError(JWTConfig{}); return err },
+			dependent: "TokenManager",
+		},
+		{
+			name:      "SessionMiddleware",
+			build:     func() { NewSessionMiddleware(SessionConfig{}) },
+			buildErr:  func() error { _, err := NewSessionMiddlewareWithError(SessionConfig{}); return err },
+			dependent: "SessionManager",
+		},
+		{
+			// The deprecated middleware is still part of the v1 surface, so it
+			// has to fail closed for as long as it exists.
+			name:      "BasicAuthMiddleware",
+			build:     func() { NewBasicAuthMiddleware(BasicAuthConfig{}) },
+			buildErr:  func() error { _, err := NewBasicAuthMiddlewareWithError(BasicAuthConfig{}); return err },
+			dependent: "Authenticator",
+		},
+	}
+	for _, tc := range constructors {
+		t.Run(tc.name+" panics rather than returning a middleware that cannot authenticate", func(t *testing.T) {
+			t.Parallel()
+
+			defer func() {
+				recovered := recover()
+				if recovered == nil {
+					t.Fatalf("A nil %s was accepted; the first unauthenticated request would nil-dereference in the handler", tc.dependent)
+				}
+				err, ok := recovered.(error)
+				if !ok {
+					t.Fatalf("panic value = %#v, want an error naming the missing dependency", recovered)
+				}
+				if !errors.Is(err, ErrMissingDependency) {
+					t.Fatalf("panic value = %v, want it to wrap ErrMissingDependency", err)
+				}
+				if !strings.Contains(err.Error(), tc.dependent) {
+					t.Errorf("panic message %q does not name the missing dependency %q", err.Error(), tc.dependent)
+				}
+			}()
+
+			tc.build()
+		})
+
+		t.Run(tc.name+" reports the same thing as a value", func(t *testing.T) {
+			t.Parallel()
+
+			err := tc.buildErr()
+			if !errors.Is(err, ErrMissingDependency) {
+				t.Fatalf("error = %v, want it to wrap ErrMissingDependency", err)
+			}
+		})
+	}
+}
+
+// TestMiddleware_WithErrorConstructorsBuildWorkingMiddleware keeps the guard
+// above from degenerating into a constructor that refuses everything: a fully
+// configured JWTConfig must still produce a middleware that authorizes a valid
+// access token.
+func TestMiddleware_WithErrorConstructorsBuildWorkingMiddleware(t *testing.T) {
+	t.Parallel()
+
+	manager, user := newAdversarialJWT(t)
+
+	pair, err := manager.GenerateTokenPair(context.Background(), user)
+	if err != nil {
+		t.Fatalf("GenerateTokenPair: %v", err)
+	}
+
+	mw, err := NewJWTMiddlewareWithError(JWTConfig{TokenManager: manager})
+	if err != nil {
+		t.Fatalf("NewJWTMiddlewareWithError: %v", err)
+	}
+
+	reached, rw := serveWithBearer(t, mw, "Bearer "+pair.AccessToken, true)
+	if !reached {
+		t.Fatalf("A valid access token was rejected with status %d", rw.Code)
+	}
+}

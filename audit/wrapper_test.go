@@ -193,6 +193,125 @@ func TestBasicAuthWrapper_WithSourceExtractor(t *testing.T) {
 	}
 }
 
+// testSigningKey returns a 32-byte HS256 secret, the RFC 7518 section 3.2
+// minimum jwt.NewTokenManager enforces. The literal it replaced announced
+// itself as 32 bytes and was 30, which is the failure mode a construction-time
+// check exists to catch.
+func testSigningKey() []byte {
+	return []byte("audit-test-signing-key-32-bytes!")
+}
+
+// newTestTokenManager builds a manager over in-memory stores with one user
+// already present, so a refresh can resolve the subject it names.
+func newTestTokenManager(t *testing.T, user *storage.User) *jwt.TokenManager {
+	t.Helper()
+
+	userStore := storage.NewInMemoryUserStore()
+	if err := userStore.CreateUser(context.Background(), user); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	tm, err := jwt.NewTokenManager(jwt.Config{
+		UserStore:  userStore,
+		TokenStore: storage.NewInMemoryTokenStore(),
+		SigningKey: testSigningKey(),
+	})
+	if err != nil {
+		t.Fatalf("NewTokenManager: %v", err)
+	}
+	return tm
+}
+
+// TestTokenManagerWrapper_RefreshAndRevokeRecordActor covers the regression the
+// F-02 fix introduced here. Both call sites enriched their event by calling
+// ValidateToken on the refresh token; once ValidateToken came to mean
+// ValidateAccessToken, that call could only ever fail, and every successful
+// token.refresh and token.revoke event was written with no actor at all. The
+// build passed, the operations worked, and the evidence for who refreshed or
+// revoked a credential was simply absent -- so the assertion that matters is
+// not that an event was emitted, but that it names somebody.
+func TestTokenManagerWrapper_RefreshAndRevokeRecordActor(t *testing.T) {
+	ctx := context.Background()
+	user := &storage.User{ID: "user123", Email: "test@example.com", Provider: "basic"}
+	tm := newTestTokenManager(t, user)
+
+	mockAuditor := &MockAuditor{}
+	wrapper := NewTokenManagerWrapper(tm, mockAuditor, nil)
+
+	pair, err := tm.GenerateTokenPair(ctx, user)
+	if err != nil {
+		t.Fatalf("GenerateTokenPair: %v", err)
+	}
+
+	requireActor := func(t *testing.T, event *AuditEvent, wantType EventType) {
+		t.Helper()
+
+		if event.EventType != wantType {
+			t.Fatalf("EventType = %v, want %v", event.EventType, wantType)
+		}
+		if event.EventResult != EventResultSuccess {
+			t.Fatalf("EventResult = %v, want %v (error %q)", event.EventResult, EventResultSuccess, event.Error)
+		}
+		if event.Actor == nil {
+			t.Fatal("A successful token event was recorded with no actor: the audit trail cannot say who did this")
+		}
+		if event.Actor.UserID != user.ID {
+			t.Errorf("Actor.UserID = %q, want %q", event.Actor.UserID, user.ID)
+		}
+		if event.Actor.Email != user.Email {
+			t.Errorf("Actor.Email = %q, want %q", event.Actor.Email, user.Email)
+		}
+		if event.Actor.Provider != user.Provider {
+			t.Errorf("Actor.Provider = %q, want %q", event.Actor.Provider, user.Provider)
+		}
+		if _, noted := event.Metadata["actor_lookup_error"]; noted {
+			t.Errorf("Actor resolved, yet the event still carries actor_lookup_error = %v", event.Metadata["actor_lookup_error"])
+		}
+	}
+
+	t.Run("token.refresh names the subject", func(t *testing.T) {
+		mockAuditor.Reset()
+
+		if _, err := wrapper.RefreshAccessToken(ctx, pair.RefreshToken); err != nil {
+			t.Fatalf("RefreshAccessToken: %v", err)
+		}
+		requireActor(t, mockAuditor.LastEvent(), EventTokenRefresh)
+	})
+
+	t.Run("token.revoke names the subject", func(t *testing.T) {
+		mockAuditor.Reset()
+
+		if err := wrapper.RevokeRefreshToken(ctx, pair.RefreshToken); err != nil {
+			t.Fatalf("RevokeRefreshToken: %v", err)
+		}
+		event := mockAuditor.LastEvent()
+		requireActor(t, event, EventTokenRevoke)
+		if event.Metadata["token_type"] != "refresh" {
+			t.Errorf("Metadata[token_type] = %v, want %q", event.Metadata["token_type"], "refresh")
+		}
+	})
+
+	t.Run("an unresolvable actor is explained rather than left blank", func(t *testing.T) {
+		// The token was revoked by the subtest above, so the store now refuses
+		// to resolve it. The operation still succeeds -- revoking twice is not
+		// an error -- and the event has to say why it names nobody, otherwise it
+		// is indistinguishable from the defect this test exists for.
+		mockAuditor.Reset()
+
+		if err := wrapper.RevokeRefreshToken(ctx, pair.RefreshToken); err != nil {
+			t.Fatalf("RevokeRefreshToken (second call): %v", err)
+		}
+
+		event := mockAuditor.LastEvent()
+		if event.Actor != nil {
+			t.Fatalf("Expected no actor for a revoked token, got %+v", event.Actor)
+		}
+		if _, noted := event.Metadata["actor_lookup_error"]; !noted {
+			t.Fatalf("An event with no actor and no explanation: metadata = %v", event.Metadata)
+		}
+	})
+}
+
 func TestTokenManagerWrapper_GenerateTokenPair(t *testing.T) {
 	userStore := storage.NewInMemoryUserStore()
 	tokenStore := storage.NewInMemoryTokenStore()
@@ -200,7 +319,7 @@ func TestTokenManagerWrapper_GenerateTokenPair(t *testing.T) {
 	tm, err := jwt.NewTokenManager(jwt.Config{
 		UserStore:      userStore,
 		TokenStore:     tokenStore,
-		SigningKey:     []byte("test-key-32-bytes-long-secret!"),
+		SigningKey:     testSigningKey(),
 		AccessTokenTTL: 15 * time.Minute,
 	})
 	if err != nil {
@@ -240,7 +359,7 @@ func TestTokenManagerWrapper_ValidateToken(t *testing.T) {
 	tm, err := jwt.NewTokenManager(jwt.Config{
 		UserStore:  userStore,
 		TokenStore: tokenStore,
-		SigningKey: []byte("test-key-32-bytes-long-secret!"),
+		SigningKey: testSigningKey(),
 	})
 	if err != nil {
 		t.Fatalf("NewTokenManager: %v", err)

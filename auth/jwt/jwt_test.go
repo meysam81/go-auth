@@ -20,9 +20,28 @@ import (
 	"github.com/meysam81/go-auth/storage"
 )
 
+// testSigningKeyOfLen returns n bytes of deterministic key material. The
+// constructor enforces the RFC 7518 section 3.2 minimum (32 bytes for HS256, 48
+// for HS384, 64 for HS512), so a test secret is sized against the method it is
+// used with rather than typed as a memorable phrase. It is deterministic
+// because none of these tests turn on the key's content: the adversarial suite
+// uses crypto/rand where a fixture collision would matter (see advSecret).
+func testSigningKeyOfLen(n int) []byte {
+	key := make([]byte, n)
+	for i := range key {
+		key[i] = byte('a' + i%26)
+	}
+	return key
+}
+
+// testSigningKey returns the smallest secret HS256 accepts.
+func testSigningKey() []byte {
+	return testSigningKeyOfLen(32)
+}
+
 func TestNewTokenManager(t *testing.T) {
 	userStore := storage.NewInMemoryUserStore()
-	signingKey := []byte("test-secret-key")
+	signingKey := testSigningKey()
 
 	// Test with default config
 	tm, err := NewTokenManager(Config{
@@ -48,9 +67,12 @@ func TestNewTokenManager(t *testing.T) {
 	customRefreshTTL := 30 * 24 * time.Hour
 
 	tm, err = NewTokenManager(Config{
-		UserStore:       userStore,
-		TokenStore:      tokenStore,
-		SigningKey:      signingKey,
+		UserStore:  userStore,
+		TokenStore: tokenStore,
+		// HS512 hashes to 64 bytes, so RFC 7518 section 3.2 wants a 64-byte
+		// secret and the constructor now insists on it: the 32-byte key above
+		// is valid for HS256 and rejected here.
+		SigningKey:      testSigningKeyOfLen(64),
 		SigningMethod:   jwt.SigningMethodHS512,
 		Issuer:          "test-issuer",
 		AccessTokenTTL:  customAccessTTL,
@@ -92,7 +114,7 @@ func TestNewTokenManager(t *testing.T) {
 func TestTokenManager_GenerateTokenPair(t *testing.T) {
 	userStore := storage.NewInMemoryUserStore()
 	tokenStore := storage.NewInMemoryTokenStore()
-	signingKey := []byte("test-secret-key")
+	signingKey := testSigningKey()
 
 	tm := mustManager(t, Config{
 		UserStore:         userStore,
@@ -198,7 +220,7 @@ func TestTokenManager_GenerateTokenPair(t *testing.T) {
 
 func TestTokenManager_GenerateTokenPair_WithoutTokenStore(t *testing.T) {
 	userStore := storage.NewInMemoryUserStore()
-	signingKey := []byte("test-secret-key")
+	signingKey := testSigningKey()
 
 	// Create manager without token store
 	tm := mustManager(t, Config{
@@ -225,7 +247,7 @@ func TestTokenManager_GenerateTokenPair_WithoutTokenStore(t *testing.T) {
 
 func TestTokenManager_GenerateAccessToken(t *testing.T) {
 	userStore := storage.NewInMemoryUserStore()
-	signingKey := []byte("test-secret-key")
+	signingKey := testSigningKey()
 
 	tm := mustManager(t, Config{
 		UserStore:  userStore,
@@ -264,7 +286,7 @@ func TestTokenManager_GenerateAccessToken(t *testing.T) {
 func TestTokenManager_ValidateToken(t *testing.T) {
 	userStore := storage.NewInMemoryUserStore()
 	tokenStore := storage.NewInMemoryTokenStore()
-	signingKey := []byte("test-secret-key")
+	signingKey := testSigningKey()
 
 	tm := mustManager(t, Config{
 		UserStore:       userStore,
@@ -317,7 +339,7 @@ func TestTokenManager_ValidateToken(t *testing.T) {
 	// Test token with wrong signing key
 	wrongKeyManager := mustManager(t, Config{
 		UserStore:  userStore,
-		SigningKey: []byte("wrong-key"),
+		SigningKey: []byte("wrong-key-but-long-enough-32-byt"),
 	})
 	_, err = wrongKeyManager.ValidateToken(ctx, pair.AccessToken)
 	if !errors.Is(err, ErrInvalidToken) {
@@ -349,7 +371,7 @@ func TestTokenManager_ValidateToken(t *testing.T) {
 func TestTokenManager_RefreshAccessToken(t *testing.T) {
 	userStore := storage.NewInMemoryUserStore()
 	tokenStore := storage.NewInMemoryTokenStore()
-	signingKey := []byte("test-secret-key")
+	signingKey := testSigningKey()
 
 	tm := mustManager(t, Config{
 		UserStore:  userStore,
@@ -443,7 +465,7 @@ func TestTokenManager_RefreshAccessToken(t *testing.T) {
 func TestTokenManager_RevokeRefreshToken(t *testing.T) {
 	userStore := storage.NewInMemoryUserStore()
 	tokenStore := storage.NewInMemoryTokenStore()
-	signingKey := []byte("test-secret-key")
+	signingKey := testSigningKey()
 
 	tm := mustManager(t, Config{
 		UserStore:  userStore,
@@ -487,7 +509,7 @@ func TestTokenManager_RevokeRefreshToken(t *testing.T) {
 
 func TestTokenManager_RevokeRefreshToken_WithoutTokenStore(t *testing.T) {
 	userStore := storage.NewInMemoryUserStore()
-	signingKey := []byte("test-secret-key")
+	signingKey := testSigningKey()
 
 	tm := mustManager(t, Config{
 		UserStore:  userStore,
@@ -511,7 +533,7 @@ func TestTokenManager_RevokeRefreshToken_WithoutTokenStore(t *testing.T) {
 func TestTokenManager_RevokeAllUserTokens(t *testing.T) {
 	userStore := storage.NewInMemoryUserStore()
 	tokenStore := storage.NewInMemoryTokenStore()
-	signingKey := []byte("test-secret-key")
+	signingKey := testSigningKey()
 
 	tm := mustManager(t, Config{
 		UserStore:  userStore,
@@ -553,7 +575,7 @@ func TestTokenManager_RevokeAllUserTokens(t *testing.T) {
 
 func TestTokenManager_RevokeAllUserTokens_WithoutTokenStore(t *testing.T) {
 	userStore := storage.NewInMemoryUserStore()
-	signingKey := []byte("test-secret-key")
+	signingKey := testSigningKey()
 
 	tm := mustManager(t, Config{
 		UserStore:  userStore,
@@ -611,7 +633,7 @@ func TestGenerateTokenID(t *testing.T) {
 
 func TestParseUnverified(t *testing.T) {
 	userStore := storage.NewInMemoryUserStore()
-	signingKey := []byte("test-secret-key")
+	signingKey := testSigningKey()
 
 	tm := mustManager(t, Config{
 		UserStore:  userStore,
@@ -656,7 +678,7 @@ func TestParseUnverified(t *testing.T) {
 // Test token expiration
 func TestTokenManager_TokenExpiration(t *testing.T) {
 	userStore := storage.NewInMemoryUserStore()
-	signingKey := []byte("test-secret-key")
+	signingKey := testSigningKey()
 
 	tm := mustManager(t, Config{
 		UserStore:      userStore,
@@ -694,7 +716,7 @@ func TestTokenManager_SigningMethods(t *testing.T) {
 	// Test HS256
 	tm256 := mustManager(t, Config{
 		UserStore:     userStore,
-		SigningKey:    []byte("test-key-256"),
+		SigningKey:    testSigningKeyOfLen(32),
 		SigningMethod: jwt.SigningMethodHS256,
 	})
 	token256 := mustAccessToken(ctx, t, tm256, user)
@@ -709,7 +731,7 @@ func TestTokenManager_SigningMethods(t *testing.T) {
 	// Test HS512
 	tm512 := mustManager(t, Config{
 		UserStore:     userStore,
-		SigningKey:    []byte("test-key-512"),
+		SigningKey:    testSigningKeyOfLen(64),
 		SigningMethod: jwt.SigningMethodHS512,
 	})
 	token512 := mustAccessToken(ctx, t, tm512, user)
@@ -731,7 +753,7 @@ func TestTokenManager_SigningMethods(t *testing.T) {
 // Test that tokens are properly formatted JWT
 func TestTokenManager_TokenFormat(t *testing.T) {
 	userStore := storage.NewInMemoryUserStore()
-	signingKey := []byte("test-secret-key")
+	signingKey := testSigningKey()
 
 	tm := mustManager(t, Config{
 		UserStore:  userStore,
@@ -763,7 +785,7 @@ func TestTokenManager_TokenFormat(t *testing.T) {
 func TestTokenManager_ConcurrentGeneration(t *testing.T) {
 	userStore := storage.NewInMemoryUserStore()
 	tokenStore := storage.NewInMemoryTokenStore()
-	signingKey := []byte("test-secret-key")
+	signingKey := testSigningKey()
 
 	tm := mustManager(t, Config{
 		UserStore:  userStore,
@@ -806,7 +828,7 @@ func TestTokenManager_ConcurrentGeneration(t *testing.T) {
 // Test token issuer claim
 func TestTokenManager_IssuerClaim(t *testing.T) {
 	userStore := storage.NewInMemoryUserStore()
-	signingKey := []byte("test-secret-key")
+	signingKey := testSigningKey()
 
 	tm := mustManager(t, Config{
 		UserStore:  userStore,
@@ -833,7 +855,7 @@ func TestTokenManager_IssuerClaim(t *testing.T) {
 // Test that NotBefore claim is respected
 func TestTokenManager_NotBeforeClaim(t *testing.T) {
 	userStore := storage.NewInMemoryUserStore()
-	signingKey := []byte("test-secret-key")
+	signingKey := testSigningKey()
 
 	tm := mustManager(t, Config{
 		UserStore:  userStore,
@@ -945,7 +967,7 @@ func TestValidateToken_RejectsRefreshTokenAsBearer(t *testing.T) {
 	tm := mustManager(t, Config{
 		UserStore:  userStore,
 		TokenStore: tokenStore,
-		SigningKey: []byte("test-secret-key"),
+		SigningKey: testSigningKey(),
 	})
 	ctx := context.Background()
 
@@ -1102,6 +1124,59 @@ func (customSigningMethod) Verify(signingString string, sig []byte, key any) err
 	return errors.New("not used in these tests")
 }
 
+// TestNewTokenManager_RejectsShortHMACSecret covers the symmetric half of F-04
+// (CWE-1188, CWE-326). The constructor validated the asymmetric key/method
+// pairing and left the HMAC family unchecked -- the family every deployment
+// that does not configure a signing method ends up on -- so a one-byte HS256
+// secret was accepted and minted tokens the same manager verified. An HMAC
+// secret shorter than the hash output is recoverable offline from one captured
+// token, after which the holder mints tokens indistinguishable from the
+// library's own.
+//
+// The boundary is asserted in both directions: a secret one byte under the RFC
+// 7518 section 3.2 minimum is refused, and a secret exactly at it still mints
+// and validates, so the rule cannot be "fixed" into rejecting a compliant key.
+func TestNewTokenManager_RejectsShortHMACSecret(t *testing.T) {
+	ctx := context.Background()
+	userStore := storage.NewInMemoryUserStore()
+	user := &storage.User{ID: "user123", Email: "test@example.com"}
+
+	methods := []*jwt.SigningMethodHMAC{
+		jwt.SigningMethodHS256,
+		jwt.SigningMethodHS384,
+		jwt.SigningMethodHS512,
+	}
+	for _, method := range methods {
+		t.Run(method.Alg(), func(t *testing.T) {
+			minKeyBytes := method.Hash.Size()
+
+			for _, tooShort := range [][]byte{{'k'}, testSigningKeyOfLen(minKeyBytes - 1)} {
+				_, err := NewTokenManager(Config{
+					UserStore:     userStore,
+					SigningKey:    tooShort,
+					SigningMethod: method,
+				})
+				if !errors.Is(err, ErrInvalidKeyConfig) {
+					t.Fatalf("A %d-byte %s secret was accepted; expected ErrInvalidKeyConfig, got %v", len(tooShort), method.Alg(), err)
+				}
+			}
+
+			tm := mustManager(t, Config{
+				UserStore:     userStore,
+				SigningKey:    testSigningKeyOfLen(minKeyBytes),
+				SigningMethod: method,
+			})
+			claims, err := tm.ValidateAccessToken(ctx, mustAccessToken(ctx, t, tm, user))
+			if err != nil {
+				t.Fatalf("A %d-byte %s secret is RFC-compliant and must work: %v", minKeyBytes, method.Alg(), err)
+			}
+			if claims.UserID != user.ID {
+				t.Fatalf("Expected uid %q, got %q", user.ID, claims.UserID)
+			}
+		})
+	}
+}
+
 // TestNewTokenManager_KeyMethodPairing covers F-04 (CWE-1188): an asymmetric
 // signing method with only a []byte SigningKey used to be accepted by the
 // constructor and fail on the first token minted, in production.
@@ -1117,7 +1192,7 @@ func TestNewTokenManager_KeyMethodPairing(t *testing.T) {
 		cfg  Config
 		want bool // want a construction error
 	}{
-		{"HS256 with a shared secret", Config{SigningKey: []byte("test-secret-key")}, false},
+		{"HS256 with a shared secret", Config{SigningKey: testSigningKey()}, false},
 		{"HS256 with no key at all", Config{}, true},
 		{"HS256 with an asymmetric private key", Config{SigningKey: []byte("k"), PrivateKey: rsaKey}, true},
 		{"HS256 with a public key", Config{SigningKey: []byte("k"), PublicKey: rsaKey.Public()}, true},
@@ -1135,7 +1210,14 @@ func TestNewTokenManager_KeyMethodPairing(t *testing.T) {
 		{"EdDSA with an ed25519 key", Config{PrivateKey: edKey, SigningMethod: jwt.SigningMethodEdDSA}, false},
 		{"EdDSA with an RSA key", Config{PrivateKey: rsaKey, SigningMethod: jwt.SigningMethodEdDSA}, true},
 		{"the none signing method", Config{SigningKey: []byte("k"), SigningMethod: jwt.SigningMethodNone}, true},
-		{"an empty audience entry", Config{SigningKey: []byte("k"), Audience: []string{""}}, true},
+		{"an empty audience entry", Config{SigningKey: testSigningKey(), Audience: []string{""}}, true},
+		{"HS256 with a one-byte secret", Config{SigningKey: []byte("k")}, true},
+		{"HS256 with a 31-byte secret", Config{SigningKey: testSigningKeyOfLen(31)}, true},
+		{"HS256 with a 32-byte secret", Config{SigningKey: testSigningKeyOfLen(32)}, false},
+		{"HS384 with a 32-byte secret", Config{SigningKey: testSigningKeyOfLen(32), SigningMethod: jwt.SigningMethodHS384}, true},
+		{"HS384 with a 48-byte secret", Config{SigningKey: testSigningKeyOfLen(48), SigningMethod: jwt.SigningMethodHS384}, false},
+		{"HS512 with a 48-byte secret", Config{SigningKey: testSigningKeyOfLen(48), SigningMethod: jwt.SigningMethodHS512}, true},
+		{"HS512 with a 64-byte secret", Config{SigningKey: testSigningKeyOfLen(64), SigningMethod: jwt.SigningMethodHS512}, false},
 		{"a custom method with a shared secret", Config{SigningKey: []byte("k"), SigningMethod: customSigningMethod{}}, false},
 		{"a custom method with a full key pair", Config{PrivateKey: rsaKey, PublicKey: rsaKey.Public(), SigningMethod: customSigningMethod{}}, false},
 		{"a custom method missing the public half", Config{PrivateKey: rsaKey, SigningMethod: customSigningMethod{}}, true},
@@ -1254,7 +1336,7 @@ func TestValidateToken_RejectsAlgorithmConfusion(t *testing.T) {
 		t.Fatalf("Expected ErrInvalidToken for an alg=none token, got %v", err)
 	}
 
-	hmacManager := mustManager(t, Config{UserStore: userStore, SigningKey: []byte("test-secret-key"), Issuer: "idp"})
+	hmacManager := mustManager(t, Config{UserStore: userStore, SigningKey: testSigningKey(), Issuer: "idp"})
 	if _, err := hmacManager.ValidateToken(ctx, unsigned); !errors.Is(err, ErrInvalidToken) {
 		t.Fatalf("Expected ErrInvalidToken for an alg=none token, got %v", err)
 	}
@@ -1266,7 +1348,7 @@ func TestValidateToken_RejectsAlgorithmConfusion(t *testing.T) {
 func TestGenerateToken_MetadataAllowlist(t *testing.T) {
 	userStore := storage.NewInMemoryUserStore()
 	ctx := context.Background()
-	signingKey := []byte("test-secret-key")
+	signingKey := testSigningKey()
 
 	user := &storage.User{
 		ID:    "user123",

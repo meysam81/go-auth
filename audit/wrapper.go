@@ -270,6 +270,28 @@ func NewTokenManagerWrapper(tokenManager *jwt.TokenManager, auditor AuditLogger,
 	}
 }
 
+// refreshTokenActor resolves the subject of a refresh token so the audit record
+// names who refreshed or revoked it.
+//
+// It calls ValidateRefreshToken deliberately. Since F-02, ValidateToken means
+// ValidateAccessToken and rejects every refresh token on its type claim, so the
+// two call sites that used it here could never produce an actor: each
+// successful token.refresh and token.revoke event was written anonymously, and
+// nothing failed to make that visible. Resolution costs one parse and one store
+// lookup, and it emits no event of its own -- the event being enriched is the
+// record of the operation.
+func (w *TokenManagerWrapper) refreshTokenActor(ctx context.Context, refreshTokenString string) (*Actor, error) {
+	claims, err := w.tokenManager.ValidateRefreshToken(ctx, refreshTokenString)
+	if err != nil {
+		return nil, err
+	}
+	return &Actor{
+		UserID:   claims.UserID,
+		Email:    claims.Email,
+		Provider: claims.Provider,
+	}, nil
+}
+
 // GenerateTokenPair wraps the GenerateTokenPair method with audit logging.
 func (w *TokenManagerWrapper) GenerateTokenPair(ctx context.Context, user *storage.User) (*jwt.TokenPair, error) {
 	start := time.Now()
@@ -402,13 +424,15 @@ func (w *TokenManagerWrapper) RefreshAccessToken(ctx context.Context, refreshTok
 		event.EventResult = EventResultFailure
 		event.Error = err.Error()
 	} else {
-		// Extract user info from the refresh token (best effort)
-		if claims, parseErr := w.tokenManager.ValidateToken(ctx, refreshTokenString); parseErr == nil {
-			event.Actor = &Actor{
-				UserID:   claims.UserID,
-				Email:    claims.Email,
-				Provider: claims.Provider,
-			}
+		// Read after the fact, which is safe here because refreshing does not
+		// consume the token: it is still a live credential the store will
+		// resolve. A failed refresh needs no second attempt at the same parse -
+		// the wrapped call has already reported why the token did not verify.
+		actor, lookupErr := w.refreshTokenActor(ctx, refreshTokenString)
+		if lookupErr != nil {
+			noteActorLookupError(event, lookupErr)
+		} else {
+			event.Actor = actor
 		}
 	}
 
@@ -423,6 +447,15 @@ func (w *TokenManagerWrapper) RefreshAccessToken(ctx context.Context, refreshTok
 // RevokeRefreshToken wraps the RevokeRefreshToken method with audit logging.
 func (w *TokenManagerWrapper) RevokeRefreshToken(ctx context.Context, refreshTokenString string) error {
 	start := time.Now()
+
+	// Resolved before the revocation, not after: the resolution consults the
+	// token store, and once the token is revoked that lookup fails by design.
+	// Reading the actor afterwards would leave every successful token.revoke
+	// event anonymous, which is what the revocation record most needs to name.
+	// SessionManagerWrapper.Delete reads its actor before the delete for the
+	// same reason.
+	actor, lookupErr := w.refreshTokenActor(ctx, refreshTokenString)
+
 	err := w.tokenManager.RevokeRefreshToken(ctx, refreshTokenString)
 
 	event := &AuditEvent{
@@ -437,18 +470,17 @@ func (w *TokenManagerWrapper) RevokeRefreshToken(ctx context.Context, refreshTok
 		},
 	}
 
+	// The subject is recorded whether or not the revocation succeeded: a revoke
+	// that failed is exactly the entry an investigator needs attributed.
+	if lookupErr != nil {
+		noteActorLookupError(event, lookupErr)
+	} else {
+		event.Actor = actor
+	}
+
 	if err != nil {
 		event.EventResult = EventResultFailure
 		event.Error = err.Error()
-	} else {
-		// Extract user info from the token (best effort)
-		if claims, parseErr := w.tokenManager.ValidateToken(ctx, refreshTokenString); parseErr == nil {
-			event.Actor = &Actor{
-				UserID:   claims.UserID,
-				Email:    claims.Email,
-				Provider: claims.Provider,
-			}
-		}
 	}
 
 	if w.sourceFunc != nil {
@@ -672,13 +704,18 @@ func (w *SessionManagerWrapper) Refresh(ctx context.Context, sessionID string) e
 		event.EventResult = EventResultFailure
 		event.Error = err.Error()
 	} else {
-		// Try to get session data for actor info
-		if sess, getErr := w.sessionManager.Get(ctx, sessionID); getErr == nil {
+		// Best-effort actor enrichment. Get does not extend the session's TTL,
+		// so reading it here cannot prolong the credential it describes.
+		sess, getErr := w.sessionManager.Get(ctx, sessionID)
+		switch {
+		case sess != nil:
 			event.Actor = &Actor{
 				UserID:   sess.Data.UserID,
 				Email:    sess.Data.Email,
 				Provider: sess.Data.Provider,
 			}
+		case getErr != nil:
+			noteActorLookupError(event, getErr)
 		}
 	}
 
@@ -722,9 +759,7 @@ func (w *SessionManagerWrapper) Delete(ctx context.Context, sessionID string) er
 			Provider: sess.Data.Provider,
 		}
 	} else if lookupErr != nil {
-		event.Metadata = map[string]interface{}{
-			"actor_lookup_error": lookupErr.Error(),
-		}
+		noteActorLookupError(event, lookupErr)
 	}
 
 	if err != nil {
@@ -773,6 +808,20 @@ func (w *SessionManagerWrapper) Validate(ctx context.Context, sessionID string) 
 
 	w.emit(ctx, event)
 	return data, err //nolint:nilnil // Passthrough: the wrapped call already pairs a nil result with its error; the wrapper must not reshape it.
+}
+
+// noteActorLookupError records why an event carries no actor.
+//
+// An entry with a missing actor and no explanation cannot be told apart from an
+// operation that never had one, so a best-effort lookup that fails is written
+// down rather than dropped. It is added to Metadata rather than to Error, which
+// belongs to the wrapped operation's own outcome: enrichment failing does not
+// make a successful revocation a failed one.
+func noteActorLookupError(event *AuditEvent, err error) {
+	if event.Metadata == nil {
+		event.Metadata = make(map[string]interface{}, 1)
+	}
+	event.Metadata["actor_lookup_error"] = err.Error()
 }
 
 // emitAudit writes an event and routes a sink failure to a handler.

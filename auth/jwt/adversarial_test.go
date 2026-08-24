@@ -1438,7 +1438,25 @@ func TestJWT_TruncatedOrExtendedSigningKeyRejected(t *testing.T) {
 		}
 	})
 
-	t.Run("a manager holding a truncated secret refuses genuine tokens", func(t *testing.T) {
+	t.Run("a manager holding a truncated secret cannot be built at all", func(t *testing.T) {
+		t.Parallel()
+
+		// Truncating a 32-byte secret puts it under the RFC 7518 section 3.2
+		// minimum, and since F-04 the constructor refuses it outright. That is a
+		// strictly earlier gate than the verification failure this case used to
+		// assert: a deployment that lost a byte of its secret in transit now
+		// fails at startup instead of rejecting every live token at runtime.
+		_, err := NewTokenManager(Config{
+			UserStore:  userStore,
+			SigningKey: secret[:len(secret)-1],
+			Issuer:     advIssuer,
+		})
+		if !errors.Is(err, ErrInvalidKeyConfig) {
+			t.Fatalf("Expected ErrInvalidKeyConfig for a 31-byte secret, got %v", err)
+		}
+	})
+
+	t.Run("a manager holding a different compliant secret refuses genuine tokens", func(t *testing.T) {
 		t.Parallel()
 
 		token, err := tm.GenerateAccessToken(ctx, user)
@@ -1446,13 +1464,15 @@ func TestJWT_TruncatedOrExtendedSigningKeyRejected(t *testing.T) {
 			t.Fatalf("GenerateAccessToken: %v", err)
 		}
 
-		truncated := advManager(t, Config{
+		// Long enough to be accepted at construction, so the only thing left to
+		// reject the token is the signature check itself.
+		other := advManager(t, Config{
 			UserStore:  userStore,
-			SigningKey: secret[:len(secret)-1],
+			SigningKey: advSecret(t, 32),
 			Issuer:     advIssuer,
 		})
-		if _, err := truncated.ValidateAccessToken(ctx, token); err == nil {
-			t.Fatal("A manager with a truncated secret accepted a token minted under the full one")
+		if _, err := other.ValidateAccessToken(ctx, token); err == nil {
+			t.Fatal("A manager with an unrelated secret accepted a token minted under this one")
 		}
 	})
 
@@ -1729,5 +1749,45 @@ func TestJWT_DeeplyPaddedTokenRejectedWithoutUnboundedAllocation(t *testing.T) {
 	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > maxAlloc {
 		t.Fatalf("Rejecting a %d-segment token allocated %d bytes, over the %d byte budget: the parser is walking the whole input before counting segments",
 			delimiters, allocated, maxAlloc)
+	}
+}
+
+// TestJWT_RefreshTokenWithoutJTIRefused covers the fail-open guard clause on
+// the revocation path. validate consulted the token store only when
+// claims.TokenID was non-empty, so a refresh token carrying no jti skipped the
+// revocation check entirely -- the single check that path exists for. The
+// omission is not reachable from a token this library minted, which is exactly
+// why it survived review: the shape that exploits it comes from a second minter
+// holding the same secret, the deployment F-03 describes.
+func TestJWT_RefreshTokenWithoutJTIRefused(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	secret := advSecret(t, 32)
+	userStore := storage.NewInMemoryUserStore()
+	advStoredUser(ctx, t, userStore, advUserID)
+
+	tm := advManager(t, Config{
+		UserStore:  userStore,
+		TokenStore: storage.NewInMemoryTokenStore(),
+		SigningKey: secret,
+		Issuer:     advIssuer,
+	})
+
+	// Genuine signature, correct issuer, correct type, unexpired -- and no jti,
+	// so the store cannot be asked whether it has been revoked.
+	token := advSign(t, jwt.SigningMethodHS256, secret, advClaims(time.Now(), func(c jwt.MapClaims) {
+		c["iss"] = advIssuer
+		c["type"] = string(RefreshToken)
+	}))
+
+	if _, err := tm.ValidateRefreshToken(ctx, token); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("ValidateRefreshToken accepted a refresh token that cannot be revocation-checked: got %v", err)
+	}
+	if _, err := tm.RefreshAccessToken(ctx, token); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("RefreshAccessToken minted an access token from a refresh token that cannot be revocation-checked: got %v", err)
+	}
+	if err := tm.RevokeRefreshToken(ctx, token); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("RevokeRefreshToken accepted a token with no jti to revoke: got %v", err)
 	}
 }

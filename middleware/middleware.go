@@ -39,6 +39,16 @@ var (
 	// ErrForbidden is returned when the user doesn't have permission.
 	ErrForbidden = errors.New("forbidden")
 
+	// ErrMissingDependency is returned by the WithError constructors when the
+	// configuration omits a collaborator the middleware cannot work without.
+	//
+	// The middleware types hold their dependency in an unexported field, so a
+	// nil one is not something a request can recover from: the credential
+	// cannot be verified, and a request whose credential cannot be verified is
+	// not authenticated. The plain constructors panic on it (see
+	// NewJWTMiddleware) because their v1 signatures return no error.
+	ErrMissingDependency = errors.New("missing required dependency")
+
 	// ErrInvalidCookieConfig is returned by NewSecureCookieWriter when the
 	// requested cookie could not be emitted safely.
 	//
