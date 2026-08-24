@@ -58,6 +58,14 @@ const (
 // Note: This implementation is configured for GitLab.com. For self-hosted GitLab
 // instances, you can create a custom provider using NewOIDCProvider with your
 // GitLab instance URL as the issuer (e.g., "https://gitlab.yourcompany.com").
+//
+// Deprecated: v2 removes the vendor-specific constructors. OIDC discovery
+// configures any OIDC-capable provider from its issuer URL alone, so this
+// function is configuration rather than logic and is not a primitive the
+// library should own. Use [NewOIDCProvider] or [NewOIDCProviderWithClient]
+// with the issuer URL "https://gitlab.com" — or your own instance's base URL,
+// which this constructor cannot express — and the scopes "openid", "profile",
+// "email".
 func NewGitLabProvider(ctx context.Context, clientID, clientSecret, redirectURL string) (*BaseOIDCProvider, error) {
 	scopes := []string{
 		"openid",
@@ -65,6 +73,7 @@ func NewGitLabProvider(ctx context.Context, clientID, clientSecret, redirectURL 
 		"email",
 	}
 
+	//nolint:gosec // G101 matches on the TokenURL field name; these are GitLab's published endpoint URLs, not credentials.
 	endpoint := oauth2.Endpoint{
 		AuthURL:  "https://gitlab.com/oauth/authorize",
 		TokenURL: "https://gitlab.com/oauth/token",

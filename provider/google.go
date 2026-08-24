@@ -54,6 +54,13 @@ const (
 //   - openid: Required for OIDC authentication
 //   - profile: User's basic profile information (name, picture)
 //   - email: User's email address and verification status
+//
+// Deprecated: v2 removes the vendor-specific constructors. OIDC discovery
+// configures any OIDC-capable provider from its issuer URL alone, so this
+// function is configuration rather than logic and is not a primitive the
+// library should own. Use [NewOIDCProvider] or [NewOIDCProviderWithClient]
+// with the issuer URL "https://accounts.google.com" and the scopes
+// "openid", "profile", "email".
 func NewGoogleProvider(ctx context.Context, clientID, clientSecret, redirectURL string) (*BaseOIDCProvider, error) {
 	scopes := []string{
 		oidc.ScopeOpenID,

@@ -12,6 +12,8 @@ const (
 )
 
 // appleEndpoint defines the OAuth2 endpoints for Apple Sign In.
+//
+//nolint:gosec // G101 matches on the TokenURL field name; these are Apple's published endpoint URLs, not credentials.
 var appleEndpoint = oauth2.Endpoint{
 	AuthURL:  "https://appleid.apple.com/auth/authorize",
 	TokenURL: "https://appleid.apple.com/auth/token",
@@ -72,6 +74,13 @@ var appleEndpoint = oauth2.Endpoint{
 //   - User name is only provided during the initial authorization, not on subsequent logins
 //   - Users can choose to hide their email, in which case Apple provides a relay email
 //   - The client secret must be regenerated every 6 months per Apple's requirements
+//
+// Deprecated: v2 removes the vendor-specific constructors. OIDC discovery
+// configures any OIDC-capable provider from its issuer URL alone, so this
+// function is configuration rather than logic and is not a primitive the
+// library should own. Use [NewOIDCProvider] or [NewOIDCProviderWithClient]
+// with the issuer URL "https://appleid.apple.com" and the scopes
+// "openid", "email", "name".
 func NewAppleProvider(ctx context.Context, clientID, clientSecret, redirectURL string) (*BaseOIDCProvider, error) {
 	scopes := []string{
 		"openid",

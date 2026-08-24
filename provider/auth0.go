@@ -55,6 +55,13 @@ import (
 // Note: Auth0 supports custom authorization servers. This implementation uses the
 // default authorization server. For custom authorization servers, you may need to
 // modify the issuer URL format.
+//
+// Deprecated: v2 removes the vendor-specific constructors. OIDC discovery
+// configures any OIDC-capable provider from its issuer URL alone, so this
+// function is configuration rather than logic and is not a primitive the
+// library should own. Use [NewOIDCProvider] or [NewOIDCProviderWithClient]
+// with the issuer URL "https://<your-domain>/" — the trailing slash is part of
+// the issuer Auth0 asserts — and the scopes "openid", "profile", "email".
 func NewAuth0Provider(ctx context.Context, domain, clientID, clientSecret, redirectURL string) (*BaseOIDCProvider, error) {
 	issuerURL := fmt.Sprintf("https://%s/", domain)
 

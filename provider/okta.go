@@ -57,6 +57,13 @@ import (
 // If you need to use a custom authorization server, you should create a custom provider
 // using NewOIDCProvider with the appropriate issuer URL format:
 // "https://your-domain.okta.com/oauth2/your-auth-server-id"
+//
+// Deprecated: v2 removes the vendor-specific constructors. OIDC discovery
+// configures any OIDC-capable provider from its issuer URL alone, so this
+// function is configuration rather than logic and is not a primitive the
+// library should own. Use [NewOIDCProvider] or [NewOIDCProviderWithClient]
+// with the issuer URL "https://<your-domain>/oauth2/default", or with a custom
+// authorization server's issuer URL, which this constructor cannot express.
 func NewOktaProvider(ctx context.Context, domain, clientID, clientSecret, redirectURL string) (*BaseOIDCProvider, error) {
 	issuerURL := fmt.Sprintf("https://%s/oauth2/default", domain)
 

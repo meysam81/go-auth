@@ -13,6 +13,8 @@ const (
 )
 
 // discordEndpoint defines the OAuth2 endpoints for Discord authentication.
+//
+//nolint:gosec // G101 matches on the TokenURL field name; these are Discord's published endpoint URLs, not credentials.
 var discordEndpoint = oauth2.Endpoint{
 	AuthURL:  "https://discord.com/api/oauth2/authorize",
 	TokenURL: "https://discord.com/api/oauth2/token",
@@ -60,6 +62,13 @@ var discordEndpoint = oauth2.Endpoint{
 // for user info retrieval. The provider automatically constructs the avatar URL from the
 // Discord CDN using the user's ID and avatar hash. The display name (global_name) is
 // preferred over the username when available.
+//
+// Deprecated: v2 removes the vendor-specific constructors. This one is a
+// hardcoded endpoint pair, a scope list and a response parser, none of which
+// the library is better placed to maintain than the application. Discord
+// publishes no OIDC discovery document, so the replacement is
+// [NewOAuth2Provider] or [NewOAuth2ProviderWithClient] with the endpoints,
+// user info URL and extract function this file shows.
 func NewDiscordProvider(clientID, clientSecret, redirectURL string) *OAuth2Provider {
 	oauth2Config := &oauth2.Config{
 		ClientID:     clientID,
@@ -74,9 +83,13 @@ func NewDiscordProvider(clientID, clientSecret, redirectURL string) *OAuth2Provi
 			RawClaims: data,
 		}
 
-		if id, ok := data["id"].(string); ok {
-			userInfo.Subject = id
+		// Without a subject there is no stable name for this account, so the
+		// response is declined rather than turned into a subject-less user.
+		id, ok := data["id"].(string)
+		if !ok || id == "" {
+			return nil
 		}
+		userInfo.Subject = id
 
 		if email, ok := data["email"].(string); ok {
 			userInfo.Email = email
