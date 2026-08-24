@@ -6,8 +6,10 @@ package middleware
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // ContextKey is a type for context keys to avoid collisions.
@@ -36,7 +38,21 @@ var (
 
 	// ErrForbidden is returned when the user doesn't have permission.
 	ErrForbidden = errors.New("forbidden")
+
+	// ErrInvalidCookieConfig is returned by NewSecureCookieWriter when the
+	// requested cookie could not be emitted safely.
+	//
+	// It exists because net/http silently drops a cookie whose name is not a
+	// valid token, and because the __Host- prefix imposes constraints a browser
+	// enforces by discarding the cookie rather than by reporting anything. Both
+	// failures are invisible at runtime, so they are caught at construction.
+	ErrInvalidCookieConfig = errors.New("invalid cookie configuration")
 )
+
+// cookieDeletionTime is the expiry emitted alongside Max-Age=-1 when clearing a
+// cookie. Any instant in the past works; the Unix epoch is the conventional
+// choice and is within the range net/http will serialize.
+var cookieDeletionTime = time.Unix(0, 0).UTC()
 
 // ErrorHandler is a function that handles authentication errors.
 // The default behavior is to write a 401 or 403 status code.
@@ -62,9 +78,21 @@ type CookieExtractor struct {
 }
 
 // Extract extracts a session token from a cookie.
+//
+// Every failure reports ErrUnauthorized and nothing else. The error returned by
+// (*http.Request).Cookie is deliberately not wrapped: it distinguishes "no such
+// cookie" from "malformed Cookie header", which is information an
+// unauthenticated caller probing the endpoint would like and a legitimate
+// caller has no use for.
 func (e *CookieExtractor) Extract(r *http.Request) (string, error) {
 	cookie, err := r.Cookie(e.CookieName)
 	if err != nil {
+		return "", ErrUnauthorized
+	}
+	// A cleared cookie is a present cookie with an empty value. Treating it as a
+	// credential sends an empty identifier into a store lookup, where a store
+	// that happens to have an empty key would authenticate it.
+	if cookie.Value == "" {
 		return "", ErrUnauthorized
 	}
 	return cookie.Value, nil
@@ -77,6 +105,10 @@ type HeaderExtractor struct {
 }
 
 // Extract extracts a bearer token from the Authorization header.
+//
+// As with CookieExtractor, an absent header, a wrong scheme and a malformed
+// value are all reported as ErrUnauthorized so the response cannot be used to
+// enumerate which credential shape the route accepts.
 func (e *HeaderExtractor) Extract(r *http.Request) (string, error) {
 	authHeader := r.Header.Get(e.HeaderName)
 	if authHeader == "" {
@@ -100,6 +132,13 @@ type MultiExtractor struct {
 }
 
 // Extract tries each extractor until one succeeds.
+//
+// The underlying errors are intentionally not joined into the result. At this
+// boundary the only remaining decision is "authenticated or not", and an error
+// naming the extractor that failed would tell an unauthenticated caller whether
+// a cookie was present, whether a header was malformed, and which credentials
+// this route accepts. A caller that needs to distinguish those cases must
+// invoke the individual extractors itself.
 func (e *MultiExtractor) Extract(r *http.Request) (string, error) {
 	for _, extractor := range e.Extractors {
 		token, err := extractor.Extract(r)
@@ -117,42 +156,161 @@ type SessionTokenWriter interface {
 }
 
 // CookieWriter writes session tokens as HTTP cookies.
+//
+// The zero value is unsafe. Secure, HttpOnly and SameSite are plain bool and
+// http.SameSite fields, so a CookieWriter constructed with a literal that omits
+// them emits a session identifier that travels over cleartext HTTP, is readable
+// by any script on the page, and is attached to cross-site requests: the three
+// properties a session cookie exists to deny. The field types are frozen by v1
+// compatibility and their defaults therefore cannot be inverted, so use
+// NewSecureCookieWriter, which sets them correctly and validates the rest.
 type CookieWriter struct {
 	CookieName string
 	Path       string
 	Domain     string
 	MaxAge     int // seconds
 	Secure     bool
-	HttpOnly   bool
-	SameSite   http.SameSite
+	//nolint:revive,staticcheck // Renaming an exported field is a breaking change; deferred to v2.
+	HttpOnly bool
+	SameSite http.SameSite
+}
+
+// NewSecureCookieWriter returns a CookieWriter with secure attributes:
+// Secure and HttpOnly set, and SameSite defaulting to Lax.
+//
+// There is no switch to turn those off. A deployment that genuinely needs a
+// non-secure cookie can still build a CookieWriter literal, which is exactly
+// the visibility that choice deserves.
+func NewSecureCookieWriter(cfg SecureCookieConfig) (*CookieWriter, error) {
+	if !isValidCookieName(cfg.CookieName) {
+		// net/http drops a cookie with an invalid name without a word, so the
+		// only symptom is a session that never sticks.
+		return nil, fmt.Errorf("%w: cookie name %q is not a valid RFC 6265 token", ErrInvalidCookieConfig, cfg.CookieName)
+	}
+
+	path := cfg.Path
+	if path == "" {
+		path = "/"
+	}
+
+	sameSite := cfg.SameSite
+	if sameSite == 0 {
+		// The zero value of http.SameSite emits no attribute at all, which
+		// leaves the browser default. Lax is the safe floor and is what a
+		// modern browser applies anyway; naming it makes the choice explicit
+		// rather than dependent on the user agent.
+		sameSite = http.SameSiteLaxMode
+	}
+
+	// A browser silently rejects a __Host- cookie that is not host-only and
+	// path-/, so a violation here would look like a cookie that is never
+	// stored. The prefix is worth honoring: it is what stops a compromised
+	// subdomain from overwriting the parent origin's session cookie.
+	if strings.HasPrefix(cfg.CookieName, "__Host-") {
+		if cfg.Domain != "" {
+			return nil, fmt.Errorf("%w: a __Host- cookie must not set Domain", ErrInvalidCookieConfig)
+		}
+		if path != "/" {
+			return nil, fmt.Errorf("%w: a __Host- cookie must use Path=/", ErrInvalidCookieConfig)
+		}
+	}
+
+	return &CookieWriter{
+		CookieName: cfg.CookieName,
+		Path:       path,
+		Domain:     cfg.Domain,
+		MaxAge:     cfg.MaxAge,
+		Secure:     true,
+		HttpOnly:   true,
+		SameSite:   sameSite,
+	}, nil
+}
+
+// SecureCookieConfig configures NewSecureCookieWriter.
+//
+// Secure and HttpOnly are absent by design: they are not configurable.
+type SecureCookieConfig struct {
+	// CookieName is the cookie name and is required.
+	//
+	// Prefer the __Host- prefix for a session cookie. A browser accepts such a
+	// cookie only when it is Secure, host-only and Path=/, which denies a
+	// sibling subdomain the ability to plant or overwrite it.
+	CookieName string
+
+	// Path defaults to "/".
+	Path string
+
+	// Domain should normally stay empty, which yields a host-only cookie.
+	// Setting it widens the cookie to every subdomain, so any host under that
+	// domain — including one operated by someone else — receives the session
+	// identifier.
+	Domain string
+
+	// MaxAge is the lifetime in seconds. Zero emits no Max-Age, making it a
+	// session cookie that dies with the browser session.
+	MaxAge int
+
+	// SameSite defaults to http.SameSiteLaxMode when left at its zero value.
+	// http.SameSiteNoneMode is only meaningful for a genuine cross-site flow
+	// and removes the CSRF protection the attribute provides.
+	SameSite http.SameSite
 }
 
 // Write writes a session token as a cookie.
 func (w *CookieWriter) Write(rw http.ResponseWriter, token string) {
-	http.SetCookie(rw, &http.Cookie{
-		Name:     w.CookieName,
-		Value:    token,
-		Path:     w.Path,
-		Domain:   w.Domain,
-		MaxAge:   w.MaxAge,
-		Secure:   w.Secure,
-		HttpOnly: w.HttpOnly,
-		SameSite: w.SameSite,
-	})
+	http.SetCookie(rw, w.cookie(token, w.MaxAge, time.Time{}))
 }
 
 // Clear removes the session cookie.
+//
+// It mirrors every attribute Write emits. A browser identifies a cookie by
+// (name, domain, path), so a Clear that dropped Path or Domain would create a
+// second, differently scoped cookie and leave the live session identifier in
+// place — a logout that reports success and revokes nothing. Both Max-Age=-1
+// and a past Expires are sent because user agents have historically honored
+// one or the other, and either alone leaves the cookie behind somewhere.
 func (w *CookieWriter) Clear(rw http.ResponseWriter) {
-	http.SetCookie(rw, &http.Cookie{
+	http.SetCookie(rw, w.cookie("", -1, cookieDeletionTime))
+}
+
+// cookie builds the cookie shared by Write and Clear so the attribute sets
+// cannot drift apart.
+func (w *CookieWriter) cookie(value string, maxAge int, expires time.Time) *http.Cookie {
+	return &http.Cookie{
 		Name:     w.CookieName,
-		Value:    "",
+		Value:    value,
 		Path:     w.Path,
 		Domain:   w.Domain,
-		MaxAge:   -1,
+		MaxAge:   maxAge,
+		Expires:  expires,
 		Secure:   w.Secure,
 		HttpOnly: w.HttpOnly,
 		SameSite: w.SameSite,
-	})
+	}
+}
+
+// isValidCookieName reports whether name is a token per RFC 6265 section 4.1.1,
+// which defers to the RFC 2616 token production: no control characters and no
+// separators. net/http applies the same rule and discards the Set-Cookie header
+// silently when it fails.
+func isValidCookieName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		if !isCookieNameByte(name[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// isCookieNameByte reports whether b may appear in a cookie name.
+func isCookieNameByte(b byte) bool {
+	if b <= 0x20 || b >= 0x7f {
+		return false
+	}
+	return !strings.ContainsRune(`"(),/:;<=>?@[\]{}`, rune(b))
 }
 
 // GetUserID retrieves the user ID from the request context.

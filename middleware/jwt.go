@@ -8,6 +8,8 @@ import (
 )
 
 // JWTMiddleware provides JWT authentication middleware.
+//
+// It authenticates access tokens only. See Middleware for why.
 type JWTMiddleware struct {
 	tokenManager *jwt.TokenManager
 	extractor    SessionTokenExtractor
@@ -43,7 +45,16 @@ func NewJWTMiddleware(cfg JWTConfig) *JWTMiddleware {
 	}
 }
 
-// Middleware returns an HTTP middleware function.
+// Middleware returns an HTTP middleware function that authorizes a request
+// carrying a valid, unexpired access token.
+//
+// A refresh token is rejected (F-02, CWE-863). Until this release the bearer
+// token went to jwt.TokenManager.ValidateToken, which did not inspect the type
+// claim, so a refresh token — seven days of validity against an access token's
+// fifteen minutes, held at rest in client storage, and intended for exactly one
+// endpoint — authorized every route this middleware protects. Code that relied
+// on that must call jwt.TokenManager.RefreshAccessToken and present the access
+// token it returns.
 func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, err := m.extractor.Extract(r)
@@ -52,7 +63,9 @@ func (m *JWTMiddleware) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		claims, err := m.tokenManager.ValidateToken(r.Context(), token)
+		// The access-token-only entry point, named explicitly rather than
+		// relying on ValidateToken's current delegation to it (F-02).
+		claims, err := m.tokenManager.ValidateAccessToken(r.Context(), token)
 		if err != nil {
 			m.errorHandler(w, r, ErrUnauthorized)
 			return

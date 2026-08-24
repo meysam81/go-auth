@@ -63,6 +63,8 @@ func BenchmarkNoOpAuditor_Log(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = auditor.Log(context.Background(), event)
+		if err := auditor.Log(context.Background(), event); err != nil {
+			b.Fatalf("Log: %v", err)
+		}
 	}
 }

@@ -37,17 +37,38 @@ func (m *MockAuditor) Reset() {
 	m.events = nil
 }
 
-func TestBasicAuthWrapper_Register(t *testing.T) {
-	userStore := storage.NewInMemoryUserStore()
-	credStore := storage.NewInMemoryCredentialStore()
+// newTestAuthenticator builds a basic.Authenticator over in-memory stores and
+// fails the test rather than returning a nil authenticator that would panic
+// several lines later with an unrelated message.
+func newTestAuthenticator(t *testing.T) *basic.Authenticator {
+	t.Helper()
 
 	auth, err := basic.NewAuthenticator(basic.Config{
-		UserStore:       userStore,
-		CredentialStore: credStore,
+		UserStore:       storage.NewInMemoryUserStore(),
+		CredentialStore: storage.NewInMemoryCredentialStore(),
 	})
 	if err != nil {
-		t.Fatalf("Failed to create authenticator: %v", err)
+		t.Fatalf("NewAuthenticator: %v", err)
 	}
+	return auth
+}
+
+// registerTestUser seeds a user through the primitive under test. It is the
+// single place this package calls the deprecated basic.Register, so the
+// suppression below is the only one needed in the test file.
+func registerTestUser(t *testing.T, auth *basic.Authenticator, req basic.RegisterRequest) *storage.User {
+	t.Helper()
+
+	//nolint:staticcheck // SA1019: Register is the only v1 API that creates a credential, and these tests must exercise the v1 surface until v2 removes it.
+	user, err := auth.Register(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	return user
+}
+
+func TestBasicAuthWrapper_Register(t *testing.T) {
+	auth := newTestAuthenticator(t)
 
 	mockAuditor := &MockAuditor{}
 	wrapper := NewBasicAuthWrapper(auth, mockAuditor, nil)
@@ -86,16 +107,10 @@ func TestBasicAuthWrapper_Register(t *testing.T) {
 }
 
 func TestBasicAuthWrapper_Authenticate_Success(t *testing.T) {
-	userStore := storage.NewInMemoryUserStore()
-	credStore := storage.NewInMemoryCredentialStore()
-
-	auth, _ := basic.NewAuthenticator(basic.Config{
-		UserStore:       userStore,
-		CredentialStore: credStore,
-	})
+	auth := newTestAuthenticator(t)
 
 	// Register a user first
-	_, _ = auth.Register(context.Background(), basic.RegisterRequest{
+	registerTestUser(t, auth, basic.RegisterRequest{
 		Email:    "test@example.com",
 		Password: "password123",
 	})
@@ -122,13 +137,7 @@ func TestBasicAuthWrapper_Authenticate_Success(t *testing.T) {
 }
 
 func TestBasicAuthWrapper_Authenticate_Failure(t *testing.T) {
-	userStore := storage.NewInMemoryUserStore()
-	credStore := storage.NewInMemoryCredentialStore()
-
-	auth, _ := basic.NewAuthenticator(basic.Config{
-		UserStore:       userStore,
-		CredentialStore: credStore,
-	})
+	auth := newTestAuthenticator(t)
 
 	mockAuditor := &MockAuditor{}
 	wrapper := NewBasicAuthWrapper(auth, mockAuditor, nil)
@@ -152,16 +161,10 @@ func TestBasicAuthWrapper_Authenticate_Failure(t *testing.T) {
 }
 
 func TestBasicAuthWrapper_WithSourceExtractor(t *testing.T) {
-	userStore := storage.NewInMemoryUserStore()
-	credStore := storage.NewInMemoryCredentialStore()
-
-	auth, _ := basic.NewAuthenticator(basic.Config{
-		UserStore:       userStore,
-		CredentialStore: credStore,
-	})
+	auth := newTestAuthenticator(t)
 
 	mockAuditor := &MockAuditor{}
-	sourceFunc := func(ctx context.Context) *Source {
+	sourceFunc := func(_ context.Context) *Source {
 		return &Source{
 			IPAddress: "192.168.1.1",
 			UserAgent: "Test/1.0",
@@ -171,10 +174,12 @@ func TestBasicAuthWrapper_WithSourceExtractor(t *testing.T) {
 	wrapper := NewBasicAuthWrapper(auth, mockAuditor, sourceFunc)
 
 	// Register a user
-	_, _ = wrapper.Register(context.Background(), basic.RegisterRequest{
+	if _, err := wrapper.Register(context.Background(), basic.RegisterRequest{
 		Email:    "test@example.com",
 		Password: "password123",
-	})
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
 
 	event := mockAuditor.LastEvent()
 	if event.Source == nil {
@@ -232,11 +237,14 @@ func TestTokenManagerWrapper_ValidateToken(t *testing.T) {
 	userStore := storage.NewInMemoryUserStore()
 	tokenStore := storage.NewInMemoryTokenStore()
 
-	tm, _ := jwt.NewTokenManager(jwt.Config{
+	tm, err := jwt.NewTokenManager(jwt.Config{
 		UserStore:  userStore,
 		TokenStore: tokenStore,
 		SigningKey: []byte("test-key-32-bytes-long-secret!"),
 	})
+	if err != nil {
+		t.Fatalf("NewTokenManager: %v", err)
+	}
 
 	mockAuditor := &MockAuditor{}
 	wrapper := NewTokenManagerWrapper(tm, mockAuditor, nil)
@@ -248,14 +256,16 @@ func TestTokenManagerWrapper_ValidateToken(t *testing.T) {
 	}
 
 	// Generate token first
-	tokenPair, _ := tm.GenerateTokenPair(context.Background(), user)
+	tokenPair, err := tm.GenerateTokenPair(context.Background(), user)
+	if err != nil {
+		t.Fatalf("GenerateTokenPair: %v", err)
+	}
 
 	// Reset mock to clear generate event
 	mockAuditor.Reset()
 
 	// Validate token
-	_, err := wrapper.ValidateToken(context.Background(), tokenPair.AccessToken)
-	if err != nil {
+	if _, err := wrapper.ValidateToken(context.Background(), tokenPair.AccessToken); err != nil {
 		t.Fatalf("ValidateToken failed: %v", err)
 	}
 
@@ -310,17 +320,23 @@ func TestSessionManagerWrapper_Create(t *testing.T) {
 
 func TestSessionManagerWrapper_Validate(t *testing.T) {
 	sessionStore := storage.NewInMemorySessionStore()
-	sm, _ := session.NewManager(session.Config{
+	sm, err := session.NewManager(session.Config{
 		Store:      sessionStore,
 		SessionTTL: 24 * time.Hour,
 	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
 
 	// Create a session first
-	sess, _ := sm.Create(context.Background(), session.CreateSessionRequest{
+	sess, err := sm.Create(context.Background(), session.CreateSessionRequest{
 		UserID:   "user123",
 		Email:    "test@example.com",
 		Provider: "basic",
 	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
 
 	mockAuditor := &MockAuditor{}
 	wrapper := NewSessionManagerWrapper(sm, mockAuditor, nil)
@@ -345,24 +361,29 @@ func TestSessionManagerWrapper_Validate(t *testing.T) {
 
 func TestSessionManagerWrapper_Delete(t *testing.T) {
 	sessionStore := storage.NewInMemorySessionStore()
-	sm, _ := session.NewManager(session.Config{
+	sm, err := session.NewManager(session.Config{
 		Store:      sessionStore,
 		SessionTTL: 24 * time.Hour,
 	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
 
 	// Create a session first
-	sess, _ := sm.Create(context.Background(), session.CreateSessionRequest{
+	sess, err := sm.Create(context.Background(), session.CreateSessionRequest{
 		UserID:   "user123",
 		Email:    "test@example.com",
 		Provider: "basic",
 	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
 
 	mockAuditor := &MockAuditor{}
 	wrapper := NewSessionManagerWrapper(sm, mockAuditor, nil)
 
 	// Delete session
-	err := wrapper.Delete(context.Background(), sess.ID)
-	if err != nil {
+	if err := wrapper.Delete(context.Background(), sess.ID); err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
 
@@ -380,13 +401,7 @@ func TestSessionManagerWrapper_Delete(t *testing.T) {
 
 func TestWrappers_WithNilAuditor(t *testing.T) {
 	// Test that wrappers work with nil auditor (should use default)
-	userStore := storage.NewInMemoryUserStore()
-	credStore := storage.NewInMemoryCredentialStore()
-
-	auth, _ := basic.NewAuthenticator(basic.Config{
-		UserStore:       userStore,
-		CredentialStore: credStore,
-	})
+	auth := newTestAuthenticator(t)
 
 	wrapper := NewBasicAuthWrapper(auth, nil, nil)
 
@@ -408,13 +423,7 @@ func (m *MockFailingAuditor) Log(ctx context.Context, event *AuditEvent) error {
 }
 
 func TestWrappers_AuditFailureDoesNotBlockOperation(t *testing.T) {
-	userStore := storage.NewInMemoryUserStore()
-	credStore := storage.NewInMemoryCredentialStore()
-
-	auth, _ := basic.NewAuthenticator(basic.Config{
-		UserStore:       userStore,
-		CredentialStore: credStore,
-	})
+	auth := newTestAuthenticator(t)
 
 	failingAuditor := &MockFailingAuditor{}
 	wrapper := NewBasicAuthWrapper(auth, failingAuditor, nil)

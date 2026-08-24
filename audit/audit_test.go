@@ -290,4 +290,22 @@ func TestAuditEvent_Structure(t *testing.T) {
 	if event.Source.IPAddress != "192.168.1.1" {
 		t.Errorf("Source.IPAddress mismatch")
 	}
+	// The remaining fields are asserted too: a struct literal whose fields are
+	// never read is indistinguishable from a struct literal whose fields the
+	// type no longer has, so an unread field here is a test that cannot fail.
+	if event.EventResult != EventResultSuccess {
+		t.Errorf("EventResult mismatch")
+	}
+	if event.Error != "some error" {
+		t.Errorf("Error mismatch")
+	}
+	if event.Metadata["key"] != "value" {
+		t.Errorf("Metadata mismatch")
+	}
+	if event.SessionID != "session123" {
+		t.Errorf("SessionID mismatch")
+	}
+	if event.TraceID != "trace123" {
+		t.Errorf("TraceID mismatch")
+	}
 }

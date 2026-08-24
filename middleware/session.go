@@ -44,6 +44,13 @@ func NewSessionMiddleware(cfg SessionConfig) *SessionMiddleware {
 }
 
 // Middleware returns an HTTP middleware function.
+//
+// It authenticates an existing session; it does not create or rotate one. The
+// session identifier presented before sign-in must not survive it (F-14,
+// CWE-384), so the sign-in handler is responsible for calling
+// session.Manager.Rotate and writing the new identifier with
+// SessionTokenWriter.Write. This middleware cannot do it: it has no way to tell
+// the request that authenticated the user from every request after it.
 func (m *SessionMiddleware) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sessionID, err := m.extractor.Extract(r)
