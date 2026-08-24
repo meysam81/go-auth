@@ -131,6 +131,11 @@ jobs:
           key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum', '**/go.mod') }}
           restore-keys: |
             ${{ runner.os }}-go-
+      # Formatting is enforced here rather than on pre-commit.ci, whose sandbox
+      # has no bun to run it with. Pinned so a prettier release cannot turn a
+      # green branch red on its own; bump it alongside the pre-commit hook.
+      - name: Check formatting of docs and workflows
+        run: npx --yes prettier@3.9.6 --check .
       - name: Run go vet
         run: go vet ./...
       - name: Run go fmt

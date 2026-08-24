@@ -1,3 +1,22 @@
+# pre-commit.ci runs hooks in a sandbox that provides neither a Go toolchain nor
+# bun, so every hook needing one errors there rather than failing honestly --
+# which is why the check has been red on main. Skipping them keeps the hosted
+# run meaningful (it still enforces the whitespace, YAML/JSON, secret-detection
+# and actionlint hooks) while the toolchain-dependent checks are gated in GitHub
+# Actions, where a toolchain exists: `go vet`, `gofmt`, `golangci-lint` and
+# `go mod tidy` in the `checks` job, and prettier alongside them. Locally the
+# full set still runs on every commit.
+ci:
+  skip:
+    - go-fmt
+    - go-imports
+    - go-mod-tidy
+    - go-vet
+    - golangci-lint
+    - no-go-testing
+    - prettier
+    - validate-toml
+
 repos:
   - repo: https://github.com/oxc-project/mirrors-oxlint
     rev: v1.79.0
