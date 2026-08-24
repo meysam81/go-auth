@@ -3,6 +3,8 @@ package totp
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -104,10 +106,10 @@ func TestManager_GenerateSecret(t *testing.T) {
 		t.Error("Newly generated secret should be pending confirmation")
 	}
 
-	// Verify backup code format (XXXX-XXXX)
+	// Verify backup code format (groups of base32 characters, dash-separated)
 	for _, code := range secret.BackupCodes {
-		if len(code) != 9 || code[4] != '-' {
-			t.Errorf("Invalid backup code format: %s", code)
+		if problem := backupCodeShapeError(code); problem != "" {
+			t.Errorf("Invalid backup code %q: %s", code, problem)
 		}
 	}
 
@@ -405,17 +407,17 @@ func TestManager_GenerateQRCodeURL(t *testing.T) {
 	}
 
 	// Generate QR code URL
-	url, err := mgr.GenerateQRCodeURL(ctx, "user123", "test@example.com")
+	qrURL, err := mgr.GenerateQRCodeURL(ctx, "user123", "test@example.com")
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
 
-	if !strings.Contains(url, "otpauth://totp/") {
-		t.Errorf("URL should be otpauth URL, got %s", url)
+	if !strings.Contains(qrURL, "otpauth://totp/") {
+		t.Errorf("URL should be otpauth URL, got %s", qrURL)
 	}
 
-	if !strings.Contains(url, "TestApp") {
-		t.Errorf("URL should contain issuer, got %s", url)
+	if !strings.Contains(qrURL, "TestApp") {
+		t.Errorf("URL should contain issuer, got %s", qrURL)
 	}
 
 	// Test for user without TOTP
@@ -472,20 +474,19 @@ func TestGenerateBackupCode(t *testing.T) {
 		t.Fatalf("Expected no error, got %v", err)
 	}
 
-	// Verify format (XXXX-XXXX)
-	if len(code1) != 9 {
-		t.Errorf("Expected 9 characters, got %d", len(code1))
-	}
-	if code1[4] != '-' {
-		t.Error("Expected dash at position 4")
+	// Verify format: dash-separated groups of base32 characters.
+	if problem := backupCodeShapeError(code1); problem != "" {
+		t.Errorf("Invalid backup code %q: %s", code1, problem)
 	}
 
-	// Verify characters are uppercase alphanumeric (base32 chars)
-	normalized := strings.ReplaceAll(code1, "-", "")
-	for _, ch := range normalized {
-		if (ch < 'A' || ch > 'Z') && (ch < '2' || ch > '7') {
-			t.Errorf("Invalid character in backup code: %c", ch)
-		}
+	// The width IS the control (see hashBackupCode): a single unkeyed digest pass over a
+	// 40-bit code space is minutes of GPU time for whoever holds the store, so a regression
+	// that narrows the code silently re-opens F-06 while every other test still passes.
+	if bits := DefaultBackupCodeLength * 5; bits < 80 {
+		t.Errorf("Backup codes carry %d bits of entropy, want at least 80", bits)
+	}
+	if normalized := normalizeBackupCode(code1); len(normalized) != DefaultBackupCodeLength {
+		t.Errorf("Expected %d base32 characters, got %d", DefaultBackupCodeLength, len(normalized))
 	}
 
 	// Test uniqueness
@@ -646,6 +647,28 @@ func newTestManager(t *testing.T, cfg Config) *Manager {
 		t.Fatalf("Failed to build manager: %v", err)
 	}
 	return mgr
+}
+
+// backupCodeShapeError reports why code is not the shape generateBackupCode documents, or ""
+// when it is: DefaultBackupCodeLength base32 characters in dash-separated groups.
+func backupCodeShapeError(code string) string {
+	groups := DefaultBackupCodeLength / backupCodeGroup
+	wantLen := DefaultBackupCodeLength + groups - 1
+	if len(code) != wantLen {
+		return fmt.Sprintf("length %d, want %d", len(code), wantLen)
+	}
+	for i, ch := range code {
+		if (i+1)%(backupCodeGroup+1) == 0 {
+			if ch != '-' {
+				return fmt.Sprintf("want a group separator at %d, got %q", i, ch)
+			}
+			continue
+		}
+		if (ch < 'A' || ch > 'Z') && (ch < '2' || ch > '7') {
+			return fmt.Sprintf("character %q at %d is outside the base32 alphabet", ch, i)
+		}
+	}
+	return ""
 }
 
 // testCipher is a stand-in for a real authenticated cipher. It is not one, and exists only to
@@ -1146,7 +1169,7 @@ func TestBackupCodeDigestIsPerUser(t *testing.T) {
 		t.Error("The same code must digest differently for different users")
 	}
 
-	// Normalisation is part of the digest, not of the comparison.
+	// Normalization is part of the digest, not of the comparison.
 	loose, err := hashBackupCode("u1", "  abcdefgh ")
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
@@ -1208,11 +1231,11 @@ func TestSecretEncryptedAtRest(t *testing.T) {
 		t.Errorf("Encrypted secret should still validate, got valid=%v err=%v", valid, err)
 	}
 
-	url, err := mgr.GenerateQRCodeURL(ctx, "u1", "u1@example.com")
+	qrURL, err := mgr.GenerateQRCodeURL(ctx, "u1", "u1@example.com")
 	if err != nil {
 		t.Fatalf("Failed to build QR URL: %v", err)
 	}
-	if !strings.Contains(url, secret.Secret) {
+	if !strings.Contains(qrURL, secret.Secret) {
 		t.Error("QR URL should carry the decrypted secret")
 	}
 
@@ -1247,10 +1270,14 @@ func TestCipherMigratesLegacyRow(t *testing.T) {
 		t.Fatalf("Failed to seed legacy row: %v", seedErr)
 	}
 
+	// AllowLegacyPlaintextSecrets is what opens the migration window. Without it a configured
+	// Cipher refuses an unencrypted secret outright, because the library cannot tell a row
+	// that predates the Cipher from one an attacker downgraded.
 	mgr, err := NewManager(Config{
-		CredentialStore: credStore,
-		Issuer:          "TestApp",
-		Cipher:          testCipher{key: 0x5a},
+		CredentialStore:             credStore,
+		Issuer:                      "TestApp",
+		Cipher:                      testCipher{key: 0x5a},
+		AllowLegacyPlaintextSecrets: true,
 	})
 	if err != nil {
 		t.Fatalf("Failed to build manager: %v", err)
@@ -1330,7 +1357,7 @@ func TestBackupCodeMatchIsExhaustive(t *testing.T) {
 	}
 
 	for i, code := range codes {
-		match, ok, err := matchBackupCode("u1", code, hashed)
+		match, ok, err := matchBackupCode(nil, "u1", code, hashed)
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
@@ -1342,11 +1369,11 @@ func TestBackupCodeMatchIsExhaustive(t *testing.T) {
 		}
 	}
 
-	if _, ok, err := matchBackupCode("u1", "ZZZZ-ZZZZ", hashed); err != nil || ok {
+	if _, ok, err := matchBackupCode(nil, "u1", "ZZZZ-ZZZZ", hashed); err != nil || ok {
 		t.Errorf("Unknown code must not match, got ok=%v err=%v", ok, err)
 	}
 	// The digests belong to a user; another user's codes must not match them.
-	if _, ok, err := matchBackupCode("u2", codes[0], hashed); err != nil || ok {
+	if _, ok, err := matchBackupCode(nil, "u2", codes[0], hashed); err != nil || ok {
 		t.Errorf("Another user's code must not match, got ok=%v err=%v", ok, err)
 	}
 }
@@ -1414,7 +1441,7 @@ func TestCipherFailuresSurface(t *testing.T) {
 // TestEmptyBackupCodeNeverMatches guards the degenerate comparison: an empty submission must
 // not authenticate, whatever the store happens to hold.
 func TestEmptyBackupCodeNeverMatches(t *testing.T) {
-	if _, ok, err := matchBackupCode("u1", "   ", []string{"", "$gab1$"}); err != nil || ok {
+	if _, ok, err := matchBackupCode(nil, "u1", "   ", []string{"", "$gab1$"}); err != nil || ok {
 		t.Errorf("Empty backup code must not match, got ok=%v err=%v", ok, err)
 	}
 
@@ -1437,5 +1464,130 @@ func TestEmptyBackupCodeNeverMatches(t *testing.T) {
 	}
 	if valid {
 		t.Error("An empty backup code must be rejected")
+	}
+}
+
+// TestNormalizeSubmittedCodeMatchesValidator is the parity check the F-08 guard key rests on.
+//
+// The guard is only sound while its notion of "the same code" is the validator's notion. Any
+// drift between the two reopens the bypass: fold less and a spent code gets a fresh key by
+// changing its presentation, fold more and two codes the validator keeps apart collapse into
+// one entry. So this asserts the relationship rather than the implementation -- for every
+// presentation pquerna ACCEPTS, our normalization must produce the canonical code, and for one
+// it rejects it must not.
+func TestNormalizeSubmittedCodeMatchesValidator(t *testing.T) {
+	key, err := totp.Generate(totp.GenerateOpts{Issuer: "TestApp", AccountName: "u1@example.com"})
+	if err != nil {
+		t.Fatalf("Failed to generate key: %v", err)
+	}
+	code, err := totp.GenerateCode(key.Secret(), time.Now())
+	if err != nil {
+		t.Fatalf("Failed to generate code: %v", err)
+	}
+
+	for _, variant := range advWhitespaceVariants(code) {
+		if !totp.Validate(variant.code, key.Secret()) {
+			t.Errorf("%s: the validator rejected %q; the fold set has drifted", variant.name, variant.code)
+			continue
+		}
+		if got := normalizeSubmittedCode(variant.code); got != code {
+			t.Errorf("%s: normalized to %q, want %q; the guard would file it as a new code",
+				variant.name, got, code)
+		}
+	}
+
+	// U+200B ZERO WIDTH SPACE is not White_Space. The validator rejects it, so folding it away
+	// would make the guard treat a code the validator never accepted as the accepted one.
+	const zeroWidth = "\u200b"
+	if totp.Validate(zeroWidth+code, key.Secret()) {
+		t.Fatal("the validator now trims the zero-width space; the fold set must follow it")
+	}
+	if got := normalizeSubmittedCode(zeroWidth + code); got == code {
+		t.Error("normalization folds more than the validator does")
+	}
+
+	// Idempotent, because the guard applies it to values that may already have passed through.
+	if got := normalizeSubmittedCode(normalizeSubmittedCode("  123456  ")); got != "123456" {
+		t.Errorf("normalization is not idempotent: %q", got)
+	}
+}
+
+// TestMemoryReplayGuardEvictionIsBounded pins the eviction strategy rather than its timing.
+//
+// The guard used to sweep every entry on every call, under one global mutex, so a full map made
+// each validation walk the whole map. The queue replaces that with a scan that stops at the
+// first live record; what makes it correct is that the queue never accumulates records for
+// entries that are gone, which is what this measures.
+func TestMemoryReplayGuardEvictionIsBounded(t *testing.T) {
+	guard := NewMemoryReplayGuard()
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	guard.now = func() time.Time { return now }
+	ctx := context.Background()
+
+	// Twenty steps of traffic, three codes per step: every code is long dead by the end.
+	for step := 0; step < 20; step++ {
+		for i := 0; i < 3; i++ {
+			if _, err := guard.Seen(ctx, "u1", fmt.Sprintf("%d-%d", step, i)); err != nil {
+				t.Fatalf("step %d: %v", step, err)
+			}
+		}
+		now = now.Add(TimeStep)
+	}
+
+	guard.mu.Lock()
+	entries, queued := len(guard.entries), len(guard.order)
+	guard.mu.Unlock()
+
+	// Three steps of retention, three codes per step, plus the ones recorded in the current
+	// step: anything beyond that is an entry that outlived its acceptance window.
+	if entries > replayRetentionSteps*3 {
+		t.Errorf("guard holds %d entries after 60 codes expired", entries)
+	}
+	if queued != entries {
+		t.Errorf("the eviction queue holds %d records for %d entries; it accumulates", queued, entries)
+	}
+}
+
+// TestOTPAuthURLEscapesComponents pins the escaping at the level the bug lived: an account name
+// that closes the label and starts a query of its own. url.Values.Get returns the FIRST value
+// for a repeated key, so an injected "secret" wins over the real one appended after it.
+func TestOTPAuthURLEscapesComponents(t *testing.T) {
+	// A published RFC 4648 base32 test vector, doubled: it is a fixture, not a credential.
+	const seed = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+
+	tests := []struct {
+		name        string
+		issuer      string
+		accountName string
+	}{
+		{"plain", "TestApp", "u1@example.com"},
+		{"query injection in the account name", "TestApp", "u1@example.com?secret=AAAA&issuer=Evil&x="},
+		{"query injection in the issuer", "TestApp?secret=AAAA&issuer=Evil&x=", "u1@example.com"},
+		{"fragment", "TestApp", "u1@example.com#x"},
+		{"space", "Test App", "first last@example.com"},
+		{"slash", "TestApp", "a/b@example.com"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := otpauthURL(tc.issuer, tc.accountName, seed)
+
+			parsed, err := url.Parse(raw)
+			if err != nil {
+				t.Fatalf("URL does not parse: %v (%q)", err, raw)
+			}
+			if parsed.Scheme != "otpauth" || parsed.Host != "totp" {
+				t.Fatalf("Unexpected scheme/host: %q", raw)
+			}
+			if got := parsed.Query().Get("secret"); got != seed {
+				t.Errorf("secret is %q, want %q (%q)", got, seed, raw)
+			}
+			if got := parsed.Query().Get("issuer"); got != tc.issuer {
+				t.Errorf("issuer is %q, want %q (%q)", got, tc.issuer, raw)
+			}
+			if strings.Contains(raw, "+") {
+				t.Errorf("a space is encoded as \"+\", which some authenticators do not decode: %q", raw)
+			}
+		})
 	}
 }

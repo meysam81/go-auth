@@ -22,12 +22,14 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/meysam81/go-auth/storage"
+	"github.com/pquerna/otp"
 	otptotp "github.com/pquerna/otp/totp"
 )
 
@@ -831,7 +833,7 @@ func TestTOTP_BackupCodeComparisonIsExhaustive(t *testing.T) {
 
 	// A legacy plaintext row and its digest both match the same submission. An exhaustive
 	// scan reports the last.
-	match, ok, err := matchBackupCode(userID, code, []string{normalizeBackupCode(code), digest})
+	match, ok, err := matchBackupCode(nil, userID, code, []string{normalizeBackupCode(code), digest})
 	if err != nil || !ok {
 		t.Fatalf("match: ok=%v err=%v", ok, err)
 	}
@@ -850,7 +852,7 @@ func TestTOTP_BackupCodeComparisonIsExhaustive(t *testing.T) {
 		long = append(long, other)
 	}
 	long = append(long, digest)
-	match, ok, err = matchBackupCode(userID, code, long)
+	match, ok, err = matchBackupCode(nil, userID, code, long)
 	if err != nil || !ok || match != digest {
 		t.Fatalf("match in the last slot: match=%q ok=%v err=%v", match, ok, err)
 	}
@@ -858,7 +860,7 @@ func TestTOTP_BackupCodeComparisonIsExhaustive(t *testing.T) {
 	// An empty or whitespace submission must never match, including against a store that
 	// holds an empty entry — otherwise "" is a universal backup code.
 	for _, presented := range []string{"", " ", "\t", "-", "--", "   \n"} {
-		if _, ok, err := matchBackupCode(userID, presented, []string{"", digest}); ok || err != nil {
+		if _, ok, err := matchBackupCode(nil, userID, presented, []string{"", digest}); ok || err != nil {
 			t.Fatalf("empty submission %q matched: ok=%v err=%v", presented, ok, err)
 		}
 	}
@@ -1342,11 +1344,15 @@ func TestTOTP_SecretEntropy(t *testing.T) {
 			t.Fatalf("got %d backup codes, want %d", len(sec.BackupCodes), DefaultBackupCodeCount)
 		}
 		for _, code := range sec.BackupCodes {
-			if len(code) != DefaultBackupCodeLength+1 || code[4] != '-' {
-				t.Fatalf("backup code has the wrong shape: %q", code)
+			if problem := backupCodeShapeError(code); problem != "" {
+				t.Fatalf("backup code %q has the wrong shape: %s", code, problem)
 			}
-			if strings.Trim(normalizeBackupCode(code), "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567") != "" {
-				t.Fatalf("backup code leaves the base32 alphabet: %q", code)
+			// RFC 4226 says nothing about backup codes, so the bar is set by what the
+			// stored digest costs to invert: one unkeyed SHA-256 pass. 40 bits was
+			// enumerable on one GPU in minutes, which is what made F-06's "hashed at
+			// rest" claim hollow for the codes.
+			if bits := len(normalizeBackupCode(code)) * 5; bits < 80 {
+				t.Fatalf("backup code %q carries %d bits, want at least 80", code, bits)
 			}
 			if _, dup := backupSeen[code]; dup {
 				t.Fatalf("backup code %q was issued twice", code)
@@ -1432,5 +1438,656 @@ func TestTOTP_OperationsOnAbsentEnrollmentAreRefused(t *testing.T) {
 	// An empty user ID is not a wildcard.
 	if valid, err := mgr.Validate(ctx, "", "123456"); valid || !errors.Is(err, ErrNotEnabled) {
 		t.Fatalf(`Validate(""): valid=%v err=%v`, valid, err)
+	}
+}
+
+// --- F-08: the guard must key on what the validator compared ----------------------------
+
+// advSpaceRunes are the code points strings.TrimSpace removes: the whole of unicode.IsSpace,
+// which is the rule pquerna's hotp.ValidateCustom applies to a submitted passcode before
+// comparing it, and therefore the exact set the replay guard has to fold. They are written as
+// escapes rather than literals so that reading this file shows what is being tested.
+//
+// U+200B ZERO WIDTH SPACE is deliberately absent: it is not White_Space, so TrimSpace leaves
+// it, and a guard that folded it would be normalizing MORE than the validator does -- which
+// merges two codes the validator considers different.
+var advSpaceRunes = []struct{ name, r string }{
+	{"space", " "},
+	{"tab", "\t"},
+	{"newline", "\n"},
+	{"carriage return", "\r"},
+	{"vertical tab", "\v"},
+	{"form feed", "\f"},
+	{"next line", "\u0085"},
+	{"no-break space", "\u00a0"},
+	{"ogham space mark", "\u1680"},
+	{"en quad", "\u2000"},
+	{"em space", "\u2003"},
+	{"line separator", "\u2028"},
+	{"paragraph separator", "\u2029"},
+	{"narrow no-break space", "\u202f"},
+	{"medium mathematical space", "\u205f"},
+	{"ideographic space", "\u3000"},
+}
+
+// advWhitespaceVariants dresses one code in every presentation the validator treats as that
+// same code: each space rune as a prefix, as a suffix, on both ends, repeated, and all of them
+// at once.
+func advWhitespaceVariants(code string) []struct{ name, code string } {
+	variants := make([]struct{ name, code string }, 0, len(advSpaceRunes)*4+2)
+	for _, space := range advSpaceRunes {
+		variants = append(variants,
+			struct{ name, code string }{space.name + " prefix", space.r + code},
+			struct{ name, code string }{space.name + " suffix", code + space.r},
+			struct{ name, code string }{space.name + " both ends", space.r + code + space.r},
+			struct{ name, code string }{space.name + " repeated", strings.Repeat(space.r, 4) + code},
+		)
+	}
+
+	var every strings.Builder
+	for _, space := range advSpaceRunes {
+		every.WriteString(space.r)
+	}
+	variants = append(variants,
+		struct{ name, code string }{"every space rune as a prefix", every.String() + code},
+		struct{ name, code string }{"every space rune on both ends", every.String() + code + every.String()},
+	)
+	return variants
+}
+
+// TestTOTP_ReplayGuardIgnoresPresentationWhitespace covers the replay that walks through the
+// F-08 guard by adding a space.
+//
+// hotp.ValidateCustom trims the submitted passcode before comparing it, so "170225" and
+// " 170225" are one code to the validator and two keys to a guard keyed on the raw submission.
+// The bypass alphabet is every Unicode space in any combination at either end, repeated, which
+// is an unbounded key set for a code that has already been spent: the guard answered "never
+// seen" and the code authenticated a second time.
+func TestTOTP_ReplayGuardIgnoresPresentationWhitespace(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	mgr, _ := advManager(t, nil)
+	sec, confirmCode := advEnroll(ctx, t, mgr, "victim")
+
+	code := advCodeAt(t, sec.Secret, 0)
+	if code == confirmCode {
+		t.Skip("current step's code collided with the confirmation code (1 in 10^6)")
+	}
+	if valid, err := mgr.Validate(ctx, "victim", code); err != nil || !valid {
+		t.Fatalf("first presentation must authenticate: valid=%v err=%v", valid, err)
+	}
+
+	for _, variant := range advWhitespaceVariants(code) {
+		t.Run(variant.name, func(t *testing.T) {
+			valid, err := mgr.Validate(ctx, "victim", variant.code)
+			if valid {
+				t.Fatalf("a spent code re-presented as %q authenticated again (F-08)", variant.code)
+			}
+			if !errors.Is(err, ErrCodeReused) {
+				t.Fatalf("want ErrCodeReused for %q, got %v", variant.code, err)
+			}
+		})
+	}
+}
+
+// TestTOTP_ConfirmationCodeCannotBeReplayedWithWhitespace aims the same bypass at the other
+// side of the enrollment. Confirm spends a live code; if the guard files it under the raw
+// submission, whoever observed the enrollment form replays it as a sign-in by prepending a
+// space. Padding is not exotic here -- it is what a copy-paste out of an authenticator app
+// carries.
+func TestTOTP_ConfirmationCodeCannotBeReplayedWithWhitespace(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	mgr, _ := advManager(t, nil)
+
+	sec, err := mgr.GenerateSecret(ctx, "u", "u@example.test")
+	if err != nil {
+		t.Fatalf("GenerateSecret: %v", err)
+	}
+
+	code := advCodeAt(t, sec.Secret, 0)
+	if err := mgr.Confirm(ctx, "u", " "+code+"\n"); err != nil {
+		t.Fatalf("Confirm with a padded code: %v", err)
+	}
+
+	for _, presented := range []string{code, " " + code, code + "\t", "\u00a0" + code + "\u3000"} {
+		valid, err := mgr.Validate(ctx, "u", presented)
+		if valid {
+			t.Fatalf("the confirmation code authenticated a sign-in as %q (F-07 x F-08)", presented)
+		}
+		if !errors.Is(err, ErrCodeReused) {
+			t.Fatalf("want ErrCodeReused for %q, got %v", presented, err)
+		}
+	}
+}
+
+// TestTOTP_ReplayGuardCannotBeFloodedByOneAccount covers the consequence of the key bug. The
+// entry budget is global and the guard fails closed, so an attacker able to mint unlimited
+// keys for ONE spent code evicts nobody and takes the whole budget down with them: one account
+// replaying one code with varying whitespace exhausted the 65536-entry budget in 24 seconds,
+// after which a different user's fresh valid code was refused as "replay guard is full".
+//
+// The fix is upstream of the budget -- one accepted code is one key however it is dressed --
+// so what is pinned here is that the flood occupies exactly one entry.
+func TestTOTP_ReplayGuardCannotBeFloodedByOneAccount(t *testing.T) {
+	t.Parallel()
+
+	t.Run("the guard itself", func(t *testing.T) {
+		ctx := context.Background()
+		guard := NewMemoryReplayGuard()
+		// A budget this small makes the amplification fatal inside the test: on the old key
+		// construction the second presentation already took the second slot.
+		guard.maxEntries = 4
+
+		if seen, err := guard.Seen(ctx, "victim", "170225"); err != nil || seen {
+			t.Fatalf("first record: seen=%v err=%v", seen, err)
+		}
+		// A guard is handed the folded code, never the raw submission: see ReplayGuard.Seen.
+		// That is what collapses the attacker's unbounded key set into the one entry already
+		// held, so the budget never moves.
+		for _, variant := range advWhitespaceVariants("170225") {
+			seen, err := guard.Seen(ctx, "victim", normalizeSubmittedCode(variant.code))
+			if err != nil {
+				t.Fatalf("presenting %q consumed budget: %v", variant.code, err)
+			}
+			if !seen {
+				t.Fatalf("presenting %q was not recognized as the code already recorded", variant.code)
+			}
+		}
+
+		guard.mu.Lock()
+		held := len(guard.entries)
+		guard.mu.Unlock()
+		if held != 1 {
+			t.Fatalf("one spent code occupies %d entries; the budget is an amplifier (F-08)", held)
+		}
+
+		// The budget is still there for everybody else, which is the whole point.
+		if seen, err := guard.Seen(ctx, "bystander", "424242"); err != nil || seen {
+			t.Fatalf("a bystander's fresh code was denied by the flood: seen=%v err=%v", seen, err)
+		}
+	})
+
+	t.Run("through the manager", func(t *testing.T) {
+		ctx := context.Background()
+		guard := NewMemoryReplayGuard()
+		mgr, _ := advManager(t, func(c *Config) { c.ReplayGuard = guard })
+
+		attacker, attackerConfirm := advEnroll(ctx, t, mgr, "attacker")
+		bystander, bystanderConfirm := advEnroll(ctx, t, mgr, "bystander")
+
+		code := advCodeAt(t, attacker.Secret, 0)
+		if code == attackerConfirm {
+			t.Skip("code collision (1 in 10^6)")
+		}
+		if valid, err := mgr.Validate(ctx, "attacker", code); err != nil || !valid {
+			t.Fatalf("first presentation must authenticate: valid=%v err=%v", valid, err)
+		}
+
+		// Two enrollments and one sign-in have spent three codes. Leave room for exactly one
+		// more -- the bystander's -- so that a flood which grows the guard at all takes the
+		// slot the bystander needs, which is the denial of service that was reproduced.
+		guard.mu.Lock()
+		guard.maxEntries = len(guard.entries) + 1
+		guard.mu.Unlock()
+
+		for _, variant := range advWhitespaceVariants(code) {
+			if _, err := mgr.Validate(ctx, "attacker", variant.code); errors.Is(err, ErrReplayGuardFull) {
+				t.Fatalf("replaying %q grew the guard; one account can starve every other (F-08)", variant.code)
+			}
+		}
+
+		fresh := advCodeAt(t, bystander.Secret, 1)
+		if fresh == bystanderConfirm {
+			t.Skip("code collision (1 in 10^6)")
+		}
+		valid, err := mgr.Validate(ctx, "bystander", fresh)
+		if errors.Is(err, ErrReplayGuardFull) {
+			t.Fatal("a bystander's valid code was refused because another account flooded the guard")
+		}
+		if err != nil || !valid {
+			t.Fatalf("a bystander's valid code must authenticate: valid=%v err=%v", valid, err)
+		}
+	})
+}
+
+// --- F-06: the payload tag is part of what the cipher protects --------------------------
+
+// advPlantSecret replaces the stored secret for userID, keeping the backup codes, the way an
+// attacker with write access to the credential store would.
+func advPlantSecret(ctx context.Context, t *testing.T, store *storage.InMemoryCredentialStore, userID, payload string) {
+	t.Helper()
+
+	_, digests, err := store.GetTOTPSecret(ctx, userID)
+	if err != nil {
+		t.Fatalf("GetTOTPSecret(%s): %v", userID, err)
+	}
+	if err := store.StoreTOTPSecret(ctx, userID, payload, digests); err != nil {
+		t.Fatalf("StoreTOTPSecret(%s): %v", userID, err)
+	}
+}
+
+// advAttackerSecret is a valid base32 seed the attacker knows and the server never issued.
+func advAttackerSecret(t *testing.T) string {
+	t.Helper()
+
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		t.Fatalf("rand.Read: %v", err)
+	}
+	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw)
+}
+
+// TestTOTP_StoredPayloadTagCannotBeDowngraded covers the hole the payload tag opened. The
+// state and encoding markers sit OUTSIDE the ciphertext, because IsEnabled has to answer
+// without key material -- which left them writable by exactly the adversary a Cipher is
+// configured against. Honoring what they said turned a store write into a second-factor
+// takeover:
+//
+//	$gat1$a$e$<ciphertext>  ->  $gat1$a$r$<attacker secret>   accepted, attacker's codes work
+//	$gat1$p$r$<secret>      ->  <secret>                      pending flipped to active
+//
+// Both are now refused, because the markers are also sealed inside the authenticated
+// plaintext and compared after decrypt.
+func TestTOTP_StoredPayloadTagCannotBeDowngraded(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	t.Run("encrypted downgraded to raw", func(t *testing.T) {
+		aead := newAdvAESCipher(t)
+		mgr, store := advManager(t, func(c *Config) { c.Cipher = aead })
+		sec, _ := advEnroll(ctx, t, mgr, "u")
+
+		planted := advAttackerSecret(t)
+		advPlantSecret(ctx, t, store, "u", secretPrefix+secretStateActive+"$"+secretEncodingRaw+"$"+planted)
+
+		valid, err := mgr.Validate(ctx, "u", advCodeAt(t, planted, 0))
+		if valid {
+			t.Fatal("a secret the attacker wrote in the clear authenticated their own code (F-06)")
+		}
+		if !errors.Is(err, ErrSecretNotEncrypted) {
+			t.Fatalf("want ErrSecretNotEncrypted, got %v", err)
+		}
+
+		// The refusal covers the gate as well, not just the code path: a caller that asks
+		// "does this user have a second factor?" must not be told yes about a downgraded row.
+		if _, err := mgr.IsEnabled(ctx, "u"); !errors.Is(err, ErrSecretNotEncrypted) {
+			t.Fatalf("IsEnabled: want ErrSecretNotEncrypted, got %v", err)
+		}
+		if _, err := mgr.Validate(ctx, "u", advCodeAt(t, sec.Secret, 0)); !errors.Is(err, ErrSecretNotEncrypted) {
+			t.Fatalf("the real secret must not be reachable through a downgraded row either: %v", err)
+		}
+	})
+
+	t.Run("encrypted stripped to the bare legacy form", func(t *testing.T) {
+		aead := newAdvAESCipher(t)
+		mgr, store := advManager(t, func(c *Config) { c.Cipher = aead })
+		advEnroll(ctx, t, mgr, "u")
+
+		planted := advAttackerSecret(t)
+		advPlantSecret(ctx, t, store, "u", planted)
+
+		valid, err := mgr.Validate(ctx, "u", advCodeAt(t, planted, 0))
+		if valid {
+			t.Fatal("stripping the payload tag downgraded an encrypted secret to plaintext (F-06)")
+		}
+		if !errors.Is(err, ErrSecretNotEncrypted) {
+			t.Fatalf("want ErrSecretNotEncrypted, got %v", err)
+		}
+	})
+
+	t.Run("pending flipped to active", func(t *testing.T) {
+		aead := newAdvAESCipher(t)
+		mgr, store := advManager(t, func(c *Config) { c.Cipher = aead })
+
+		sec, err := mgr.GenerateSecret(ctx, "u", "u@example.test")
+		if err != nil {
+			t.Fatalf("GenerateSecret: %v", err)
+		}
+		pending, _, err := store.GetTOTPSecret(ctx, "u")
+		if err != nil {
+			t.Fatalf("GetTOTPSecret: %v", err)
+		}
+
+		// The attacker rewrites only the state marker, leaving the ciphertext alone. Before
+		// the marker was sealed, this armed a factor whose owner never proved possession.
+		flipped := secretPrefix + secretStateActive + "$" + secretEncodingEnc + "$" +
+			strings.TrimPrefix(pending, secretPrefix+secretStatePending+"$"+secretEncodingEnc+"$")
+		advPlantSecret(ctx, t, store, "u", flipped)
+
+		valid, err := mgr.Validate(ctx, "u", advCodeAt(t, sec.Secret, 0))
+		if valid {
+			t.Fatal("an unconfirmed enrollment was armed by rewriting its state marker (F-06 x F-07)")
+		}
+		if !errors.Is(err, ErrSecretTampered) {
+			t.Fatalf("want ErrSecretTampered, got %v", err)
+		}
+	})
+
+	t.Run("attacker's own sealed row planted on the victim", func(t *testing.T) {
+		aead := newAdvAESCipher(t)
+		mgr, store := advManager(t, func(c *Config) { c.Cipher = aead })
+		victim, _ := advEnroll(ctx, t, mgr, "victim")
+		attacker, _ := advEnroll(ctx, t, mgr, "attacker")
+
+		// The cheapest bypass available to a store writer, and the one that survives every
+		// check on the markers alone: the attacker enrolls a factor of their own, entirely
+		// legitimately, and copies that sealed row over the victim's. Nothing is downgraded,
+		// the ciphertext is genuine and authenticates, every marker agrees -- and the
+		// attacker's authenticator now passes the victim's second factor. The account binding
+		// sealed alongside the markers is what refuses it.
+		evil, _, err := store.GetTOTPSecret(ctx, "attacker")
+		if err != nil {
+			t.Fatalf("GetTOTPSecret: %v", err)
+		}
+		advPlantSecret(ctx, t, store, "victim", evil)
+
+		valid, err := mgr.Validate(ctx, "victim", advCodeAt(t, attacker.Secret, 0))
+		if valid {
+			t.Fatal("the attacker's own factor authenticated as the victim (F-06)")
+		}
+		if !errors.Is(err, ErrSecretTampered) {
+			t.Fatalf("want ErrSecretTampered, got %v", err)
+		}
+
+		// The same copy in the other direction is refused for the same reason. It gains the
+		// attacker nothing either way -- they would still need the victim's authenticator --
+		// but a payload that opens under the wrong account is a payload that was moved.
+		sealed, _, err := store.GetTOTPSecret(ctx, "attacker")
+		if err != nil {
+			t.Fatalf("GetTOTPSecret: %v", err)
+		}
+		advPlantSecret(ctx, t, store, "attacker", sealed)
+		if _, err := mgr.Validate(ctx, "attacker", advCodeAt(t, victim.Secret, 0)); errors.Is(err, ErrSecretTampered) {
+			t.Fatal("an account's own sealed row must still open for that account")
+		}
+	})
+
+	t.Run("tagged plaintext is refused even during migration", func(t *testing.T) {
+		aead := newAdvAESCipher(t)
+		mgr, store := advManager(t, func(c *Config) {
+			c.Cipher = aead
+			c.AllowLegacyPlaintextSecrets = true
+		})
+		advEnroll(ctx, t, mgr, "u")
+
+		planted := advAttackerSecret(t)
+		advPlantSecret(ctx, t, store, "u", secretPrefix+secretStateActive+"$"+secretEncodingRaw+"$"+planted)
+
+		valid, err := mgr.Validate(ctx, "u", advCodeAt(t, planted, 0))
+		if valid {
+			t.Fatal("the migration shim accepted a tagged plaintext row; that shape is never written")
+		}
+		if !errors.Is(err, ErrSecretNotEncrypted) {
+			t.Fatalf("want ErrSecretNotEncrypted, got %v", err)
+		}
+	})
+}
+
+// TestTOTP_LegacyPlaintextMigrationIsOptIn pins the escape hatch to being an escape hatch. A
+// deployment adopting a Cipher has rows that predate it, and refusing them all at once locks
+// out every enrolled user -- but silently reading them is what let an attacker downgrade a
+// sealed row. So the untagged legacy shape is refused by default and readable only when the
+// caller has said so, and it migrates to ciphertext the first time the row is rewritten.
+func TestTOTP_LegacyPlaintextMigrationIsOptIn(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	aead := newAdvAESCipher(t)
+
+	seed := func(t *testing.T, allow bool) (*Manager, *storage.InMemoryCredentialStore, string) {
+		t.Helper()
+
+		mgr, store := advManager(t, func(c *Config) {
+			c.Cipher = aead
+			c.AllowLegacyPlaintextSecrets = allow
+		})
+		key, err := otptotp.Generate(otptotp.GenerateOpts{Issuer: "AdversaryApp", AccountName: "u@example.test"})
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if err := store.StoreTOTPSecret(ctx, "u", key.Secret(), []string{"ABCD-EFGH"}); err != nil {
+			t.Fatalf("StoreTOTPSecret: %v", err)
+		}
+		return mgr, store, key.Secret()
+	}
+
+	t.Run("refused by default", func(t *testing.T) {
+		mgr, _, secret := seed(t, false)
+
+		valid, err := mgr.Validate(ctx, "u", advCodeAt(t, secret, 0))
+		if valid {
+			t.Fatal("a plaintext secret was read while a Cipher was configured (F-06)")
+		}
+		if !errors.Is(err, ErrSecretNotEncrypted) {
+			t.Fatalf("want ErrSecretNotEncrypted, got %v", err)
+		}
+		if _, err := mgr.IsEnabled(ctx, "u"); !errors.Is(err, ErrSecretNotEncrypted) {
+			t.Fatalf("IsEnabled: want ErrSecretNotEncrypted, got %v", err)
+		}
+		if valid, err := mgr.ValidateBackupCode(ctx, "u", "ABCD-EFGH"); valid || !errors.Is(err, ErrSecretNotEncrypted) {
+			t.Fatalf("ValidateBackupCode: valid=%v err=%v", valid, err)
+		}
+	})
+
+	t.Run("readable and migrated when opted in", func(t *testing.T) {
+		mgr, store, secret := seed(t, true)
+
+		if valid, err := mgr.Validate(ctx, "u", advCodeAt(t, secret, 0)); err != nil || !valid {
+			t.Fatalf("a legacy row must keep working during migration: valid=%v err=%v", valid, err)
+		}
+
+		if _, err := mgr.RegenerateBackupCodes(ctx, "u"); err != nil {
+			t.Fatalf("RegenerateBackupCodes: %v", err)
+		}
+		migrated, _, err := store.GetTOTPSecret(ctx, "u")
+		if err != nil {
+			t.Fatalf("GetTOTPSecret: %v", err)
+		}
+		if !strings.HasPrefix(migrated, secretPrefix+secretStateActive+"$"+secretEncodingEnc+"$") {
+			t.Fatalf("rewriting the row did not migrate it to ciphertext: %q", migrated)
+		}
+
+		// And once migrated it no longer needs the shim, which is what makes the flag
+		// clearable rather than permanent.
+		strict, strictStore := advManager(t, func(c *Config) { c.Cipher = aead })
+		if err := strictStore.StoreTOTPSecret(ctx, "u", migrated, nil); err != nil {
+			t.Fatalf("StoreTOTPSecret: %v", err)
+		}
+		if valid, err := strict.Validate(ctx, "u", advCodeAt(t, secret, 1)); err != nil || !valid {
+			t.Fatalf("a migrated row must validate without the shim: valid=%v err=%v", valid, err)
+		}
+	})
+}
+
+// TestTOTP_BackupCodesSealedWhenCipherConfigured covers the half of F-06 the digest cannot
+// reach on its own. hashBackupCode's key is derived from the user ID, which is public, so an
+// attacker holding the store can compute the digest of any candidate code themselves -- the
+// digest is a speed bump proportional to the code's width, not a secret. A deployment that
+// configures a Cipher and reads "F-06 fixed" was still handing a store reader ten working
+// second factors, because the Cipher was never applied to them.
+func TestTOTP_BackupCodesSealedWhenCipherConfigured(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	aead := newAdvAESCipher(t)
+	mgr, store := advManager(t, func(c *Config) { c.Cipher = aead })
+
+	sec, err := mgr.GenerateSecret(ctx, "u", "u@example.test")
+	if err != nil {
+		t.Fatalf("GenerateSecret: %v", err)
+	}
+	advConfirm(ctx, t, mgr, "u", sec.Secret)
+
+	_, stored, err := store.GetTOTPSecret(ctx, "u")
+	if err != nil {
+		t.Fatalf("GetTOTPSecret: %v", err)
+	}
+	leak := strings.Join(stored, "\x00")
+
+	for i, entry := range stored {
+		if !strings.HasPrefix(entry, backupCodeSealPrefix) {
+			t.Fatalf("stored code %d is not sealed: %q", i, entry)
+		}
+	}
+	for _, code := range sec.BackupCodes {
+		// This is the attacker's own computation: the salt is derived from a public user ID,
+		// so holding the store is enough to build the digest of a candidate code. Sealing is
+		// what makes that computation useless.
+		digest, hashErr := hashBackupCode("u", code)
+		if hashErr != nil {
+			t.Fatalf("hashBackupCode: %v", hashErr)
+		}
+		if strings.Contains(leak, digest) {
+			t.Fatal("a digest an attacker can recompute from the public user ID is in the store (F-06)")
+		}
+		if strings.Contains(leak, normalizeBackupCode(code)) {
+			t.Fatal("a backup code is recoverable from the store (F-06)")
+		}
+	}
+
+	// Sealing must not cost the user the codes.
+	if valid, useErr := mgr.ValidateBackupCode(ctx, "u", sec.BackupCodes[0]); useErr != nil || !valid {
+		t.Fatalf("a sealed backup code must authenticate: valid=%v err=%v", valid, useErr)
+	}
+	if valid, useErr := mgr.ValidateBackupCode(ctx, "u", sec.BackupCodes[0]); valid || useErr != nil {
+		t.Fatalf("a spent sealed code must not authenticate again: valid=%v err=%v", valid, useErr)
+	}
+	fresh, err := mgr.RegenerateBackupCodes(ctx, "u")
+	if err != nil {
+		t.Fatalf("RegenerateBackupCodes: %v", err)
+	}
+	if valid, freshErr := mgr.ValidateBackupCode(ctx, "u", fresh[0]); freshErr != nil || !valid {
+		t.Fatalf("a regenerated sealed code must authenticate: valid=%v err=%v", valid, freshErr)
+	}
+
+	// A sealed entry that opens to something other than a digest was not written here: the
+	// prefix travels inside the ciphertext precisely so that can be told apart.
+	forged, err := aead.Encrypt([]byte("ABCDEFGH"))
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+	_, err = openBackupCode(aead, backupCodeSealPrefix+base64.StdEncoding.EncodeToString(forged))
+	if !errors.Is(err, ErrSecretTampered) {
+		t.Fatalf("a sealed value that is not a digest must be refused, got %v", err)
+	}
+}
+
+// --- otpauth URL construction ------------------------------------------------------------
+
+// TestTOTP_QRCodeURLCannotBeHijackedByAccountName covers the enrollment takeover hiding in a
+// format string. GenerateQRCodeURL interpolated the account name straight into the URI, so a
+// name carrying "?secret=AAAA&issuer=Attacker&x=" closed the label and opened a query of its
+// own -- and url.Values.Get returns the FIRST value of a repeated key, so the injected secret
+// and issuer are the ones an authenticator enrolls. The user ends up holding a factor the
+// server will never accept while the attacker holds one the user believes is theirs.
+func TestTOTP_QRCodeURLCannotBeHijackedByAccountName(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	mgr, _ := advManager(t, nil)
+	sec, err := mgr.GenerateSecret(ctx, "u", "u@example.test")
+	if err != nil {
+		t.Fatalf("GenerateSecret: %v", err)
+	}
+
+	hostile := []struct{ name, accountName string }{
+		{"query injection", "u@example.test?secret=AAAAAAAAAAAAAAAA&issuer=Attacker&x="},
+		{"secret only", "u@example.test?secret=AAAAAAAAAAAAAAAA"},
+		{"leading question mark", "?secret=AAAAAAAAAAAAAAAA&issuer=Attacker"},
+		{"fragment", "u@example.test#secret=AAAAAAAAAAAAAAAA"},
+		{"ampersand", "u@example.test&issuer=Attacker"},
+		{"path traversal", "../../evil"},
+		{"whitespace", "u name@example.test"},
+		{"newline", "u@example.test\r\nX-Injected: 1"},
+		{"percent encoded question mark", "u@example.test%3Fsecret=AAAAAAAAAAAAAAAA"},
+		{"unicode", "üser@example.test"},
+	}
+
+	for _, tc := range hostile {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := mgr.GenerateQRCodeURL(ctx, "u", tc.accountName)
+			if err != nil {
+				t.Fatalf("GenerateQRCodeURL: %v", err)
+			}
+
+			parsed, err := url.Parse(raw)
+			if err != nil {
+				t.Fatalf("the URL handed to a QR encoder does not parse: %v (%q)", err, raw)
+			}
+			if got := parsed.Query().Get("secret"); got != sec.Secret {
+				t.Fatalf("the QR code carries secret %q, want the enrolled %q", got, sec.Secret)
+			}
+			if got := parsed.Query().Get("issuer"); got != "AdversaryApp" {
+				t.Fatalf("the QR code names issuer %q, want AdversaryApp", got)
+			}
+
+			// What an authenticator actually reads, through the same parser the library uses
+			// when it accepts a URL back.
+			key, err := otp.NewKeyFromURL(raw)
+			if err != nil {
+				t.Fatalf("NewKeyFromURL: %v", err)
+			}
+			if key.Secret() != sec.Secret {
+				t.Fatalf("an authenticator would enroll %q, not the server's secret", key.Secret())
+			}
+			if key.Issuer() != "AdversaryApp" {
+				t.Fatalf("an authenticator would show issuer %q", key.Issuer())
+			}
+			if key.Type() != "totp" {
+				t.Fatalf("the URI is not a totp URI: %q", key.Type())
+			}
+		})
+	}
+}
+
+// TestTOTP_QRCodeURLAgreesWithEnrollment pins the two paths together. GenerateSecret builds its
+// URL through totp.Generate, which escapes correctly, while GenerateQRCodeURL built its own --
+// and the account name that made them disagree was the one carrying the injection. Two URLs
+// for one enrollment that name different secrets is the bug, whichever of them is wrong.
+func TestTOTP_QRCodeURLAgreesWithEnrollment(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	for _, accountName := range []string{
+		"u@example.test",
+		"first last@example.test",
+		"u@example.test?secret=AAAAAAAAAAAAAAAA&issuer=Attacker&x=",
+		"üser@example.test",
+	} {
+		t.Run(accountName, func(t *testing.T) {
+			mgr, _ := advManager(t, nil)
+			sec, err := mgr.GenerateSecret(ctx, "u", accountName)
+			if err != nil {
+				t.Fatalf("GenerateSecret: %v", err)
+			}
+
+			enrolled, err := otp.NewKeyFromURL(sec.URL)
+			if err != nil {
+				t.Fatalf("the enrollment URL does not parse: %v", err)
+			}
+			raw, err := mgr.GenerateQRCodeURL(ctx, "u", accountName)
+			if err != nil {
+				t.Fatalf("GenerateQRCodeURL: %v", err)
+			}
+			rendered, err := otp.NewKeyFromURL(raw)
+			if err != nil {
+				t.Fatalf("the rendered URL does not parse: %v", err)
+			}
+
+			if enrolled.Secret() != rendered.Secret() {
+				t.Fatalf("the two URLs name different secrets: %q vs %q", enrolled.Secret(), rendered.Secret())
+			}
+			if enrolled.Issuer() != rendered.Issuer() {
+				t.Fatalf("the two URLs name different issuers: %q vs %q", enrolled.Issuer(), rendered.Issuer())
+			}
+			if enrolled.AccountName() != rendered.AccountName() {
+				t.Fatalf("the two URLs name different accounts: %q vs %q", enrolled.AccountName(), rendered.AccountName())
+			}
+		})
 	}
 }

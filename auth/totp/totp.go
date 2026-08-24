@@ -32,15 +32,45 @@
 // ActivateOnGenerate keeps a byte-identical column and can roll the library
 // back. Every other combination is written tagged.
 //
+// The tag has to sit outside the ciphertext, because IsEnabled must answer
+// without key material. That leaves it writable by anyone who can write to the
+// store, so encoding "e" seals a copy of the tag, plus a digest of the user ID,
+// INSIDE the authenticated plaintext, and they are checked after decrypt:
+//
+//	"$gat1$" <state> "$e$" <sha256 of the user ID> "$" <secret>
+//
+// Rewriting "$gat1$a$e$..." to "$gat1$a$r$<attacker secret>", flipping "p" to
+// "a", or copying a sealed row from one account onto another therefore fails
+// authentication instead of being honored (ErrSecretTampered). The last of
+// those is why the user ID is in there: a store writer who enrolls a factor of
+// their own and copies that perfectly genuine row over someone else's passes
+// every check the markers alone can make. For the same reason a configured
+// Cipher refuses to read an unencrypted secret at all; see
+// Config.AllowLegacyPlaintextSecrets for the one-way migration window.
+//
 // # Backup codes
 //
-// Backup codes are stored as a keyed SHA-256 digest, never in a recoverable
-// form, because they are only ever compared. See hashBackupCode for why a
-// password hash is the wrong tool here. Consequently the []string that
-// storage.CredentialStore.GetTOTPSecret returns holds digests, not codes: the
-// plaintext exists exactly once, in the Secret returned by GenerateSecret and
-// in the slice returned by RegenerateBackupCodes, and cannot be recovered
-// afterwards.
+// Backup codes are stored as a keyed SHA-256 digest, sealed with Config.Cipher
+// when one is configured, and never in a recoverable form: they are only ever
+// compared. See hashBackupCode for why a password hash is the wrong tool here.
+// Consequently the []string that storage.CredentialStore.GetTOTPSecret returns
+// holds digests, not codes: the plaintext exists exactly once, in the Secret
+// returned by GenerateSecret and in the slice returned by
+// RegenerateBackupCodes, and cannot be recovered afterwards.
+//
+//	"$gab1$" <hex>     keyed SHA-256 digest of the normalized code
+//	"$gab2$" <base64>  standard-base64 of Config.Cipher sealing a "$gab1$" digest
+//
+// A stored value with neither prefix is a legacy plaintext code and still
+// validates, so an upgrade does not invalidate a printed sheet.
+//
+// # Availability of the Cipher
+//
+// Once a Cipher is configured it guards both factors: an unreadable key makes
+// the shared secret and every code sealed under it unusable, which is a lockout
+// rather than a bypass. Give it the availability of the store itself, and roll
+// keys by re-encrypting rows (Confirm and RegenerateBackupCodes rewrite them)
+// rather than by removing the old key.
 package totp
 
 import (
@@ -54,6 +84,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -100,14 +131,39 @@ var (
 	// It fails closed: an accepted code that cannot be recorded must not be accepted, because
 	// it could then be replayed (F-08).
 	ErrReplayGuardFull = errors.New("TOTP replay guard is full")
+
+	// ErrSecretNotEncrypted is returned when a Cipher is configured but the stored secret is
+	// not encrypted. Reading it anyway would let anyone who can write to the store replace a
+	// sealed secret with one of their own, which is the adversary the Cipher exists for.
+	// Config.AllowLegacyPlaintextSecrets opens a migration window for rows written before the
+	// Cipher was configured.
+	ErrSecretNotEncrypted = errors.New("stored TOTP secret is not encrypted but a cipher is configured")
+
+	// ErrSecretTampered is returned when what a stored payload claims in the clear -- its
+	// state and encoding markers, and the account it sits under -- disagrees with what was
+	// sealed inside its ciphertext. The markers must stay outside so the enrollment state is
+	// readable without key material, so they are bound inside as well; a mismatch means the
+	// payload was rewritten, or moved between accounts, after the library sealed it.
+	ErrSecretTampered = errors.New("stored TOTP secret payload does not match its sealed tag")
 )
 
 const (
 	// DefaultBackupCodeCount is the default number of backup codes to generate.
 	DefaultBackupCodeCount = 10
 
-	// DefaultBackupCodeLength is the default length of each backup code.
-	DefaultBackupCodeLength = 8
+	// DefaultBackupCodeLength is the number of base32 characters in each backup code, excluding
+	// the dashes that group them. Ten random bytes give 80 bits, which is the entropy the
+	// stored digest ultimately rests on: see hashBackupCode for why the digest is a single
+	// unkeyed-strength pass and therefore why the code itself has to be wide.
+	DefaultBackupCodeLength = 16
+
+	// backupCodeBytes is the entropy behind one backup code. base32 emits 8 characters per 5
+	// bytes, so this is DefaultBackupCodeLength * 5 / 8 and the two must move together.
+	backupCodeBytes = DefaultBackupCodeLength * 5 / 8
+
+	// backupCodeGroup is how many characters separate one dash from the next. Grouping is for
+	// the human retyping the code off a printout; it is stripped before hashing.
+	backupCodeGroup = 4
 
 	// TimeStep is the RFC 6238 section 4.1 default time step and the cadence at which the
 	// replay guard evicts.
@@ -130,6 +186,15 @@ const (
 	// backupCodeHashPrefix tags a stored backup-code digest so a legacy plaintext row remains
 	// distinguishable and keeps validating after an upgrade.
 	backupCodeHashPrefix = "$gab1$"
+
+	// backupCodeSealPrefix tags a digest that Config.Cipher has sealed. The digest's own prefix
+	// travels inside the ciphertext, so a value that opens to something else was not written
+	// by this library.
+	backupCodeSealPrefix = "$gab2$"
+
+	// accountBindingContext domain-separates the account marker sealed into an encrypted
+	// secret from any other use of the user ID as an input to SHA-256 here.
+	accountBindingContext = "github.com/meysam81/go-auth/auth/totp/account-binding/v1\x00"
 
 	// backupCodeSaltContext domain-separates the per-user salt from any other use of the
 	// user ID as key material.
@@ -167,6 +232,11 @@ type ReplayGuard interface {
 	// one operation, because two simultaneous presentations of the same code would otherwise
 	// both observe "not seen".
 	//
+	// code arrives folded to the form the validator compared (see normalizeSubmittedCode), so
+	// every presentation of one accepted code reaches an implementation as one string.
+	// Implementations must key on it verbatim: folding it further merges codes the validator
+	// keeps apart, and no implementation can un-fold what it was handed.
+	//
 	// Returning an error causes the code to be rejected. Guards fail closed by design.
 	Seen(ctx context.Context, userID, code string) (bool, error)
 }
@@ -180,10 +250,17 @@ type ReplayGuard interface {
 type MemoryReplayGuard struct {
 	mu         sync.Mutex
 	entries    map[string]time.Time // key -> instant after which the entry is meaningless
+	order      []replayRecord       // the same keys in expiry order, so eviction is not a full sweep
 	maxEntries int
 
 	// now is injected so the eviction boundary can be tested without sleeping.
 	now func() time.Time
+}
+
+// replayRecord is one queued eviction: the key to drop and the instant it stops mattering.
+type replayRecord struct {
+	key    string
+	expiry time.Time
 }
 
 var _ ReplayGuard = (*MemoryReplayGuard)(nil)
@@ -198,9 +275,10 @@ func NewMemoryReplayGuard() *MemoryReplayGuard {
 	}
 }
 
-// Seen implements ReplayGuard. It purges expired entries on every call, which is what keeps
-// the map bounded in a live process; maxEntries is the backstop for a process that is being
-// flooded, and exhausting it rejects the code rather than forgetting the ones already held.
+// Seen implements ReplayGuard. It evicts the entries whose window has closed on every call,
+// which is what keeps the map bounded in a live process; maxEntries is the backstop for a
+// process that is being flooded, and exhausting it rejects the code rather than forgetting the
+// ones already held.
 func (g *MemoryReplayGuard) Seen(ctx context.Context, userID, code string) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, fmt.Errorf("replay guard lookup: %w", err)
@@ -214,11 +292,7 @@ func (g *MemoryReplayGuard) Seen(ctx context.Context, userID, code string) (bool
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	for k, expiry := range g.entries {
-		if !expiry.After(now) {
-			delete(g.entries, k)
-		}
-	}
+	g.evictExpired(now)
 
 	if expiry, ok := g.entries[key]; ok && expiry.After(now) {
 		return true, nil
@@ -228,18 +302,51 @@ func (g *MemoryReplayGuard) Seen(ctx context.Context, userID, code string) (bool
 		return false, ErrReplayGuardFull
 	}
 
-	g.entries[key] = now.Truncate(TimeStep).Add(replayRetentionSteps * TimeStep)
+	expiry := now.Truncate(TimeStep).Add(replayRetentionSteps * TimeStep)
+	g.entries[key] = expiry
+	g.order = append(g.order, replayRecord{key: key, expiry: expiry})
 	return false, nil
+}
+
+// evictExpired drops the records whose acceptance window has closed. The caller holds g.mu.
+//
+// An expiry is truncate(insertion) + replayRetentionSteps, which is monotonic in the insertion
+// instant, so g.order is in expiry order and the scan stops at the first live record: each
+// record is appended once and dropped once, making eviction amortized O(1) per call. It
+// replaces a sweep of the whole map, which under a flood turned every single validation into a
+// walk of every entry held, with the one global mutex taken for the length of that walk.
+//
+// A clock that steps backwards can leave an expired record queued behind a live one. That
+// delays its eviction until the record in front of it expires; it never resurrects the entry,
+// because acceptance is decided by the map's own expiry.
+func (g *MemoryReplayGuard) evictExpired(now time.Time) {
+	live := 0
+	for ; live < len(g.order); live++ {
+		record := g.order[live]
+		if record.expiry.After(now) {
+			break
+		}
+		// The map may hold a NEWER expiry for this key, recorded after this record expired.
+		// Deleting on the key alone would then forget a code that is still spent.
+		if expiry, ok := g.entries[record.key]; ok && !expiry.After(now) {
+			delete(g.entries, record.key)
+		}
+	}
+
+	// Resliced rather than copied down: the dropped prefix is reclaimed the next time append
+	// has to grow the backing array, and that growth copies only the records still queued.
+	g.order = g.order[live:]
 }
 
 // Manager handles TOTP operations.
 type Manager struct {
-	credentialStore    storage.CredentialStore
-	issuer             string
-	backupCodeCount    int
-	cipher             Cipher
-	replayGuard        ReplayGuard
-	activateOnGenerate bool
+	credentialStore      storage.CredentialStore
+	issuer               string
+	backupCodeCount      int
+	cipher               Cipher
+	replayGuard          ReplayGuard
+	activateOnGenerate   bool
+	allowLegacyPlaintext bool
 }
 
 // Config configures the TOTP manager.
@@ -253,10 +360,28 @@ type Config struct {
 	// secret is persisted verbatim, and a single read of the store yields a working second
 	// factor for every enrolled user.
 	//
-	// Configuring a Cipher on a deployment with existing enrollments is safe. A legacy row is
-	// still readable, and it is re-encrypted the next time the row is rewritten (Confirm or
-	// RegenerateBackupCodes). Removing a Cipher afterwards is not: ErrCipherRequired.
+	// Configuring a Cipher on a deployment with existing enrollments needs one migration
+	// window: a row written before the Cipher existed is plaintext, and a configured Cipher
+	// refuses to read plaintext unless AllowLegacyPlaintextSecrets says so. Rows are
+	// re-encrypted as they are rewritten (Confirm or RegenerateBackupCodes). Removing a
+	// Cipher afterwards is not supported at all: ErrCipherRequired.
 	Cipher Cipher
+
+	// AllowLegacyPlaintextSecrets lets a configured Cipher read a secret stored in the bare
+	// pre-hardening form, so that adopting a Cipher does not lock out every existing
+	// enrollment at once. Rows migrate to ciphertext as they are rewritten, and the flag can
+	// be cleared once none is left.
+	//
+	// It weakens the guarantee while it is set: an attacker who can write to the store can
+	// strip the payload tag off a sealed row and leave a secret of their own in the legacy
+	// shape, which is the downgrade the sealed tag exists to detect (ErrSecretTampered). A
+	// TAGGED but unencrypted row ("$gat1$a$r$...") is refused whatever this flag says, because
+	// the library never writes one while a Cipher is configured, so no migration can produce
+	// it and nothing but a rewrite explains it.
+	//
+	// Deprecated: this is a migration shim for the F-06 fix and v2 removes it. Re-encrypt the
+	// remaining rows and leave this false.
+	AllowLegacyPlaintextSecrets bool
 
 	// ReplayGuard rejects a code that has already authenticated inside its validity window
 	// (F-08). Leaving it nil installs NewMemoryReplayGuard, which is correct for a
@@ -301,12 +426,13 @@ func NewManager(cfg Config) (*Manager, error) {
 	}
 
 	return &Manager{
-		credentialStore:    cfg.CredentialStore,
-		issuer:             cfg.Issuer,
-		backupCodeCount:    backupCodeCount,
-		cipher:             cfg.Cipher,
-		replayGuard:        replayGuard,
-		activateOnGenerate: cfg.ActivateOnGenerate,
+		credentialStore:      cfg.CredentialStore,
+		issuer:               cfg.Issuer,
+		backupCodeCount:      backupCodeCount,
+		cipher:               cfg.Cipher,
+		replayGuard:          replayGuard,
+		activateOnGenerate:   cfg.ActivateOnGenerate,
+		allowLegacyPlaintext: cfg.AllowLegacyPlaintextSecrets,
 	}, nil
 }
 
@@ -358,13 +484,13 @@ func (m *Manager) GenerateSecret(ctx context.Context, userID, accountName string
 		return nil, fmt.Errorf("failed to generate backup codes: %w", err)
 	}
 
-	hashedCodes, err := hashBackupCodes(userID, backupCodes)
+	hashedCodes, err := storedBackupCodes(userID, backupCodes, m.cipher)
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash backup codes: %w", err)
 	}
 
 	pending := !m.activateOnGenerate
-	payload, err := encodeSecret(key.Secret(), pending, m.cipher)
+	payload, err := encodeSecret(userID, key.Secret(), pending, m.cipher)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode TOTP secret: %w", err)
 	}
@@ -398,7 +524,7 @@ func (m *Manager) Confirm(ctx context.Context, userID, code string) error {
 		return fmt.Errorf("failed to get TOTP secret: %w", err)
 	}
 
-	secret, pending, err := m.decodeSecret(stored)
+	secret, pending, err := m.decodeSecret(userID, stored)
 	if err != nil {
 		return err
 	}
@@ -416,7 +542,7 @@ func (m *Manager) Confirm(ctx context.Context, userID, code string) error {
 	// Rewriting the row is also the migration point for a Cipher configured after enrollment:
 	// encodeSecret re-encodes with whatever is configured now. The digests are re-stored
 	// verbatim because GetTOTPSecret already returns only the unused ones.
-	payload, err := encodeSecret(secret, false, m.cipher)
+	payload, err := encodeSecret(userID, secret, false, m.cipher)
 	if err != nil {
 		return fmt.Errorf("failed to encode TOTP secret: %w", err)
 	}
@@ -442,7 +568,7 @@ func (m *Manager) Validate(ctx context.Context, userID, code string) (bool, erro
 		return false, fmt.Errorf("failed to get TOTP secret: %w", err)
 	}
 
-	secret, pending, err := m.decodeSecret(stored)
+	secret, pending, err := m.decodeSecret(userID, stored)
 	if err != nil {
 		return false, err
 	}
@@ -453,7 +579,8 @@ func (m *Manager) Validate(ctx context.Context, userID, code string) (bool, erro
 	// Try TOTP validation first. The replay guard is consulted only once the code has already
 	// verified against the secret, so a guessing attacker cannot use it to grow the guard's
 	// state: recording an unverified code would make the guard the memory-exhaustion vector
-	// it is supposed to prevent.
+	// it is supposed to prevent. recordCode keys on the same folded form the validator
+	// compared, so no presentation of an accepted code escapes the guard.
 	if totp.Validate(code, secret) {
 		if recordErr := m.recordCode(ctx, userID, code); recordErr != nil {
 			return false, recordErr
@@ -479,7 +606,7 @@ func (m *Manager) ValidateBackupCode(ctx context.Context, userID, code string) (
 		return false, fmt.Errorf("failed to get TOTP secret: %w", err)
 	}
 
-	pending, err := storedSecretIsPending(stored)
+	pending, err := m.storedSecretIsPending(stored)
 	if err != nil {
 		return false, err
 	}
@@ -492,7 +619,7 @@ func (m *Manager) ValidateBackupCode(ctx context.Context, userID, code string) (
 
 // useBackupCode consumes the stored entry matching code, if any.
 func (m *Manager) useBackupCode(ctx context.Context, userID, code string, storedCodes []string) (bool, error) {
-	match, ok, err := matchBackupCode(userID, code, storedCodes)
+	match, ok, err := matchBackupCode(m.cipher, userID, code, storedCodes)
 	if err != nil {
 		return false, err
 	}
@@ -507,13 +634,31 @@ func (m *Manager) useBackupCode(ctx context.Context, userID, code string, stored
 	return true, nil
 }
 
+// normalizeSubmittedCode folds a submitted code exactly the way the validator folds it.
+//
+// hotp.ValidateCustom trims the passcode with strings.TrimSpace before comparing, so "170225"
+// and " 170225" are one code to the validator. Keying the replay guard on the raw submission
+// therefore gave a single accepted code an unbounded set of guard keys -- strings.TrimSpace
+// cuts every Unicode space, in any combination, at either end -- and each of them replayed
+// successfully while the guard believed it had never seen the code (F-08).
+//
+// This must stay identical to the rule the validator applies. A normalization of our own
+// invention, however much stricter it looked, would reopen the same gap the moment the two
+// disagreed about one character.
+func normalizeSubmittedCode(code string) string {
+	return strings.TrimSpace(code)
+}
+
 // recordCode asks the replay guard whether code has already authenticated for userID, and
 // records it otherwise. Both a guard failure and a replay deny the code.
+//
+// It is the only place a guard key is built, so the normalization above cannot be skipped by
+// one caller: Validate and Confirm both arrive here.
 func (m *Manager) recordCode(ctx context.Context, userID, code string) error {
 	if m.replayGuard == nil {
 		return nil
 	}
-	seen, err := m.replayGuard.Seen(ctx, userID, code)
+	seen, err := m.replayGuard.Seen(ctx, userID, normalizeSubmittedCode(code))
 	if err != nil {
 		return fmt.Errorf("replay guard: %w", err)
 	}
@@ -559,7 +704,7 @@ func (m *Manager) IsEnabled(ctx context.Context, userID string) (bool, error) {
 
 	// Reading the state does not need the cipher, so a misconfigured Cipher cannot make a
 	// user's factor silently disappear from this check.
-	pending, err := storedSecretIsPending(stored)
+	pending, err := m.storedSecretIsPending(stored)
 	if err != nil {
 		return false, err
 	}
@@ -576,7 +721,7 @@ func (m *Manager) IsPending(ctx context.Context, userID string) (bool, error) {
 		}
 		return false, fmt.Errorf("failed to check TOTP status: %w", err)
 	}
-	return storedSecretIsPending(stored)
+	return m.storedSecretIsPending(stored)
 }
 
 // RegenerateBackupCodes generates new backup codes for a user, replacing the old ones.
@@ -594,7 +739,7 @@ func (m *Manager) RegenerateBackupCodes(ctx context.Context, userID string) ([]s
 		return nil, fmt.Errorf("failed to get TOTP secret: %w", err)
 	}
 
-	secret, pending, err := m.decodeSecret(stored)
+	secret, pending, err := m.decodeSecret(userID, stored)
 	if err != nil {
 		return nil, err
 	}
@@ -608,14 +753,14 @@ func (m *Manager) RegenerateBackupCodes(ctx context.Context, userID string) ([]s
 		return nil, fmt.Errorf("failed to generate backup codes: %w", err)
 	}
 
-	hashedCodes, err := hashBackupCodes(userID, backupCodes)
+	hashedCodes, err := storedBackupCodes(userID, backupCodes, m.cipher)
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash backup codes: %w", err)
 	}
 
 	// Re-encoding here also migrates a legacy plaintext row to ciphertext once a Cipher is
 	// configured.
-	payload, err := encodeSecret(secret, false, m.cipher)
+	payload, err := encodeSecret(userID, secret, false, m.cipher)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode TOTP secret: %w", err)
 	}
@@ -643,18 +788,46 @@ func (m *Manager) GenerateQRCodeURL(ctx context.Context, userID, accountName str
 		return "", fmt.Errorf("failed to get TOTP secret: %w", err)
 	}
 
-	secret, _, err := m.decodeSecret(stored)
+	secret, _, err := m.decodeSecret(userID, stored)
 	if err != nil {
 		return "", err
 	}
 
-	key, err := otp.NewKeyFromURL(fmt.Sprintf("otpauth://totp/%s:%s?secret=%s&issuer=%s",
-		m.issuer, accountName, secret, m.issuer))
+	key, err := otp.NewKeyFromURL(otpauthURL(m.issuer, accountName, secret))
 	if err != nil {
 		return "", fmt.Errorf("failed to create key: %w", err)
 	}
 
 	return key.URL(), nil
+}
+
+// otpauthURL renders the Key-Uri-Format otpauth:// URI for a secret.
+//
+// Every component is escaped by net/url instead of being interpolated into a format string. An
+// accountName carrying "?secret=AAAA&issuer=Attacker&x=" would otherwise close the label and
+// inject query parameters, and url.Values.Get returns the FIRST value of a repeated key, so the
+// injected secret and issuer are the ones an authenticator enrolls. The user then holds a factor
+// the server will never accept, and the attacker holds one the user believes is theirs.
+// url.URL.String percent-encodes "?" (and "#") inside the path, which is what closes that.
+//
+// GenerateSecret builds its URL through totp.Generate, which escapes correctly. This path is
+// the same URL for the same enrollment and must not disagree with it.
+func otpauthURL(issuer, accountName, secret string) string {
+	query := url.Values{}
+	query.Set("secret", secret)
+	query.Set("issuer", issuer)
+
+	uri := url.URL{
+		Scheme: "otpauth",
+		Host:   "totp",
+		Path:   "/" + issuer + ":" + accountName,
+		// url.Values.Encode writes a space as "+", which some authenticator apps do not
+		// decode inside an otpauth URI; totp.Generate emits %20 for the same reason. Every
+		// literal "+" in a value is already percent-encoded as %2B by this point, so the only
+		// "+" left to rewrite is an encoded space.
+		RawQuery: strings.ReplaceAll(query.Encode(), "+", "%20"),
+	}
+	return uri.String()
 }
 
 // generateBackupCodes generates cryptographically secure backup codes.
@@ -671,24 +844,34 @@ func (m *Manager) generateBackupCodes() ([]string, error) {
 }
 
 // generateBackupCode generates a single backup code.
-// Format: XXXX-XXXX (8 characters, uppercase alphanumeric, dash-separated)
+//
+// Format: XXXX-XXXX-XXXX-XXXX, DefaultBackupCodeLength uppercase base32 characters in groups of
+// backupCodeGroup. The width is the control: the stored digest is one unkeyed hash pass (see
+// hashBackupCode for why it cannot be a password hash), so the only thing standing between an
+// attacker holding the store and a working second factor is the cost of enumerating the code
+// space. At the original 40 bits that was minutes of GPU time per user; 80 bits is not
+// enumerable at any budget, which is what makes the cheap digest a defensible choice.
 func generateBackupCode() (string, error) {
-	// Generate 5 random bytes
-	b := make([]byte, 5)
+	b := make([]byte, backupCodeBytes)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("failed to generate random bytes: %w", err)
 	}
 
-	// Encode to base32 without padding and take first 8 characters
 	code := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b)
-	if len(code) < 8 {
-		// This should never happen, but handle it just in case
-		return generateBackupCode()
+	if len(code) < DefaultBackupCodeLength {
+		// Unreachable: base32 of backupCodeBytes is exactly DefaultBackupCodeLength characters.
+		// Refuse rather than hand back a short code, which would be a silently weaker credential.
+		return "", fmt.Errorf("backup code is %d characters, want %d", len(code), DefaultBackupCodeLength)
 	}
-	code = code[:8]
 
-	// Format: XXXX-XXXX
-	return code[:4] + "-" + code[4:8], nil
+	var grouped strings.Builder
+	for i := 0; i < DefaultBackupCodeLength; i += backupCodeGroup {
+		if i > 0 {
+			grouped.WriteByte('-')
+		}
+		grouped.WriteString(code[i : i+backupCodeGroup])
+	}
+	return grouped.String(), nil
 }
 
 // GenerateCurrentCode generates the current TOTP code for a user.
@@ -705,7 +888,7 @@ func (m *Manager) GenerateCurrentCode(ctx context.Context, userID string) (strin
 		return "", fmt.Errorf("failed to get TOTP secret: %w", err)
 	}
 
-	secret, _, err := m.decodeSecret(stored)
+	secret, _, err := m.decodeSecret(userID, stored)
 	if err != nil {
 		return "", err
 	}
@@ -722,7 +905,7 @@ func (m *Manager) GenerateCurrentCode(ctx context.Context, userID string) (strin
 //
 // An active, unencrypted secret is written bare so the column stays byte-identical to what
 // pre-hardening versions wrote; every other combination needs the tag to be readable at all.
-func encodeSecret(secret string, pending bool, cipher Cipher) (string, error) {
+func encodeSecret(userID, secret string, pending bool, cipher Cipher) (string, error) {
 	if !pending && cipher == nil {
 		return secret, nil
 	}
@@ -733,15 +916,73 @@ func encodeSecret(secret string, pending bool, cipher Cipher) (string, error) {
 	}
 
 	if cipher == nil {
-		return secretPrefix + state + "$" + secretEncodingRaw + "$" + secret, nil
+		return taggedSecret(state, secretEncodingRaw, secret), nil
 	}
 
-	ciphertext, err := cipher.Encrypt([]byte(secret))
+	// What is sealed is the tagged, account-bound payload, not the bare secret: see
+	// sealedSecretPlaintext.
+	ciphertext, err := cipher.Encrypt([]byte(sealedSecretPlaintext(state, userID, secret)))
 	if err != nil {
 		return "", fmt.Errorf("encrypt TOTP secret: %w", err)
 	}
-	encoded := base64.StdEncoding.EncodeToString(ciphertext)
-	return secretPrefix + state + "$" + secretEncodingEnc + "$" + encoded, nil
+	return taggedSecret(state, secretEncodingEnc, base64.StdEncoding.EncodeToString(ciphertext)), nil
+}
+
+// taggedSecret renders the payload grammar described in the package documentation.
+func taggedSecret(state, encoding, data string) string {
+	return secretPrefix + state + "$" + encoding + "$" + data
+}
+
+// sealedSecretPlaintext is what Config.Cipher actually encrypts:
+//
+//	"$gat1$" <state> "$e$" <account binding> "$" <secret>
+//
+// The tag must also travel in the clear, because IsEnabled answers without key material, and
+// that clear copy is writable by anyone who can write to the store. Sealing a second copy under
+// the cipher makes the clear one verifiable: rewriting "$gat1$a$e$<ciphertext>" to
+// "$gat1$a$r$<attacker secret>", or flipping a pending enrollment to active, no longer agrees
+// with what comes out of Decrypt. Cipher cannot be handed additional authenticated data
+// without changing its interface, which v1 forbids, so this rides inside the plaintext and is
+// compared after decrypt instead -- the same end by the means available.
+//
+// The binding pins the payload to one account, which the tag alone does not. Without it an
+// attacker who can write to the store enrolls a factor of their own and copies their sealed row
+// over the victim's: every marker agrees, the ciphertext authenticates, and the attacker's
+// authenticator now passes the victim's second factor -- a complete bypass that never needs to
+// downgrade anything. It is a digest of the user ID rather than the ID itself, so the sealed
+// plaintext keeps a fixed, delimiter-free shape whatever the ID contains.
+func sealedSecretPlaintext(state, userID, secret string) string {
+	return taggedSecret(state, secretEncodingEnc, accountBinding(userID)+"$"+secret)
+}
+
+// accountBinding derives the account marker sealed into an encrypted secret. It is not secret:
+// the user ID is public, and its job is to make one account's ciphertext useless in another's
+// row, not to hide anything.
+func accountBinding(userID string) string {
+	sum := sha256.Sum256([]byte(accountBindingContext + userID))
+	return hex.EncodeToString(sum[:])
+}
+
+// splitSealedSecret parses what sealedSecretPlaintext produced.
+//
+// Every failure here is ErrSecretTampered rather than ErrCorruptSecret: this plaintext came out
+// of the cipher intact, so a shape the library never writes means the value was sealed by
+// something else.
+func splitSealedSecret(plaintext string) (state, binding, secret string, err error) {
+	if !strings.HasPrefix(plaintext, secretPrefix) {
+		return "", "", "", ErrSecretTampered
+	}
+
+	// "$gat1$a$e$BINDING$SECRET" splits into ["", "gat1", "a", "e", "BINDING", "SECRET"].
+	parts := strings.SplitN(plaintext, "$", 6)
+	if len(parts) != 6 {
+		return "", "", "", ErrSecretTampered
+	}
+	state, encoding, binding, secret := parts[2], parts[3], parts[4], parts[5]
+	if encoding != secretEncodingEnc || binding == "" || secret == "" {
+		return "", "", "", ErrSecretTampered
+	}
+	return state, binding, secret, nil
 }
 
 // splitSecretPayload parses a stored payload into its state, encoding and data. A value with no
@@ -774,19 +1015,54 @@ func splitSecretPayload(stored string) (state, encoding, data string, err error)
 
 // storedSecretIsPending reports the enrollment state without needing the Cipher, so a state
 // check never depends on key material being available.
-func storedSecretIsPending(stored string) (bool, error) {
-	state, _, _, err := splitSecretPayload(stored)
+//
+// It still refuses a payload the manager's configuration says may not be read at all: a check
+// that answered "active" for a downgraded row would be the gate that lets the downgrade
+// through, since IsEnabled is what a caller consults before demanding a code.
+func (m *Manager) storedSecretIsPending(stored string) (bool, error) {
+	state, encoding, _, err := splitSecretPayload(stored)
 	if err != nil {
+		return false, err
+	}
+	if err := m.checkStoredEncoding(stored, encoding); err != nil {
 		return false, err
 	}
 	return state == secretStatePending, nil
 }
 
-// decodeSecret recovers the base32 shared secret and the enrollment state from a stored payload.
-func (m *Manager) decodeSecret(stored string) (secret string, pending bool, err error) {
+// checkStoredEncoding refuses a stored payload whose encoding is weaker than the configuration
+// demands, before anything is read out of it.
+//
+// With a Cipher configured, an unencrypted secret in the store is either a row written before
+// the Cipher existed or a downgrade written by an attacker, and the value alone cannot tell
+// the two apart. Honoring encoding "r" regardless handed anyone who can write to the store a
+// way to swap the sealed secret for one of their own and be believed -- precisely the adversary
+// a Cipher is configured against -- so it is refused. The bare legacy shape is refused too,
+// unless the caller has opened the migration window.
+func (m *Manager) checkStoredEncoding(stored, encoding string) error {
+	if m.cipher == nil || encoding == secretEncodingEnc {
+		return nil
+	}
+	if strings.HasPrefix(stored, secretPrefix) {
+		// This library never writes a tagged raw payload while a Cipher is configured, so no
+		// migration window can account for one and the shim does not cover it.
+		return ErrSecretNotEncrypted
+	}
+	if m.allowLegacyPlaintext {
+		return nil
+	}
+	return ErrSecretNotEncrypted
+}
+
+// decodeSecret recovers the base32 shared secret and the enrollment state from the payload
+// stored for userID.
+func (m *Manager) decodeSecret(userID, stored string) (secret string, pending bool, err error) {
 	state, encoding, data, err := splitSecretPayload(stored)
 	if err != nil {
 		return "", false, err
+	}
+	if encodingErr := m.checkStoredEncoding(stored, encoding); encodingErr != nil {
+		return "", false, encodingErr
 	}
 	pending = state == secretStatePending
 
@@ -794,18 +1070,39 @@ func (m *Manager) decodeSecret(stored string) (secret string, pending bool, err 
 		return data, pending, nil
 	}
 
-	if m.cipher == nil {
-		return "", false, ErrCipherRequired
+	secret, err = m.openSealedSecret(userID, state, data)
+	if err != nil {
+		return "", false, err
 	}
+	return secret, pending, nil
+}
+
+// openSealedSecret decrypts data and holds the tag sealed inside it against the tag the store
+// carries in the clear. A mismatch means the payload was rewritten after the library sealed it.
+func (m *Manager) openSealedSecret(userID, state, data string) (string, error) {
+	if m.cipher == nil {
+		return "", ErrCipherRequired
+	}
+
 	ciphertext, err := base64.StdEncoding.DecodeString(data)
 	if err != nil {
-		return "", false, fmt.Errorf("%w: %w", ErrCorruptSecret, err)
+		return "", fmt.Errorf("%w: %w", ErrCorruptSecret, err)
 	}
 	plaintext, err := m.cipher.Decrypt(ciphertext)
 	if err != nil {
-		return "", false, fmt.Errorf("decrypt TOTP secret: %w", err)
+		return "", fmt.Errorf("decrypt TOTP secret: %w", err)
 	}
-	return string(plaintext), pending, nil
+
+	sealedState, binding, secret, err := splitSealedSecret(string(plaintext))
+	if err != nil {
+		return "", err
+	}
+	// Neither value is a secret -- one is a single public character, the other a digest of a
+	// public user ID -- so a constant-time compare would only suggest that they were.
+	if sealedState != state || binding != accountBinding(userID) {
+		return "", ErrSecretTampered
+	}
+	return secret, nil
 }
 
 // normalizeBackupCode folds the presentation of a backup code (dashes, case, surrounding
@@ -825,15 +1122,18 @@ func normalizeBackupCode(code string) string {
 // here.
 //
 // The salt is derived from the user ID rather than stored, because the CredentialStore
-// interface has no column for one in v1. It is not secret; its job is to stop one precomputed
-// table from covering every user, and to stop the identical digest of a shared code from
-// appearing under two accounts.
+// interface has no column for one in v1. It is not secret, and being derived from a public
+// value it is not a work factor either; its job is to stop one precomputed table from covering
+// every user, and to stop the identical digest of a shared code from appearing under two
+// accounts.
 //
-// The residual risk is honest: 40 bits is brute-forceable offline by an attacker holding the
-// store, per user, at GPU speed. The mitigations are the per-user salt (no amortization across
-// accounts), single use, and the fact that the codes are the fallback path rather than the
-// primary factor. Widening the code and storing a real random salt is v2 work, because both
-// change the stored shape.
+// What is left carrying the weight is the width of the code itself, which is why
+// DefaultBackupCodeLength is 80 bits rather than the 40 this started at: a single SHA-256 pass
+// over a 40-bit space is a few minutes of one GPU, so the digest was protecting nothing an
+// attacker holding the store would notice. At 80 bits the enumeration is not on the table, and
+// the remaining exposure -- the digest is offline-attackable in principle -- has no budget that
+// buys it. Where a deployment configures a Cipher, sealBackupCode puts the digests out of a
+// store reader's reach entirely.
 func hashBackupCode(userID, code string) (string, error) {
 	mac := hmac.New(sha256.New, backupCodeSalt(userID))
 	if _, err := mac.Write([]byte(normalizeBackupCode(code))); err != nil {
@@ -849,7 +1149,7 @@ func backupCodeSalt(userID string) []byte {
 	return sum[:]
 }
 
-// hashBackupCodes maps generated codes to their stored representation.
+// hashBackupCodes maps generated codes to their digests.
 func hashBackupCodes(userID string, codes []string) ([]string, error) {
 	hashed := make([]string, len(codes))
 	for i, code := range codes {
@@ -862,6 +1162,69 @@ func hashBackupCodes(userID string, codes []string) ([]string, error) {
 	return hashed, nil
 }
 
+// storedBackupCodes maps generated codes to the values the store receives: digests, sealed by
+// the Cipher when one is configured.
+//
+// Without this step a deployment that configures a Cipher, reads "secrets are encrypted at
+// rest" and considers F-06 closed still hands a store reader ten working second factors,
+// because the digests are only as strong as the code behind them.
+func storedBackupCodes(userID string, codes []string, cipher Cipher) ([]string, error) {
+	stored, err := hashBackupCodes(userID, codes)
+	if err != nil {
+		return nil, err
+	}
+	if cipher == nil {
+		return stored, nil
+	}
+
+	for i, digest := range stored {
+		sealed, err := sealBackupCode(cipher, digest)
+		if err != nil {
+			return nil, err
+		}
+		stored[i] = sealed
+	}
+	return stored, nil
+}
+
+// sealBackupCode encrypts one digest for storage. The digest's own prefix goes inside the
+// ciphertext, so openBackupCode can tell a value it sealed from anything else that decrypts.
+func sealBackupCode(cipher Cipher, digest string) (string, error) {
+	ciphertext, err := cipher.Encrypt([]byte(digest))
+	if err != nil {
+		return "", fmt.Errorf("encrypt backup code: %w", err)
+	}
+	return backupCodeSealPrefix + base64.StdEncoding.EncodeToString(ciphertext), nil
+}
+
+// openBackupCode reduces one stored entry to the form a submission is compared against: a
+// digest, or a legacy plaintext code. An entry that is not sealed is returned as it stands, so
+// a sheet issued before the Cipher was configured keeps validating.
+func openBackupCode(cipher Cipher, stored string) (string, error) {
+	if !strings.HasPrefix(stored, backupCodeSealPrefix) {
+		return stored, nil
+	}
+	if cipher == nil {
+		return "", ErrCipherRequired
+	}
+
+	ciphertext, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(stored, backupCodeSealPrefix))
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrCorruptSecret, err)
+	}
+	plaintext, err := cipher.Decrypt(ciphertext)
+	if err != nil {
+		return "", fmt.Errorf("decrypt backup code: %w", err)
+	}
+	// A sealed entry always opens to a digest. Anything else was not written here, and
+	// treating it as a plaintext code would let a value that merely decrypts be compared
+	// against the submission verbatim.
+	if !strings.HasPrefix(string(plaintext), backupCodeHashPrefix) {
+		return "", ErrSecretTampered
+	}
+	return string(plaintext), nil
+}
+
 // matchBackupCode finds the stored entry corresponding to the presented code and returns it
 // verbatim, so the caller can hand it back to CredentialStore.UseBackupCode.
 //
@@ -869,7 +1232,7 @@ func hashBackupCodes(userID string, codes []string) ([]string, error) {
 // early exit, the time to a rejection would reveal how many entries were examined, and with a
 // match, which slot matched. A row written before this release is still plaintext, so both
 // shapes are compared, each in constant time (F-06).
-func matchBackupCode(userID, code string, storedCodes []string) (string, bool, error) {
+func matchBackupCode(cipher Cipher, userID, code string, storedCodes []string) (string, bool, error) {
 	presentedPlain := normalizeBackupCode(code)
 	if presentedPlain == "" {
 		// An empty submission would compare equal to an empty stored entry, so it is refused
@@ -883,18 +1246,35 @@ func matchBackupCode(userID, code string, storedCodes []string) (string, bool, e
 	}
 
 	matchIndex := -1
+	var openErr error
 	for i, stored := range storedCodes {
+		target, err := openBackupCode(cipher, stored)
+		if err != nil {
+			// Keep scanning. Abandoning the sheet at the first unreadable entry would let one
+			// damaged row hide a code that does match, and would leak that row's position.
+			if openErr == nil {
+				openErr = err
+			}
+			continue
+		}
+
 		var equal int
-		if strings.HasPrefix(stored, backupCodeHashPrefix) {
-			equal = subtle.ConstantTimeCompare([]byte(presentedHash), []byte(stored))
+		if strings.HasPrefix(target, backupCodeHashPrefix) {
+			equal = subtle.ConstantTimeCompare([]byte(presentedHash), []byte(target))
 		} else {
-			equal = subtle.ConstantTimeCompare([]byte(presentedPlain), []byte(normalizeBackupCode(stored)))
+			equal = subtle.ConstantTimeCompare([]byte(presentedPlain), []byte(normalizeBackupCode(target)))
 		}
 		matchIndex = subtle.ConstantTimeSelect(equal, i, matchIndex)
 	}
 
-	if matchIndex < 0 {
-		return "", false, nil
+	if matchIndex >= 0 {
+		return storedCodes[matchIndex], true, nil
 	}
-	return storedCodes[matchIndex], true, nil
+	if openErr != nil {
+		// Nothing matched AND something could not be read: report the outage. Reporting a
+		// plain "wrong code" would present a key rotation as the user's mistake, and would
+		// hide it for as long as they kept retrying.
+		return "", false, openErr
+	}
+	return "", false, nil
 }
