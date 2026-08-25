@@ -2091,3 +2091,114 @@ func TestTOTP_QRCodeURLAgreesWithEnrollment(t *testing.T) {
 		})
 	}
 }
+
+// TestLookupEnrollment_AnswersFromTheStoreNotTheWiring covers the exported
+// enrollment lookup added for finding F-35.
+//
+// The function exists so that "does this user have a second factor?" can be
+// answered without a Manager, because the wrong answer to that question is an
+// MFA bypass and a question of that weight must not depend on whether the caller
+// remembered to wire an optional field. Its error paths matter as much as its
+// happy path: a lookup that cannot reach the store must say so, not report the
+// comfortable "no factor here" that made F-35 exploitable.
+func TestLookupEnrollment_AnswersFromTheStoreNotTheWiring(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	t.Run("no store is an error, never EnrollmentNone", func(t *testing.T) {
+		t.Parallel()
+		state, err := LookupEnrollment(ctx, nil, "u1")
+		if err == nil {
+			t.Fatal("a nil credential store reported an enrollment state instead of an error: " +
+				"an unanswerable question must not resolve to 'no factor enrolled' (F-35)")
+		}
+		if state != EnrollmentNone {
+			t.Errorf("state = %v on error; want the zero value", state)
+		}
+	})
+
+	t.Run("a store failure propagates", func(t *testing.T) {
+		t.Parallel()
+		boom := errors.New("store unavailable")
+		state, err := LookupEnrollment(ctx, &failingTOTPStore{err: boom}, "u1")
+		if !errors.Is(err, boom) {
+			t.Fatalf("err = %v; want the store's error wrapped: a store outage reported as "+
+				"'no factor enrolled' is the F-35 bypass with extra steps", err)
+		}
+		if state != EnrollmentNone {
+			t.Errorf("state = %v on error; want the zero value", state)
+		}
+	})
+
+	t.Run("absent, pending and confirmed are distinguished", func(t *testing.T) {
+		t.Parallel()
+		store := storage.NewInMemoryCredentialStore()
+		m, err := NewManager(Config{CredentialStore: store, Issuer: "App"})
+		if err != nil {
+			t.Fatalf("new manager: %v", err)
+		}
+
+		if state, lookupErr := LookupEnrollment(ctx, store, "nobody"); lookupErr != nil || state != EnrollmentNone {
+			t.Errorf("unenrolled user: got (%v, %v), want (EnrollmentNone, nil)", state, lookupErr)
+		}
+
+		secret, err := m.GenerateSecret(ctx, "user", "user@example.test")
+		if err != nil {
+			t.Fatalf("generate secret: %v", err)
+		}
+		if state, lookupErr := LookupEnrollment(ctx, store, "user"); lookupErr != nil || state != EnrollmentPending {
+			t.Errorf("after GenerateSecret: got (%v, %v), want (EnrollmentPending, nil): an unconfirmed "+
+				"enrollment reported as confirmed locks the user out of their own account (F-07)", state, lookupErr)
+		}
+
+		code, err := otptotp.GenerateCode(secret.Secret, time.Now())
+		if err != nil {
+			t.Fatalf("generate code: %v", err)
+		}
+		if confirmErr := m.Confirm(ctx, "user", code); confirmErr != nil {
+			t.Fatalf("confirm: %v", confirmErr)
+		}
+		if state, lookupErr := LookupEnrollment(ctx, store, "user"); lookupErr != nil || state != EnrollmentConfirmed {
+			t.Errorf("after Confirm: got (%v, %v), want (EnrollmentConfirmed, nil)", state, lookupErr)
+		}
+	})
+
+	t.Run("a corrupt payload is an error, not a silent absence", func(t *testing.T) {
+		t.Parallel()
+		store := storage.NewInMemoryCredentialStore()
+		if err := store.StoreTOTPSecret(ctx, "user", "$gat1$not-a-state$r$DATA", nil); err != nil {
+			t.Fatalf("seed corrupt row: %v", err)
+		}
+		if _, err := LookupEnrollment(ctx, store, "user"); !errors.Is(err, ErrCorruptSecret) {
+			t.Fatalf("err = %v; want ErrCorruptSecret: an unparseable row is a broken credential, "+
+				"and reporting it as 'no factor' would drop the gate for that user", err)
+		}
+	})
+
+	t.Run("an encrypted row still reports its state without the key", func(t *testing.T) {
+		t.Parallel()
+		store := storage.NewInMemoryCredentialStore()
+		m, err := NewManager(Config{CredentialStore: store, Issuer: "App", Cipher: newAdvAESCipher(t)})
+		if err != nil {
+			t.Fatalf("new manager: %v", err)
+		}
+		if _, err := m.GenerateSecret(ctx, "user", "user@example.test"); err != nil {
+			t.Fatalf("generate secret: %v", err)
+		}
+		// No cipher is passed here on purpose: the gate must work in a process that
+		// holds no key material.
+		if state, lookupErr := LookupEnrollment(ctx, store, "user"); lookupErr != nil || state != EnrollmentPending {
+			t.Errorf("encrypted row: got (%v, %v), want (EnrollmentPending, nil)", state, lookupErr)
+		}
+	})
+}
+
+// failingTOTPStore is a credential store whose TOTP read always fails.
+type failingTOTPStore struct {
+	storage.CredentialStore
+	err error
+}
+
+func (f *failingTOTPStore) GetTOTPSecret(context.Context, string) (string, []string, error) {
+	return "", nil, f.err
+}

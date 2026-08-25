@@ -688,6 +688,58 @@ func (m *Manager) Disable(ctx context.Context, userID string) error {
 	return nil
 }
 
+// Enrollment describes what a credential store holds for one user's TOTP factor.
+type Enrollment int
+
+const (
+	// EnrollmentNone means the store holds no TOTP secret for the user.
+	EnrollmentNone Enrollment = iota
+
+	// EnrollmentPending means a secret is stored but no code has ever validated against it, so
+	// the user has not proved possession and the factor must not gate a sign-in (F-07).
+	EnrollmentPending
+
+	// EnrollmentConfirmed means the user has proved possession and the factor is armed.
+	EnrollmentConfirmed
+)
+
+// LookupEnrollment reports whether a user holds a TOTP factor, reading the credential store
+// directly. It needs no Manager, no issuer, and no Cipher.
+//
+// It exists because "is a second factor enrolled?" is a question about the store, not about how
+// the caller happened to wire its objects, and answering it from a possibly-absent Manager is how
+// finding F-35 turned a half-wired application into a silent MFA bypass: a component that had not
+// been handed a Manager reported "no factor enrolled" for a user who had one, and the sign-in gate
+// believed it. A question whose wrong answer is a bypass may not depend on optional wiring.
+//
+// Deliberately NOT applied here: the stored-encoding policy Manager enforces (refusing a plaintext
+// payload once a Cipher is configured, F-33). This function classifies state only, so a downgraded
+// row is reported as EnrollmentConfirmed rather than rejected. That direction is the safe one for a
+// gate -- it demands the second factor -- but it means this is an enrollment *check*, never an
+// authentication decision. Validating a code stays on Manager, which does apply the policy.
+func LookupEnrollment(ctx context.Context, store storage.CredentialStore, userID string) (Enrollment, error) {
+	if store == nil {
+		return EnrollmentNone, errors.New("totp: credential store is required")
+	}
+
+	stored, _, err := store.GetTOTPSecret(ctx, userID)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return EnrollmentNone, nil
+		}
+		return EnrollmentNone, fmt.Errorf("failed to check TOTP status: %w", err)
+	}
+
+	state, _, _, err := splitSecretPayload(stored)
+	if err != nil {
+		return EnrollmentNone, err
+	}
+	if state == secretStatePending {
+		return EnrollmentPending, nil
+	}
+	return EnrollmentConfirmed, nil
+}
+
 // IsEnabled checks if TOTP is enabled for a user.
 //
 // An enrollment awaiting Confirm reports false (F-07): a factor that has never validated a code

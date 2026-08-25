@@ -800,6 +800,61 @@ be resolved" are distinguishable in the log — and it goes to metadata, not to
 `Error`, because failing to enrich an event does not make the operation it
 records a failure.
 
+### F-35 — A half-wired Authenticator let the password alone pass MFA
+
+**Critical · CWE-306 · `auth/basic/basic.go` · proof: exec · shipped in v1.1.2**
+
+`IsTOTPEnabled` and `IsTOTPPending` answered `(false, nil)` when the
+`Authenticator` held no `totp.Manager`, and `Authenticate`'s MFA gate read that
+as "this user has no second factor". `RequireMFAWhenEnrolled` is
+`MFAEnforcement(0)` — `EnforceMFA` — so a deployment that never touched the
+field believed MFA was on.
+
+The exploit needs no attacker sophistication, only an ordinary wiring mistake.
+An application builds one `totp.Manager` for its enrolment endpoints, builds
+`basic.Authenticator` for sign-in, and does not pass `Config.TOTPManager`. Both
+share a credential store, so the enrolment is real and confirmed. Reproduced
+against v1.1.2 through the exported API only:
+
+```
+constructor accepted EnforceMFA with no TOTPManager: true
+factor is genuinely enrolled+confirmed: enabled=true err=<nil>
+RESULT: *** MFA BYPASSED *** password alone returned user TknSna_W_brKOUmL41J3vg
+auth.IsTOTPEnabled reports: false (the store says true)
+```
+
+The store said the factor was confirmed the whole time. The authenticator said
+no, because of how the caller had wired its objects.
+
+This is not reachable through the primitives — `totp.Manager` on its own is
+correct, and a scan of every `== nil` dependency guard in the library found
+exactly two that answer with a benign value instead of an error, both of them
+these. Every other nil dependency fails closed with a named error. The defect
+exists only because one component orchestrates two others and degrades, rather
+than refusing, when half-wired.
+
+**Status: fixed.** Both methods now answer from the credential store via
+`totp.LookupEnrollment`, which needs no `Manager`, no issuer and no `Cipher`.
+The store is the authority on whether a factor exists; how the caller wired its
+objects is not.
+
+Two alternatives were rejected. Rejecting `EnforceMFA`-with-nil-manager at
+construction would break every deployment that legitimately has no second factor
+at all, which is not acceptable in a patch release. Returning an error from the
+gate when it cannot determine enrolment would do the same at sign-in. Consulting
+the store is correct in all three wirings and breaks none of them.
+
+`LookupEnrollment` deliberately does not apply the stored-encoding policy that
+`Manager` enforces (F-33): it classifies state only, so a downgraded row reports
+as confirmed rather than being rejected. That direction is the safe one for a
+gate — it demands the second factor — but it is why the function is an enrolment
+check and never an authentication decision. Validating a code stays on `Manager`,
+which does apply the policy.
+
+The general rule this finding establishes, and the one v2 is designed around: a
+security question whose wrong answer is a bypass must not be answered from
+optional wiring.
+
 ---
 
 ## 4. Release strategy
