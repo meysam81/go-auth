@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.3](https://github.com/meysam81/go-auth/compare/v1.1.2...v1.1.3) (2026-08-25)
+
+
+### Bug Fixes
+
+* **basic:** MFA gate fails open when the Authenticator has no TOTP manager ([#55](https://github.com/meysam81/go-auth/issues/55)) ([d68aa2f](https://github.com/meysam81/go-auth/commit/d68aa2f6e6cc4a42b4a0c55ff505d4c0f846305f))
+
 ## [1.1.2](https://github.com/meysam81/go-auth/compare/v1.1.1...v1.1.2) (2026-08-24)
 
 
