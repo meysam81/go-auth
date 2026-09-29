@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 250 60" width="250" height="60">
+  <!-- Wordmark for dark backgrounds -->
+  <text x="0" y="45" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="48" font-weight="700" fill="#F8FAFC">go</text>
+  <text x="60" y="45" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="48" font-weight="300" fill="#64748B">-</text>
+  <text x="80" y="45" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="48" font-weight="700" fill="#00ADD8">auth</text>
+</svg>

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <defs>
+    <linearGradient id="favGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ADD8"/>
+      <stop offset="100%" style="stop-color:#0891B2"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Simplified shield with lock -->
+  <path d="M16 2 L28 7 L28 15 C28 23 22 28 16 30 C10 28 4 23 4 15 L4 7 Z"
+        fill="url(#favGradient)"/>
+
+  <!-- Keyhole -->
+  <circle cx="16" cy="13" r="3" fill="#0F172A"/>
+  <rect x="14.5" y="15" width="3" height="6" rx="0.5" fill="#0F172A"/>
+</svg>

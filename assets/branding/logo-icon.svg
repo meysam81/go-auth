@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <defs>
+    <linearGradient id="iconShieldGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ADD8"/>
+      <stop offset="100%" style="stop-color:#06B6D4"/>
+    </linearGradient>
+    <linearGradient id="iconLayer1" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ADD8;stop-opacity:0.9"/>
+      <stop offset="100%" style="stop-color:#0891B2;stop-opacity:0.9"/>
+    </linearGradient>
+    <linearGradient id="iconLayer2" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#06B6D4;stop-opacity:0.7"/>
+      <stop offset="100%" style="stop-color:#0E7490;stop-opacity:0.7"/>
+    </linearGradient>
+    <linearGradient id="iconLayer3" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#22D3EE;stop-opacity:0.5"/>
+      <stop offset="100%" style="stop-color:#06B6D4;stop-opacity:0.5"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Shield Icon - Layered/Modular Design -->
+  <g transform="translate(5, 2)">
+    <!-- Outer shield shape (shadow/glow) -->
+    <path d="M45 3 L85 20 L85 55 C85 78 63 93 45 100 C27 93 5 78 5 55 L5 20 Z"
+          fill="url(#iconShieldGradient)" opacity="0.15"/>
+
+    <!-- Layer 1 - Base layer (largest) -->
+    <path d="M45 10 L78 24 L78 52 C78 71 60 84 45 90 C30 84 12 71 12 52 L12 24 Z"
+          fill="url(#iconLayer3)"/>
+
+    <!-- Layer 2 - Middle layer -->
+    <path d="M45 19 L70 31 L70 50 C70 65 56 76 45 80 C34 76 20 65 20 50 L20 31 Z"
+          fill="url(#iconLayer2)"/>
+
+    <!-- Layer 3 - Inner layer -->
+    <path d="M45 28 L62 38 L62 48 C62 60 54 68 45 71 C36 68 28 60 28 48 L28 38 Z"
+          fill="url(#iconLayer1)"/>
+
+    <!-- Core - Keyhole/Lock symbol -->
+    <circle cx="45" cy="42" r="7" fill="#0F172A"/>
+    <rect x="41.5" y="47" width="7" height="12" rx="1.5" fill="#0F172A"/>
+
+    <!-- Accent lines representing connections/modules -->
+    <line x1="14" y1="36" x2="26" y2="42" stroke="#00ADD8" stroke-width="2" opacity="0.6"/>
+    <line x1="76" y1="36" x2="64" y2="42" stroke="#00ADD8" stroke-width="2" opacity="0.6"/>
+    <line x1="45" y1="10" x2="45" y2="22" stroke="#00ADD8" stroke-width="2" opacity="0.6"/>
+  </g>
+</svg>
