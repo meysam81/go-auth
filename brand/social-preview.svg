@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640">
+  <defs>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0D2137" />
+      <stop offset="50%" style="stop-color:#0F2942" />
+      <stop offset="100%" style="stop-color:#0D2137" />
+    </linearGradient>
+    <linearGradient id="shieldGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ADD8" />
+      <stop offset="100%" style="stop-color:#0891B2" />
+    </linearGradient>
+    <linearGradient id="keyGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#14B8A6" />
+      <stop offset="100%" style="stop-color:#0D9488" />
+    </linearGradient>
+    <linearGradient id="glowGradient" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ADD8;stop-opacity:0.3" />
+      <stop offset="100%" style="stop-color:#00ADD8;stop-opacity:0" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1280" height="640" fill="url(#bgGradient)" />
+
+  <!-- Subtle grid pattern -->
+  <g opacity="0.05">
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#00ADD8" stroke-width="0.5"/>
+    </pattern>
+    <rect width="1280" height="640" fill="url(#grid)" />
+  </g>
+
+  <!-- Decorative glow behind logo -->
+  <ellipse cx="320" cy="320" rx="200" ry="200" fill="url(#glowGradient)" />
+
+  <!-- Large Shield Logo -->
+  <g transform="translate(220, 170)">
+    <!-- Shield Shape -->
+    <path d="M100 0 L200 25 L200 115 C200 175 150 210 100 230 C50 210 0 175 0 115 L0 25 Z"
+          fill="url(#shieldGradient)" />
+
+    <!-- Inner Shield -->
+    <path d="M100 18 L182 38 L182 112 C182 162 140 190 100 207 C60 190 18 162 18 112 L18 38 Z"
+          fill="#0D2137" opacity="0.92" />
+
+    <!-- Key Symbol -->
+    <g transform="translate(100, 125)">
+      <!-- Key Head -->
+      <circle cx="0" cy="-30" r="28" fill="none" stroke="url(#keyGradient)" stroke-width="8"/>
+      <circle cx="0" cy="-30" r="12" fill="#0D2137"/>
+      <!-- Key Shaft -->
+      <rect x="-6" y="-2" width="12" height="55" fill="url(#keyGradient)" rx="3"/>
+      <!-- Key Teeth -->
+      <rect x="6" y="35" width="18" height="8" fill="url(#keyGradient)" rx="2"/>
+      <rect x="6" y="18" width="14" height="8" fill="url(#keyGradient)" rx="2"/>
+    </g>
+  </g>
+
+  <!-- Wordmark -->
+  <g font-family="'JetBrains Mono', 'SF Mono', 'Fira Code', 'Consolas', monospace" font-weight="700">
+    <text x="480" y="290" font-size="80" fill="#00ADD8">go</text>
+    <text x="610" y="290" font-size="80" fill="#64748B">-</text>
+    <text x="655" y="290" font-size="80" fill="#FFFFFF">auth</text>
+  </g>
+
+  <!-- Tagline -->
+  <text x="480" y="360" font-family="'Inter', 'SF Pro Display', system-ui, sans-serif" font-size="28" fill="#94A3B8" font-weight="500">
+    Production-Ready Authentication for Go
+  </text>
+
+  <!-- Feature Pills -->
+  <g transform="translate(480, 400)">
+    <!-- JWT -->
+    <g>
+      <rect x="0" y="0" width="80" height="36" rx="18" fill="#00ADD8" opacity="0.15"/>
+      <rect x="0" y="0" width="80" height="36" rx="18" fill="none" stroke="#00ADD8" stroke-width="1.5" opacity="0.5"/>
+      <text x="40" y="24" font-family="'Inter', system-ui, sans-serif" font-size="14" fill="#00ADD8" text-anchor="middle" font-weight="600">JWT</text>
+    </g>
+    <!-- OAuth -->
+    <g transform="translate(95, 0)">
+      <rect x="0" y="0" width="100" height="36" rx="18" fill="#00ADD8" opacity="0.15"/>
+      <rect x="0" y="0" width="100" height="36" rx="18" fill="none" stroke="#00ADD8" stroke-width="1.5" opacity="0.5"/>
+      <text x="50" y="24" font-family="'Inter', system-ui, sans-serif" font-size="14" fill="#00ADD8" text-anchor="middle" font-weight="600">OAuth2</text>
+    </g>
+    <!-- WebAuthn -->
+    <g transform="translate(210, 0)">
+      <rect x="0" y="0" width="115" height="36" rx="18" fill="#14B8A6" opacity="0.15"/>
+      <rect x="0" y="0" width="115" height="36" rx="18" fill="none" stroke="#14B8A6" stroke-width="1.5" opacity="0.5"/>
+      <text x="57" y="24" font-family="'Inter', system-ui, sans-serif" font-size="14" fill="#14B8A6" text-anchor="middle" font-weight="600">WebAuthn</text>
+    </g>
+    <!-- TOTP -->
+    <g transform="translate(340, 0)">
+      <rect x="0" y="0" width="85" height="36" rx="18" fill="#14B8A6" opacity="0.15"/>
+      <rect x="0" y="0" width="85" height="36" rx="18" fill="none" stroke="#14B8A6" stroke-width="1.5" opacity="0.5"/>
+      <text x="42" y="24" font-family="'Inter', system-ui, sans-serif" font-size="14" fill="#14B8A6" text-anchor="middle" font-weight="600">TOTP</text>
+    </g>
+    <!-- OIDC -->
+    <g transform="translate(440, 0)">
+      <rect x="0" y="0" width="85" height="36" rx="18" fill="#00ADD8" opacity="0.15"/>
+      <rect x="0" y="0" width="85" height="36" rx="18" fill="none" stroke="#00ADD8" stroke-width="1.5" opacity="0.5"/>
+      <text x="42" y="24" font-family="'Inter', system-ui, sans-serif" font-size="14" fill="#00ADD8" text-anchor="middle" font-weight="600">OIDC</text>
+    </g>
+  </g>
+
+  <!-- Bottom highlights -->
+  <g transform="translate(480, 480)">
+    <g opacity="0.7">
+      <circle cx="8" cy="8" r="4" fill="#14B8A6"/>
+      <text x="22" y="13" font-family="'Inter', system-ui, sans-serif" font-size="16" fill="#94A3B8">10+ SSO Providers</text>
+    </g>
+    <g transform="translate(180, 0)" opacity="0.7">
+      <circle cx="8" cy="8" r="4" fill="#14B8A6"/>
+      <text x="22" y="13" font-family="'Inter', system-ui, sans-serif" font-size="16" fill="#94A3B8">Audit Logging</text>
+    </g>
+    <g transform="translate(330, 0)" opacity="0.7">
+      <circle cx="8" cy="8" r="4" fill="#14B8A6"/>
+      <text x="22" y="13" font-family="'Inter', system-ui, sans-serif" font-size="16" fill="#94A3B8">Storage Agnostic</text>
+    </g>
+  </g>
+
+  <!-- Go Gopher accent (subtle) -->
+  <g transform="translate(1150, 520)" opacity="0.15">
+    <circle cx="40" cy="40" r="35" fill="#00ADD8"/>
+    <text x="40" y="52" font-family="system-ui" font-size="40" text-anchor="middle" fill="#FFFFFF">Go</text>
+  </g>
+</svg>
