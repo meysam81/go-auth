@@ -452,7 +452,8 @@ type CredentialStore interface {
 
     // RecordAssertion applies one verified assertion only while the stored
     // counter still equals u.PrevSignCount:
-    //   UPDATE ... SET sign_count = ?, backup_state = ?, last_used_at = ?
+    //   UPDATE ... SET sign_count = ?, backup_eligible = ?, backup_state = ?,
+    //     version = ?, last_used_at = ?
     //   WHERE subject = ? AND credential_id = ? AND sign_count = ?
     // applied=false means a concurrent assertion won; the caller fails.
     RecordAssertion(ctx context.Context, u AssertionUpdate) (applied bool, err error)

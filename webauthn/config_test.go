@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-webauthn/webauthn/protocol"
+	gowebauthn "github.com/go-webauthn/webauthn/webauthn"
 )
 
 func validConfig() Config {
@@ -19,40 +21,84 @@ func TestNew_RejectsBadConfig(t *testing.T) {
 	tests := []struct {
 		name string
 		edit func(*Config)
+		want string // substring naming the rule that must fire
 	}{
-		{"empty RPID", func(c *Config) { c.RPID = "" }},
-		{"RPID with scheme", func(c *Config) { c.RPID = "https://example.test" }},
-		{"RPID with port", func(c *Config) { c.RPID = "example.test:8443" }},
-		{"RPID with path", func(c *Config) { c.RPID = "example.test/x" }},
-		{"RPID uppercase", func(c *Config) { c.RPID = "Example.Test" }},
-		{"RPID is IP", func(c *Config) { c.RPID = "192.0.2.1"; c.Origins = []string{"https://192.0.2.1"} }},
-		{"RPID bad label", func(c *Config) { c.RPID = "-example.test" }},
-		{"empty RPName", func(c *Config) { c.RPName = "" }},
-		{"no origins", func(c *Config) { c.Origins = nil }},
-		{"trailing slash", func(c *Config) { c.Origins = []string{"https://app.example.test/"} }},
-		{"path", func(c *Config) { c.Origins = []string{"https://app.example.test/x"} }},
-		{"query", func(c *Config) { c.Origins = []string{"https://app.example.test?x=1"} }},
-		{"fragment", func(c *Config) { c.Origins = []string{"https://app.example.test#x"} }},
-		{"userinfo", func(c *Config) { c.Origins = []string{"https://u@app.example.test"} }},
-		{"uppercase host", func(c *Config) { c.Origins = []string{"https://App.Example.Test"} }},
-		{"http outside localhost", func(c *Config) { c.Origins = []string{"http://app.example.test"} }},
-		{"foreign host", func(c *Config) { c.Origins = []string{"https://evil.test"} }},
-		{"suffix without dot", func(c *Config) { c.Origins = []string{"https://badexample.test"} }},
-		{"duplicate origin", func(c *Config) { c.Origins = []string{"https://example.test", "https://example.test"} }},
-		{"unknown algorithm", func(c *Config) { c.Algorithms = []int{-7, -35} }},
-		{"duplicate algorithm", func(c *Config) { c.Algorithms = []int{-7, -7} }},
-		{"timeout too short", func(c *Config) { c.Timeout = 10 * time.Second }},
-		{"timeout too long", func(c *Config) { c.Timeout = 16 * time.Minute }},
+		{"empty RPID", func(c *Config) { c.RPID = "" }, "RPID is required"},
+		{"RPID with scheme", func(c *Config) { c.RPID = "https://example.test" }, "bare domain"},
+		{"RPID with port", func(c *Config) { c.RPID = "example.test:8443" }, "bare domain"},
+		{"RPID with path", func(c *Config) { c.RPID = "example.test/x" }, "bare domain"},
+		{"RPID uppercase", func(c *Config) { c.RPID = "Example.Test" }, "must be lowercase"},
+		{"RPID is IP", func(c *Config) { c.RPID = "192.0.2.1"; c.Origins = []string{"https://192.0.2.1"} }, "must not be an IP"},
+		{"RPID bad label", func(c *Config) { c.RPID = "-example.test" }, "valid DNS name"},
+		{"empty RPName", func(c *Config) { c.RPName = "" }, "RPName is required"},
+		{"no origins", func(c *Config) { c.Origins = nil }, "at least one origin"},
+		{"trailing slash", func(c *Config) { c.Origins = []string{"https://app.example.test/"} }, "optional port only"},
+		{"path", func(c *Config) { c.Origins = []string{"https://app.example.test/x"} }, "optional port only"},
+		{"query", func(c *Config) { c.Origins = []string{"https://app.example.test?x=1"} }, "optional port only"},
+		{"fragment", func(c *Config) { c.Origins = []string{"https://app.example.test#x"} }, "optional port only"},
+		{"userinfo", func(c *Config) { c.Origins = []string{"https://u@app.example.test"} }, "optional port only"},
+		{"uppercase host", func(c *Config) { c.Origins = []string{"https://App.Example.Test"} }, "lowercase host"},
+		{"uppercase subdomain only", func(c *Config) { c.Origins = []string{"https://App.example.test"} }, "lowercase host"},
+		{"uppercase scheme", func(c *Config) { c.Origins = []string{"HTTPS://app.example.test"} }, "lowercase scheme"},
+		{"non-ASCII host", func(c *Config) { c.Origins = []string{"https://app.exämple.test"} }, "punycode"},
+		{"empty port", func(c *Config) { c.Origins = []string{"https://app.example.test:"} }, "port"},
+		{"port too large", func(c *Config) { c.Origins = []string{"https://app.example.test:99999"} }, "port"},
+		{"port zero", func(c *Config) { c.Origins = []string{"https://app.example.test:0"} }, "port"},
+		{"port leading zero", func(c *Config) { c.Origins = []string{"https://app.example.test:0443"} }, "port"},
+		{"http outside localhost", func(c *Config) { c.Origins = []string{"http://app.example.test"} }, "must be https"},
+		{"foreign host", func(c *Config) { c.Origins = []string{"https://evil.test"} }, "neither the RP ID nor a subdomain"},
+		{"suffix without dot", func(c *Config) { c.Origins = []string{"https://badexample.test"} }, "neither the RP ID nor a subdomain"},
+		{"duplicate origin", func(c *Config) { c.Origins = []string{"https://example.test", "https://example.test"} }, "duplicate origin"},
+		{"unknown algorithm", func(c *Config) { c.Algorithms = []int{-7, -35} }, "not allowed"},
+		{"duplicate algorithm", func(c *Config) { c.Algorithms = []int{-7, -7} }, "duplicate algorithm"},
+		{"timeout too short", func(c *Config) { c.Timeout = 10 * time.Second }, "outside"},
+		{"timeout too long", func(c *Config) { c.Timeout = 16 * time.Minute }, "outside"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := validConfig()
 			tc.edit(&cfg)
-			if rp, err := New(cfg); err == nil {
+			rp, err := New(cfg)
+			if err == nil {
 				t.Fatalf("New accepted a bad config: %+v", rp)
 			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not name the rule %q", err, tc.want)
+			}
 		})
+	}
+}
+
+func TestNew_Boundaries(t *testing.T) {
+	t.Parallel()
+	for _, d := range []time.Duration{30 * time.Second, 15 * time.Minute} {
+		cfg := validConfig()
+		cfg.Timeout = d
+		rp, err := New(cfg)
+		if err != nil {
+			t.Fatalf("timeout %s: %v", d, err)
+		}
+		c := rp.wa.Config
+		for _, tc := range []gowebauthn.TimeoutConfig{c.Timeouts.Login, c.Timeouts.Registration} {
+			if tc.Timeout != d || tc.TimeoutUVD != d || !tc.Enforce {
+				t.Fatalf("timeout %s not pinned: %+v", d, tc)
+			}
+		}
+	}
+	cfg := validConfig()
+	cfg.Algorithms = []int{-257, -7}
+	rp, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(rp.algorithms, []int{-257, -7}) {
+		t.Fatalf("algorithms = %v", rp.algorithms)
+	}
+	cfg = validConfig()
+	cfg.Origins = []string{"https://app.example.test:1", "https://app.example.test:65535"}
+	if _, err := New(cfg); err != nil {
+		t.Fatalf("port bounds: %v", err)
 	}
 }
 
@@ -109,6 +155,12 @@ func TestNew_GoWebauthnPolicy(t *testing.T) {
 	if !c.Timeouts.Login.Enforce || !c.Timeouts.Registration.Enforce {
 		t.Fatal("timeouts must be enforced")
 	}
+	if c.Timeouts.Login.Timeout != 5*time.Minute || c.Timeouts.Registration.TimeoutUVD != 5*time.Minute {
+		t.Fatalf("timeouts = %+v", c.Timeouts)
+	}
+	if c.ExtensionsUnsolicitedOutputPolicy != protocol.UnsolicitedOutputPolicyReject {
+		t.Fatal("unsolicited extension outputs must be rejected")
+	}
 }
 
 func TestRP_ID(t *testing.T) {
@@ -143,4 +195,43 @@ func TestFailure(t *testing.T) {
 	if got := fail(ErrCloneSuspected, "counter", nil).Error(); got != "webauthn: counter" {
 		t.Fatalf("Error() = %q", got)
 	}
+}
+
+func TestFailure_MatchesExactlyOneSentinel(t *testing.T) {
+	t.Parallel()
+	sentinels := []error{ErrInvalidCredentials, ErrUnknownCredential, ErrCloneSuspected}
+	inner := fail(ErrUnknownCredential, "inner", nil)
+	causes := []error{nil, errors.New("plain"), &protocol.Error{Details: "x"}, fmt.Errorf("w: %w", inner), inner}
+	for _, sent := range sentinels {
+		for _, cause := range causes {
+			err := fail(sent, "r", cause)
+			n := 0
+			for _, s := range sentinels {
+				if errors.Is(err, s) {
+					n++
+					if !errors.Is(sent, s) {
+						t.Fatalf("%v with cause %v matches foreign sentinel %v", sent, cause, s)
+					}
+				}
+			}
+			if n != 1 {
+				t.Fatalf("%v with cause %v matches %d sentinels", sent, cause, n)
+			}
+		}
+	}
+	var pe *protocol.Error
+	if !errors.As(fail(ErrInvalidCredentials, "r", &protocol.Error{}), &pe) {
+		t.Fatal("a sentinel-free cause must stay reachable")
+	}
+}
+
+func TestFail_RejectsForeignSentinel(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("fail must panic for a non-sentinel")
+		}
+	}()
+	err := fail(errors.New("other"), "r", nil)
+	t.Fatalf("fail returned %v", err)
 }

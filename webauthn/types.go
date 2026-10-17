@@ -21,7 +21,8 @@ type CredentialKind uint8
 const (
 	// Passkey is a discoverable credential with user verification required.
 	Passkey CredentialKind = 1
-	// SecurityKey is a roaming credential with user verification preferred.
+	// SecurityKey is requested with the security-key hint and user
+	// verification preferred.
 	SecurityKey CredentialKind = 2
 )
 
@@ -41,7 +42,7 @@ type Credential struct {
 	AAGUID           [16]byte // kept for naming even when unattested
 	Transports       []string // self-reported; a hint, never evidence
 	SignCount        uint32
-	BackupEligible   bool // fixed at creation
+	BackupEligible   bool // fixed at creation; set once by the first assertion of a Version 1 credential
 	BackupState      bool
 	UVInitialized    bool
 	Discoverable     *bool // credProps rk; nil when the client did not report it
@@ -58,8 +59,8 @@ type AssertionUpdate struct {
 	SignCount      uint32
 	BackupEligible bool // equals the stored value except when adopting a Version 1 credential
 	BackupState    bool
-	Version        uint16 // CurrentVersion after any assertion
-	At             time.Time
+	Version        uint16    // CurrentVersion after any assertion
+	At             time.Time // becomes the credential's last_used_at
 }
 
 // CredentialStore holds WebAuthn credentials. Rename, delete and listing for a
@@ -74,11 +75,18 @@ type CredentialStore interface {
 	List(ctx context.Context, subject, rpID string) ([]Credential, error)
 
 	// RecordAssertion applies one verified assertion only while the stored
-	// counter still equals u.PrevSignCount. applied=false means a concurrent
-	// assertion won; the caller fails.
+	// counter still equals u.PrevSignCount, as one conditional update:
+	//
+	//	UPDATE ... SET sign_count = ?, backup_eligible = ?, backup_state = ?,
+	//	  version = ?, last_used_at = ?
+	//	WHERE subject = ? AND credential_id = ? AND sign_count = ?
+	//
+	// applied=false means no row matched (a concurrent assertion won); the
+	// caller fails.
 	RecordAssertion(ctx context.Context, u AssertionUpdate) (applied bool, err error)
 
-	// MarkCloneSuspected records a counter regression on the credential.
+	// MarkCloneSuspected records a counter regression on the credential by
+	// setting its CloneSuspectedAt to at.
 	MarkCloneSuspected(ctx context.Context, subject string, id []byte, at time.Time) error
 }
 

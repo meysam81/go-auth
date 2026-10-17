@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -90,6 +91,8 @@ func New(cfg Config) (*RP, error) {
 		RPTopOriginVerificationMode: protocol.TopOriginExplicitVerificationMode,
 		AttestationPreference:       protocol.PreferNoAttestation,
 		Timeouts:                    gowebauthn.TimeoutsConfig{Login: t, Registration: t},
+
+		ExtensionsUnsolicitedOutputPolicy: protocol.UnsolicitedOutputPolicyReject,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("webauthn: configuration refused: %w", err)
@@ -127,7 +130,16 @@ func validateOrigin(o, rpid string) error {
 	if err != nil {
 		return fmt.Errorf("webauthn: origin %q: %w", o, err)
 	}
+	if scheme, _, _ := strings.Cut(o, "://"); scheme != u.Scheme {
+		return fmt.Errorf("webauthn: origin %q needs a lowercase scheme", o)
+	}
 	host := u.Hostname()
+	if !isASCII(host) {
+		return fmt.Errorf("webauthn: origin %q must use the punycode form of its host", o)
+	}
+	if err := validatePort(o, u); err != nil {
+		return err
+	}
 	devHTTP := u.Scheme == "http" && host == "localhost" && rpid == "localhost"
 	switch {
 	case u.Scheme != "https" && !devHTTP:
@@ -158,4 +170,30 @@ func resolveAlgorithms(in []int) ([]int, error) {
 		seen[a] = true
 	}
 	return slices.Clone(in), nil
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// validatePort refuses a port a browser never sends: empty after the colon,
+// zero, above 65535 or written with a leading zero.
+func validatePort(o string, u *url.URL) error {
+	port := u.Port()
+	if port == "" {
+		if strings.HasSuffix(u.Host, ":") {
+			return fmt.Errorf("webauthn: origin %q has an empty port", o)
+		}
+		return nil
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 || port[0] == '0' {
+		return fmt.Errorf("webauthn: origin %q has an invalid port", o)
+	}
+	return nil
 }
