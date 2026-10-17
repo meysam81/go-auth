@@ -147,6 +147,24 @@ func FlowStoreSuite(newStore func(t *testing.T) store.FlowStore) func(t *testing
 			}
 		})
 
+		t.Run("LargePayloadRoundTrips", func(t *testing.T) {
+			s := newStore(t)
+			id := randID(t, "flow-")
+			// A ceremony's payload is several KiB once a subject holds many
+			// credentials: a column sized for a short payload truncates it.
+			want := store.Flow{Kind: "k", Payload: randBytes(t, 8<<10), ExpiresAt: future()}
+			if err := s.Put(ctx, id, want); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			got, err := s.Take(ctx, id)
+			if err != nil {
+				t.Fatalf("Take: %v", err)
+			}
+			if !bytes.Equal(got.Payload, want.Payload) {
+				t.Fatalf("Take returned a %d-byte payload that differs from the %d bytes Put stored", len(got.Payload), len(want.Payload))
+			}
+		})
+
 		t.Run("RoundTripsEveryField", func(t *testing.T) {
 			s := newStore(t)
 			id := randID(t, "flow-")

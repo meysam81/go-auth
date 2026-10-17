@@ -73,7 +73,7 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 					return got[i]
 				}
 			}
-			t.Fatalf("credential %x missing from List (%d listed)", id, len(got))
+			t.Fatalf("credential %.16x... (%d bytes) missing from List (%d listed)", id, len(id), len(got))
 			return webauthn.Credential{}
 		}
 		assertSame := func(t *testing.T, got, want webauthn.Credential, why string) {
@@ -143,6 +143,50 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 				t.Fatalf("the refused credential was stored for the other subject: %+v", got)
 			}
 			assertSame(t, byID(t, cs, owner, c.ID), c, "the owner's credential")
+		})
+
+		t.Run("ConcurrentInsert_OneWinner", func(t *testing.T) {
+			cs, _ := h.NewStores(t)
+			const callers = 16
+			// One credential ID, each caller under its own subject: a SELECT
+			// then INSERT, or a unique index on (subject, ID), lets more than
+			// one through.
+			id := randBytes(t, 16)
+			subjects := make([]string, callers)
+			for i := range subjects {
+				subjects[i] = h.NewSubject(t)
+			}
+			var wg sync.WaitGroup
+			var won, duplicate, failed atomic.Int32
+			start := make(chan struct{})
+			for i := range callers {
+				c := newCred(t, subjects[i], rpID)
+				c.ID = id
+				wg.Go(func() {
+					<-start
+					switch err := cs.Insert(ctx, c); {
+					case err == nil:
+						won.Add(1)
+					case errors.Is(err, store.ErrDuplicate):
+						duplicate.Add(1)
+					default:
+						failed.Add(1)
+					}
+				})
+			}
+			close(start)
+			wg.Wait()
+			if won.Load() != 1 || duplicate.Load() != callers-1 || failed.Load() != 0 {
+				t.Fatalf("%d concurrent Inserts of one credential ID: %d stored, %d store.ErrDuplicate, %d other errors; want exactly 1, %d, 0 (a unique index on the credential ID alone)",
+					callers, won.Load(), duplicate.Load(), failed.Load(), callers-1)
+			}
+			held := 0
+			for _, subject := range subjects {
+				held += len(list(t, cs, subject))
+			}
+			if held != 1 {
+				t.Fatalf("%d subjects list the credential ID, want 1", held)
+			}
 		})
 
 		t.Run("ListFiltersByRPID", func(t *testing.T) {
@@ -409,6 +453,15 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 
 		t.Run("CredentialRoundTrips_DiscoverableUnknown", func(t *testing.T) {
 			roundTrip(t, func(c *webauthn.Credential) { c.Discoverable = nil })
+		})
+
+		t.Run("CredentialRoundTrips_LargestValues", func(t *testing.T) {
+			roundTrip(t, func(c *webauthn.Credential) {
+				c.ID = randBytes(t, 1023) // WebAuthn's longest credential ID
+				// Past any key the configured algorithms produce (an RSA-4096
+				// COSE key is about 550 bytes): a fixed-width column truncates.
+				c.PublicKey = randBytes(t, 2048)
+			})
 		})
 	}
 }
