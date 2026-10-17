@@ -29,8 +29,9 @@ type RegistrationOptions struct {
 // An empty sub.ID, sub.Name or opts.Purpose, a Kind other than Passkey or
 // SecurityKey, or a conditional SecurityKey, is a programming error: Begin
 // returns a plain error and writes nothing. A store error is returned
-// wrapped; a user handle or stored credential that fails the store contract
-// is ErrInvalidCredentials.
+// wrapped, and a user handle or stored credential that fails the store
+// contract is a store fault: both are infrastructure failures that match no
+// sentinel.
 func (rp *RP) BeginRegistration(ctx context.Context, flows store.FlowStore, creds CredentialStore, handles HandleStore, sub Subject, opts RegistrationOptions) (Begun, error) {
 	if err := validateRegistration(sub, opts); err != nil {
 		return Begun{}, err
@@ -133,7 +134,8 @@ func (rp *RP) registrationOptions(u *user, opts RegistrationOptions) []gowebauth
 // that errors.Is(err, store.ErrDuplicate) holds; the application must not
 // resolve it by re-binding the credential. Any other store error is returned
 // wrapped. The flow is consumed by every attempt that reaches it, a response
-// that fails to parse included.
+// that fails to parse included, and that Take must persist when Finish fails:
+// pass a FlowStore outside any transaction you roll back on failure.
 func (rp *RP) FinishRegistration(ctx context.Context, flows store.FlowStore, creds CredentialStore, e Expect, response []byte) (Credential, error) {
 	if len(response) > maxResponseSize {
 		return Credential{}, fail(ErrInvalidCredentials, "response larger than 64 KiB", nil)

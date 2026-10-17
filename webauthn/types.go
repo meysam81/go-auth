@@ -26,14 +26,20 @@ const (
 	SecurityKey CredentialKind = 2
 )
 
-// CurrentVersion is the credential schema version the library writes. Version 1
-// is reserved for credentials imported from v1, whose backup flags were never
-// recorded.
-const CurrentVersion uint16 = 2
+// Credential schema versions. A loaded credential with a version outside 1 to
+// CurrentVersion is a store fault.
+const (
+	// ImportedVersion marks a credential imported from v1, whose backup flags
+	// were never recorded: its first assertion records them and moves it to
+	// CurrentVersion (design §8).
+	ImportedVersion uint16 = 1
+	// CurrentVersion is the credential schema version the library writes.
+	CurrentVersion uint16 = 2
+)
 
 // Credential is one stored WebAuthn credential.
 type Credential struct {
-	Version          uint16 // set by the library; zero on load is a store fault
+	Version          uint16 // set by the library; 0 or above CurrentVersion on load is a store fault
 	ID               []byte
 	Subject          string
 	RPID             string
@@ -42,13 +48,13 @@ type Credential struct {
 	AAGUID           [16]byte // kept for naming even when unattested
 	Transports       []string // self-reported; a hint, never evidence
 	SignCount        uint32
-	BackupEligible   bool // fixed at creation; set once by the first assertion of a Version 1 credential
+	BackupEligible   bool // fixed at creation; set once by the first assertion of an ImportedVersion credential
 	BackupState      bool
 	UVInitialized    bool
 	Discoverable     *bool // credProps rk; nil when the client did not report it
 	CreatedAt        time.Time
 	LastUsedAt       time.Time
-	CloneSuspectedAt time.Time
+	CloneSuspectedAt time.Time // non-zero: refused until the application clears it
 }
 
 // AssertionUpdate is what one verified assertion changes.
@@ -57,7 +63,7 @@ type AssertionUpdate struct {
 	CredentialID   []byte
 	PrevSignCount  uint32 // the counter the library read; the update applies only while it still holds
 	SignCount      uint32
-	BackupEligible bool // equals the stored value except when adopting a Version 1 credential
+	BackupEligible bool // equals the stored value except when adopting an ImportedVersion credential
 	BackupState    bool
 	Version        uint16    // CurrentVersion after any assertion
 	At             time.Time // becomes the credential's last_used_at
@@ -86,7 +92,8 @@ type CredentialStore interface {
 	RecordAssertion(ctx context.Context, u AssertionUpdate) (applied bool, err error)
 
 	// MarkCloneSuspected records a counter regression on the credential by
-	// setting its CloneSuspectedAt to at.
+	// setting its CloneSuspectedAt to at. The library refuses the credential
+	// from then on; clearing the mark is the application's own query.
 	MarkCloneSuspected(ctx context.Context, subject string, id []byte, at time.Time) error
 }
 

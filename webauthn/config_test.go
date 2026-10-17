@@ -10,6 +10,8 @@ import (
 
 	"github.com/go-webauthn/webauthn/protocol"
 	gowebauthn "github.com/go-webauthn/webauthn/webauthn"
+
+	"github.com/meysam81/go-auth/v2/store"
 )
 
 func validConfig() Config {
@@ -199,8 +201,31 @@ func TestFailure(t *testing.T) {
 	if !errors.Is(wrapped, ErrUnknownCredential) {
 		t.Fatal("Is through wrap")
 	}
-	if got := fail(ErrCloneSuspected, "counter", nil).Error(); got != "webauthn: counter" {
+	if got := fail(ErrInvalidCredentials, "counter", nil).Error(); got != "webauthn: counter" {
 		t.Fatalf("Error() = %q", got)
+	}
+}
+
+// A *CloneSuspectedError matches ErrCloneSuspected and no other sentinel,
+// directly and through a wrap, and errors.As retrieves it.
+func TestCloneSuspectedError(t *testing.T) {
+	t.Parallel()
+	built := &CloneSuspectedError{Subject: "s", CredentialID: []byte{1}, New: true, reason: "counter 5 did not advance past the stored 10"}
+	for _, err := range []error{built, fmt.Errorf("outer: %w", built)} {
+		if !errors.Is(err, ErrCloneSuspected) || errors.Is(err, ErrInvalidCredentials) ||
+			errors.Is(err, ErrUnknownCredential) || errors.Is(err, store.ErrDuplicate) {
+			t.Fatalf("%v must match ErrCloneSuspected only", err)
+		}
+		var cs *CloneSuspectedError
+		if !errors.As(err, &cs) || cs != built {
+			t.Fatalf("errors.As(%v) did not retrieve the *CloneSuspectedError", err)
+		}
+	}
+	if got, want := built.Error(), "webauthn: clone suspected: counter 5 did not advance past the stored 10"; got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+	if got := (&CloneSuspectedError{}).Error(); got != "webauthn: clone suspected" {
+		t.Fatalf("Error() of a zero CloneSuspectedError = %q", got)
 	}
 }
 
@@ -208,8 +233,9 @@ func TestFailure_MatchesExactlyOneSentinel(t *testing.T) {
 	t.Parallel()
 	sentinels := []error{ErrInvalidCredentials, ErrUnknownCredential, ErrCloneSuspected}
 	inner := fail(ErrUnknownCredential, "inner", nil)
-	causes := []error{nil, errors.New("plain"), &protocol.Error{Details: "x"}, fmt.Errorf("w: %w", inner), inner}
-	for _, sent := range sentinels {
+	causes := []error{nil, errors.New("plain"), &protocol.Error{Details: "x"}, fmt.Errorf("w: %w", inner), inner,
+		&CloneSuspectedError{}}
+	for _, sent := range sentinels[:2] { // fail builds these two; ErrCloneSuspected is a *CloneSuspectedError
 		for _, cause := range causes {
 			err := fail(sent, "r", cause)
 			n := 0
@@ -234,11 +260,16 @@ func TestFailure_MatchesExactlyOneSentinel(t *testing.T) {
 
 func TestFail_RejectsForeignSentinel(t *testing.T) {
 	t.Parallel()
-	defer func() {
-		if recover() == nil {
-			t.Fatal("fail must panic for a non-sentinel")
-		}
-	}()
-	err := fail(errors.New("other"), "r", nil)
-	t.Fatalf("fail returned %v", err)
+	for _, sentinel := range []error{errors.New("other"), ErrCloneSuspected} {
+		t.Run(sentinel.Error(), func(t *testing.T) {
+			t.Parallel()
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("fail must panic for %v", sentinel)
+				}
+			}()
+			err := fail(sentinel, "r", nil)
+			t.Fatalf("fail returned %v", err)
+		})
+	}
 }

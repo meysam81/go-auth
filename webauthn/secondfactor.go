@@ -27,11 +27,15 @@ type SecondFactorOptions struct {
 // that FinishSecondFactor consumes.
 //
 // A subject with no credential for this RP ID is ErrInvalidCredentials; no
-// flow is written and no user handle created. An empty subject or
+// flow is written and no user handle created. Decide whether a subject must
+// pass a second factor from your own records, never from this error: a
+// subject your records hold as enrolled whose Begin fails, for any reason, is
+// refused, never let through without the factor. An empty subject or
 // opts.Purpose is a programming error: Begin returns a plain error and writes
-// nothing. A store error is returned wrapped; a user handle or stored
-// credential that fails the store contract is ErrInvalidCredentials. Error
-// text is for logs, never for a client.
+// nothing. A store error is returned wrapped, and a user handle or stored
+// credential that fails the store contract is a store fault: both are
+// infrastructure failures that match no sentinel. Error text is for logs,
+// never for a client.
 func (rp *RP) BeginSecondFactor(ctx context.Context, flows store.FlowStore, creds CredentialStore, handles HandleStore, subject string, opts SecondFactorOptions) (Begun, error) {
 	switch {
 	case subject == "":
@@ -98,12 +102,16 @@ func (rp *RP) BeginSecondFactor(ctx context.Context, flows store.FlowStore, cred
 // assertion verified the user.
 //
 // A valid signature whose counter did not advance past a non-zero stored
-// counter marks the credential clone-suspected and is ErrCloneSuspected. Every
+// counter marks the credential clone-suspected and is ErrCloneSuspected; a
+// valid signature of a credential already marked is ErrCloneSuspected too,
+// with no new mark and no recorded use. Either is a *CloneSuspectedError. Every
 // other verification failure is ErrInvalidCredentials: a response larger than
 // 64 KiB and an assertion the store did not record included. A store error is
 // returned wrapped. The flow is consumed by every attempt that reaches it, a
-// response that fails to parse included. Error text is for logs, never for a
-// client.
+// response that fails to parse included. That Take and the mark must persist
+// when Finish fails: pass a FlowStore outside any transaction you roll back on
+// failure, and commit MarkCloneSuspected (or give it a store of its own)
+// before rolling back. Error text is for logs, never for a client.
 func (rp *RP) FinishSecondFactor(ctx context.Context, flows store.FlowStore, creds CredentialStore, e Expect, response []byte) (Verified, error) {
 	if len(response) > maxResponseSize {
 		return Verified{}, fail(ErrInvalidCredentials, "response larger than 64 KiB", nil)
@@ -121,7 +129,7 @@ func (rp *RP) FinishSecondFactor(ctx context.Context, flows store.FlowStore, cre
 	// since Begin is simply absent.
 	list, err := rp.credentials(ctx, creds, p.Subject)
 	if err != nil {
-		return Verified{}, err
+		return Verified{}, refuseStoreFault(err)
 	}
 	i := indexOf(list, parsed.RawID)
 	if i < 0 {

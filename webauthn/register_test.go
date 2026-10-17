@@ -794,7 +794,9 @@ func TestBeginRegistration_RefusesBadInput(t *testing.T) {
 }
 
 // Design §4.2 rule 3: a credential the store answers with a zero value where
-// the library needs one, or of another subject or RP ID, is a store fault.
+// the library needs one, a version the library never writes, or of another
+// subject or RP ID, is a store fault. At Begin it is an infrastructure failure
+// that matches no sentinel.
 func TestBeginRegistration_StoreFault(t *testing.T) {
 	t.Parallel()
 	valid := webauthn.Credential{
@@ -807,7 +809,9 @@ func TestBeginRegistration_StoreFault(t *testing.T) {
 		fault bool
 	}{
 		{"valid", func(*webauthn.Credential) {}, false},
+		{"imported version", func(c *webauthn.Credential) { c.Version = webauthn.ImportedVersion }, false},
 		{"zero version", func(c *webauthn.Credential) { c.Version = 0 }, true},
+		{"version from the future", func(c *webauthn.Credential) { c.Version = webauthn.CurrentVersion + 1 }, true},
 		{"empty ID", func(c *webauthn.Credential) { c.ID = nil }, true},
 		{"empty public key", func(c *webauthn.Credential) { c.PublicKey = nil }, true},
 		{"empty RP ID", func(c *webauthn.Credential) { c.RPID = "" }, true},
@@ -832,13 +836,22 @@ func TestBeginRegistration_StoreFault(t *testing.T) {
 				}
 				return
 			}
-			if !errors.Is(err, webauthn.ErrInvalidCredentials) {
-				t.Fatalf("err = %v, want ErrInvalidCredentials", err)
-			}
+			requireBeginStoreFault(t, err)
 			if len(puts) != 0 {
 				t.Fatalf("a store fault wrote %d flow(s)", len(puts))
 			}
 		})
+	}
+}
+
+// requireBeginStoreFault fails unless err is a store fault reported as the
+// infrastructure failure it is: a plain error matching no sentinel, so a
+// caller that branches on ErrInvalidCredentials never reads a broken store as
+// "no credential" and skips a factor.
+func requireBeginStoreFault(t *testing.T, err error) {
+	t.Helper()
+	if err == nil || isSentinel(err) || errors.Is(err, store.ErrDuplicate) || !strings.Contains(err.Error(), "store fault") {
+		t.Fatalf("err = %v, want a store fault matching no sentinel", err)
 	}
 }
 
@@ -921,7 +934,8 @@ func TestFinishRegistration_DuplicateKeepsStoreContext(t *testing.T) {
 }
 
 // A user handle the store answers outside 1 to 64 bytes is a store fault,
-// refused by the package before any flow is written.
+// refused by the package before any flow is written, as an infrastructure
+// failure.
 func TestBeginRegistration_UserHandleFault(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -946,9 +960,7 @@ func TestBeginRegistration_UserHandleFault(t *testing.T) {
 				}
 				return
 			}
-			if !errors.Is(err, webauthn.ErrInvalidCredentials) || !strings.Contains(err.Error(), "store fault") {
-				t.Fatalf("err = %v, want a store-fault ErrInvalidCredentials", err)
-			}
+			requireBeginStoreFault(t, err)
 			if len(puts) != 0 {
 				t.Fatalf("a store fault wrote %d flow(s)", len(puts))
 			}

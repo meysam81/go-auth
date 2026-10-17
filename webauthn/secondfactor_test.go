@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -472,16 +473,48 @@ func TestSecondFactor_CounterRegression(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, nil)
 	a := newAuthenticator(t, authtest.AuthenticatorConfig{SignCount: 10, CounterStep: 1})
-	h.enrollKey(t, a, alice)
+	cred := h.enrollKey(t, a, alice)
 	a.SetSignCount(4) // the next assertion signs 5
 	h.clock.Advance(time.Minute)
 
 	_, err := h.secondFactor(t, a, stepUp)
-	requireOnly(t, err, webauthn.ErrCloneSuspected)
+	requireCloneSuspected(t, err, alice, cred.ID, true)
 	c := h.only(t, alice)
 	if !c.CloneSuspectedAt.Equal(h.clock.Now()) || c.SignCount != 10 || !c.LastUsedAt.IsZero() {
 		t.Fatalf("CloneSuspectedAt %v, SignCount %d, LastUsedAt %v, want %v, 10, zero",
 			c.CloneSuspectedAt, c.SignCount, c.LastUsedAt, h.clock.Now())
+	}
+}
+
+// Check 8 after the mark, on the second-factor path: a clone-suspected
+// credential stays refused even with a counter that advances, records no use
+// and is not marked again.
+func TestSecondFactor_CloneSuspectedCredential_Refused(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil)
+	a := newAuthenticator(t, authtest.AuthenticatorConfig{SignCount: 10, CounterStep: 1})
+	cred := h.enrollKey(t, a, alice)
+	a.SetSignCount(4) // the next assertion signs 5: a regression
+	h.clock.Advance(time.Minute)
+	_, err := h.secondFactor(t, a, stepUp)
+	requireCloneSuspected(t, err, alice, cred.ID, true)
+	marked := h.clock.Now()
+
+	a.SetSignCount(49) // the next assertion signs 50, past the stored 10
+	h.clock.Advance(time.Minute)
+	creds := &recordOverride{CredentialStore: h.creds}
+	b := h.beginSecondFactor(t, alice, stepUp)
+	v, err := h.rp.FinishSecondFactor(t.Context(), h.flows, creds, stepUpExpect(alice, b), assertion(t, a, b))
+	requireCloneSuspected(t, err, alice, cred.ID, false)
+	if !reflect.DeepEqual(v, webauthn.Verified{}) {
+		t.Fatalf("a refused second factor returned %+v, want the zero Verified", v)
+	}
+	if got := creds.recorded(); len(got) != 0 {
+		t.Fatalf("a clone-suspected credential called RecordAssertion %d times", len(got))
+	}
+	if c := h.only(t, alice); !c.CloneSuspectedAt.Equal(marked) || c.SignCount != 10 || !c.LastUsedAt.IsZero() {
+		t.Fatalf("CloneSuspectedAt %v, SignCount %d, LastUsedAt %v, want %v (the first mark), 10, zero",
+			c.CloneSuspectedAt, c.SignCount, c.LastUsedAt, marked)
 	}
 }
 
@@ -531,7 +564,7 @@ func TestSecondFactor_Version1Credential_AdoptsFlags(t *testing.T) {
 		version uint16
 		adopt   bool
 	}{
-		{"version 1 adopts", 1, true},
+		{"version 1 adopts", webauthn.ImportedVersion, true},
 		{"version 2 refuses", webauthn.CurrentVersion, false},
 	}
 	for _, tc := range tests {
@@ -741,7 +774,8 @@ func TestSecondFactor_OversizedResponse(t *testing.T) {
 }
 
 // Design §4.2 rule 3 at Finish: a listed credential the store answers with a
-// zero value the library needs fails closed.
+// zero value the library needs, or with a version it never writes, fails
+// closed.
 func TestSecondFactor_StoreFault(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -750,6 +784,7 @@ func TestSecondFactor_StoreFault(t *testing.T) {
 	}{
 		{"empty public key", func(c *webauthn.Credential) { c.PublicKey = nil }},
 		{"zero version", func(c *webauthn.Credential) { c.Version = 0 }},
+		{"version from the future", func(c *webauthn.Credential) { c.Version = webauthn.CurrentVersion + 1 }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -804,7 +839,7 @@ func TestBeginSecondFactor_RefusesBadInput(t *testing.T) {
 }
 
 // A user handle the store answers outside 1 to 64 bytes is a store fault,
-// refused before any flow is written.
+// refused before any flow is written, as an infrastructure failure.
 func TestBeginSecondFactor_UserHandleFault(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -831,9 +866,7 @@ func TestBeginSecondFactor_UserHandleFault(t *testing.T) {
 				}
 				return
 			}
-			if !errors.Is(err, webauthn.ErrInvalidCredentials) || !strings.Contains(err.Error(), "store fault") {
-				t.Fatalf("err = %v, want a store-fault ErrInvalidCredentials", err)
-			}
+			requireBeginStoreFault(t, err)
 			if len(puts) != len(putsBefore) {
 				t.Fatalf("a store fault wrote %d flow(s)", len(puts)-len(putsBefore))
 			}
@@ -841,22 +874,28 @@ func TestBeginSecondFactor_UserHandleFault(t *testing.T) {
 	}
 }
 
-// Design §4.2 rule 3 at Begin.
+// Design §4.2 rule 3 at Begin: a store fault is an infrastructure failure,
+// never ErrInvalidCredentials, which here also means "no credential": a
+// caller that reads that as "not enrolled" and skips the factor must not be
+// handed a broken store's answer.
 func TestBeginSecondFactor_StoreFault(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, nil)
-	creds := listOverride{CredentialStore: h.creds, list: func(string, string) ([]webauthn.Credential, error) {
-		return []webauthn.Credential{{
-			ID: []byte{1, 2, 3}, Subject: alice.ID, RPID: rpID, PublicKey: []byte{4, 5, 6},
-			Algorithm: -7, CreatedAt: time.Unix(1_700_000_000, 0),
-		}}, nil // Version 0
-	}}
-	_, err := h.rp.BeginSecondFactor(t.Context(), h.flows, creds, h.creds, alice.ID, stepUp)
-	if !errors.Is(err, webauthn.ErrInvalidCredentials) || !strings.Contains(err.Error(), "store fault") {
-		t.Fatalf("err = %v, want a store-fault ErrInvalidCredentials", err)
-	}
-	if puts, _ := h.flows.recorded(); len(puts) != 0 {
-		t.Fatalf("a store fault wrote %d flow(s)", len(puts))
+	for _, version := range []uint16{0, webauthn.CurrentVersion + 1} {
+		t.Run(fmt.Sprintf("version %d", version), func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t, nil)
+			creds := listOverride{CredentialStore: h.creds, list: func(string, string) ([]webauthn.Credential, error) {
+				return []webauthn.Credential{{
+					Version: version, ID: []byte{1, 2, 3}, Subject: alice.ID, RPID: rpID, PublicKey: []byte{4, 5, 6},
+					Algorithm: -7, CreatedAt: time.Unix(1_700_000_000, 0),
+				}}, nil
+			}}
+			_, err := h.rp.BeginSecondFactor(t.Context(), h.flows, creds, h.creds, alice.ID, stepUp)
+			requireBeginStoreFault(t, err)
+			if puts, _ := h.flows.recorded(); len(puts) != 0 {
+				t.Fatalf("a store fault wrote %d flow(s)", len(puts))
+			}
+		})
 	}
 }
 

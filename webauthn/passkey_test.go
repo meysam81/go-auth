@@ -160,6 +160,25 @@ func requireOnly(t *testing.T, err, sentinel error) {
 	}
 }
 
+// requireCloneSuspected fails unless err matches ErrCloneSuspected and nothing
+// else, and errors.As finds the *CloneSuspectedError naming sub's credential
+// id, through the wrapping an application's handler adds, with New as want.
+func requireCloneSuspected(t *testing.T, err error, sub webauthn.Subject, id []byte, wantNew bool) {
+	t.Helper()
+	requireOnly(t, err, webauthn.ErrCloneSuspected)
+	if errors.Is(err, store.ErrDuplicate) {
+		t.Fatalf("err = %v matches store.ErrDuplicate", err)
+	}
+	var cs *webauthn.CloneSuspectedError
+	if !errors.As(fmt.Errorf("handler: %w", err), &cs) {
+		t.Fatalf("err = %v holds no *CloneSuspectedError", err)
+	}
+	if cs.Subject != sub.ID || !bytes.Equal(cs.CredentialID, id) || cs.New != wantNew {
+		t.Fatalf("CloneSuspectedError{Subject %q, CredentialID %x, New %v}, want {%q, %x, %v}",
+			cs.Subject, cs.CredentialID, cs.New, sub.ID, id, wantNew)
+	}
+}
+
 // requireSignInRefused fails unless err matches only sentinel and no
 // credential of sub recorded a use or a clone suspicion.
 func (h *harness) requireSignInRefused(t *testing.T, err, sentinel error, sub webauthn.Subject) {
@@ -540,7 +559,7 @@ func TestPasskey_Version1Credential_AdoptsFlags(t *testing.T) {
 		version uint16
 		adopt   bool
 	}{
-		{"version 1 adopts", 1, true},
+		{"version 1 adopts", webauthn.ImportedVersion, true},
 		{"version 2 refuses", webauthn.CurrentVersion, false},
 	}
 	for _, tc := range tests {
@@ -621,6 +640,13 @@ func TestPasskey_StoreFault_EmptyPublicKey(t *testing.T) {
 func TestPasskey_StoreFault_ZeroVersion(t *testing.T) {
 	t.Parallel()
 	requirePasskeyStoreFault(t, func(c *webauthn.Credential) { c.Version = 0 })
+}
+
+// A version the library never wrote is a store fault, not a credential to
+// verify under rules it does not know.
+func TestPasskey_StoreFault_FutureVersion(t *testing.T) {
+	t.Parallel()
+	requirePasskeyStoreFault(t, func(c *webauthn.Credential) { c.Version = webauthn.CurrentVersion + 1 })
 }
 
 func requirePasskeyStoreFault(t *testing.T, edit func(*webauthn.Credential)) {
@@ -819,16 +845,49 @@ func TestPasskey_CounterRegression_DeviceBound(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, nil)
 	a := newAuthenticator(t, authtest.AuthenticatorConfig{UserVerified: true, Discoverable: true, SignCount: 10, CounterStep: 1})
-	h.enroll(t, a, alice)
+	cred := h.enroll(t, a, alice)
 	a.SetSignCount(4) // the next assertion signs 5
 	h.clock.Advance(time.Minute)
 
 	_, err := h.signIn(t, a)
-	requireOnly(t, err, webauthn.ErrCloneSuspected)
+	requireCloneSuspected(t, err, alice, cred.ID, true)
 	c := h.only(t, alice)
 	if !c.CloneSuspectedAt.Equal(h.clock.Now()) || c.SignCount != 10 || !c.LastUsedAt.IsZero() {
 		t.Fatalf("CloneSuspectedAt %v, SignCount %d, LastUsedAt %v, want %v, 10, zero",
 			c.CloneSuspectedAt, c.SignCount, c.LastUsedAt, h.clock.Now())
+	}
+}
+
+// Check 8 after the mark: a clone-suspected credential stays refused, even
+// with a counter that advances past the stored one, so neither the clone nor
+// the real authenticator signs in until the application clears the mark. The
+// refusal records no use and does not mark again.
+func TestPasskey_CloneSuspectedCredential_Refused(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil)
+	a := newAuthenticator(t, authtest.AuthenticatorConfig{UserVerified: true, Discoverable: true, SignCount: 10, CounterStep: 1})
+	cred := h.enroll(t, a, alice)
+	a.SetSignCount(4) // the next assertion signs 5: a regression
+	h.clock.Advance(time.Minute)
+	_, err := h.signIn(t, a)
+	requireCloneSuspected(t, err, alice, cred.ID, true)
+	marked := h.clock.Now()
+
+	a.SetSignCount(49) // the next assertion signs 50, past the stored 10
+	h.clock.Advance(time.Minute)
+	creds := &recordOverride{CredentialStore: h.creds}
+	b := h.beginPasskey(t, signIn)
+	v, err := h.rp.FinishPasskey(t.Context(), h.flows, creds, h.creds, signInExpect(b), assertion(t, a, b))
+	requireCloneSuspected(t, err, alice, cred.ID, false)
+	if !reflect.DeepEqual(v, webauthn.Verified{}) {
+		t.Fatalf("a refused sign-in returned %+v, want the zero Verified", v)
+	}
+	if got := creds.recorded(); len(got) != 0 {
+		t.Fatalf("a clone-suspected credential called RecordAssertion %d times", len(got))
+	}
+	if c := h.only(t, alice); !c.CloneSuspectedAt.Equal(marked) || c.SignCount != 10 || !c.LastUsedAt.IsZero() {
+		t.Fatalf("CloneSuspectedAt %v, SignCount %d, LastUsedAt %v, want %v (the first mark), 10, zero",
+			c.CloneSuspectedAt, c.SignCount, c.LastUsedAt, marked)
 	}
 }
 
@@ -868,7 +927,7 @@ func TestPasskey_CounterBoundaries(t *testing.T) {
 			t.Parallel()
 			h := newHarness(t, nil)
 			a := newAuthenticator(t, authtest.AuthenticatorConfig{UserVerified: true, Discoverable: true, SignCount: tc.stored})
-			h.enroll(t, a, alice)
+			cred := h.enroll(t, a, alice)
 			a.SetSignCount(tc.received) // CounterStep 0: the assertion signs received
 			h.clock.Advance(time.Minute)
 
@@ -876,7 +935,7 @@ func TestPasskey_CounterBoundaries(t *testing.T) {
 			c := h.only(t, alice)
 			now := h.clock.Now()
 			if tc.clone {
-				requireOnly(t, err, webauthn.ErrCloneSuspected)
+				requireCloneSuspected(t, err, alice, cred.ID, true)
 				if !c.CloneSuspectedAt.Equal(now) || c.SignCount != tc.stored || !c.LastUsedAt.IsZero() {
 					t.Fatalf("CloneSuspectedAt %v, SignCount %d, LastUsedAt %v, want %v, %d, zero",
 						c.CloneSuspectedAt, c.SignCount, c.LastUsedAt, now, tc.stored)

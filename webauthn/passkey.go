@@ -62,12 +62,17 @@ func (rp *RP) BeginPasskey(ctx context.Context, flows store.FlowStore, opts Pass
 // hold for this RP ID, is ErrUnknownCredential: the credential's holder may
 // tell its authenticator the credential is gone. A valid signature whose
 // counter did not advance past a non-zero stored counter marks the credential
-// clone-suspected and is ErrCloneSuspected. Every other verification failure
-// is ErrInvalidCredentials: a response larger than 64 KiB, one without user
-// verification or without a user handle or with one longer than 64 bytes, and
-// an assertion the store did not record included. A store error is returned
-// wrapped. The flow is consumed by every attempt that reaches it, a response
-// that fails to parse included. Error text is for logs, never for a client.
+// clone-suspected and is ErrCloneSuspected; a valid signature of a credential
+// already marked is ErrCloneSuspected too, with no new mark and no recorded
+// use. Either is a *CloneSuspectedError, which names the subject. Every other
+// verification failure is ErrInvalidCredentials: a response larger than 64
+// KiB, one without user verification or without a user handle or with one
+// longer than 64 bytes, and an assertion the store did not record included. A
+// store error is returned wrapped. The flow is consumed by every attempt that
+// reaches it, a response that fails to parse included. That Take and the mark
+// must persist when Finish fails: pass a FlowStore outside any transaction
+// you roll back on failure, and commit MarkCloneSuspected (or give it a store
+// of its own) before rolling back. Error text is for logs, never for a client.
 func (rp *RP) FinishPasskey(ctx context.Context, flows store.FlowStore, creds CredentialStore, handles HandleStore, e Expect, response []byte) (Verified, error) {
 	if len(response) > maxResponseSize {
 		return Verified{}, fail(ErrInvalidCredentials, "response larger than 64 KiB", nil)
@@ -120,7 +125,8 @@ func (rp *RP) FinishPasskey(ctx context.Context, flows store.FlowStore, creds Cr
 // 5): the user handle must resolve to a subject, and the credential ID must
 // be among that subject's credentials for this RP ID. Either miss is
 // ErrUnknownCredential. A store error is returned wrapped; an empty subject or
-// a listed credential that fails rule 3 is a store fault.
+// a listed credential that fails rule 3 is a store fault, refused as
+// ErrInvalidCredentials.
 func (rp *RP) discover(ctx context.Context, creds CredentialStore, handles HandleStore, rawID, handle []byte) (Credential, error) {
 	subject, err := handles.Subject(ctx, handle)
 	switch {
@@ -133,7 +139,7 @@ func (rp *RP) discover(ctx context.Context, creds CredentialStore, handles Handl
 	}
 	list, err := rp.credentials(ctx, creds, subject)
 	if err != nil {
-		return Credential{}, err
+		return Credential{}, refuseStoreFault(err)
 	}
 	if i := indexOf(list, rawID); i >= 0 {
 		return list[i], nil

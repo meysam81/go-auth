@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 
 	"github.com/go-webauthn/webauthn/protocol"
@@ -71,10 +72,29 @@ func libraryCredential(c *Credential) gowebauthn.Credential {
 	}
 }
 
+// storeFaultError is a record the store answered against its contract
+// (design §4.2 rule 3). A Begin returns it as is: an infrastructure failure
+// matching no sentinel, so a caller that branches on ErrInvalidCredentials
+// never reads a broken store as "no credential". A Finish refuses the
+// ceremony with it as ErrInvalidCredentials (refuseStoreFault).
+type storeFaultError struct{ reason string }
+
+func (e *storeFaultError) Error() string { return "webauthn: store fault: " + e.reason }
+
+// refuseStoreFault returns err as ErrInvalidCredentials when it is a store
+// fault, and unchanged otherwise.
+func refuseStoreFault(err error) error {
+	if fault, ok := errors.AsType[*storeFaultError](err); ok {
+		return fail(ErrInvalidCredentials, "store fault: "+fault.reason, nil)
+	}
+	return err
+}
+
 // credentials loads the subject's credentials for this relying party. Design
 // §4.2 rule 3: a credential the store answers with a zero value the library
-// needs, or that belongs to another subject or RP ID, is a store fault and
-// fails the ceremony. A store error is returned wrapped, never as a sentinel.
+// needs, a version the library never writes, or that belongs to another
+// subject or RP ID, is a *storeFaultError. A store error is returned wrapped.
+// Neither is a sentinel.
 func (rp *RP) credentials(ctx context.Context, creds CredentialStore, subject string) ([]Credential, error) {
 	list, err := creds.List(ctx, subject, rp.id)
 	if err != nil {
@@ -82,7 +102,7 @@ func (rp *RP) credentials(ctx context.Context, creds CredentialStore, subject st
 	}
 	for i := range list {
 		if reason := storeFault(&list[i], subject, rp.id); reason != "" {
-			return nil, fail(ErrInvalidCredentials, "store fault: "+reason, nil)
+			return nil, &storeFaultError{reason}
 		}
 	}
 	return list, nil
@@ -103,6 +123,8 @@ func storeFault(c *Credential, subject, rpID string) string {
 	switch {
 	case c.Version == 0:
 		return "credential with a zero version"
+	case c.Version > CurrentVersion:
+		return fmt.Sprintf("credential version %d, newer than %d", c.Version, CurrentVersion)
 	case len(c.ID) == 0:
 		return "credential with an empty ID"
 	case len(c.PublicKey) == 0:
@@ -118,8 +140,9 @@ func storeFault(c *Credential, subject, rpID string) string {
 }
 
 // ensureHandle returns the subject's user handle, storing a fresh random one
-// first when the subject has none. A handle the store answers outside 1 to 64
-// bytes is a store fault; a store error is returned wrapped.
+// first when the subject has none. Only a Begin calls it. A handle the store
+// answers outside 1 to 64 bytes is a *storeFaultError; a store error is
+// returned wrapped.
 func ensureHandle(ctx context.Context, handles HandleStore, subject string) ([]byte, error) {
 	fresh := make([]byte, userHandleSize)
 	if _, err := rand.Read(fresh); err != nil {
@@ -130,7 +153,7 @@ func ensureHandle(ctx context.Context, handles HandleStore, subject string) ([]b
 		return nil, fmt.Errorf("webauthn: ensure user handle: %w", err)
 	}
 	if len(handle) == 0 || len(handle) > userHandleSize {
-		return nil, fail(ErrInvalidCredentials, fmt.Sprintf("store fault: user handle of %d bytes", len(handle)), nil)
+		return nil, &storeFaultError{fmt.Sprintf("user handle of %d bytes", len(handle))}
 	}
 	return handle, nil
 }
