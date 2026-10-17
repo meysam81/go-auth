@@ -99,13 +99,15 @@ func TestWith_ZeroPolicy(t *testing.T) {
 
 func TestSatisfies_ExhaustiveImplications(t *testing.T) {
 	t.Parallel()
-	all := []amr.Method{"pwd", "otp", "hwk", "swk", "mfa", "sso", "rc"}
+	all := []amr.Method{"pwd", "otp", "hwk", "swk", "mfa", "sso", "rc", "email"}
 	reqs := []amr.Requirement{amr.AnyFactor, amr.MultiFactor, amr.PhishingResistant}
 	for mask := range 1 << len(all) {
 		var set []amr.Method
+		in := map[amr.Method]bool{}
 		for i, m := range all {
 			if mask&(1<<i) != 0 {
 				set = append(set, m)
+				in[m] = true
 			}
 		}
 		verdict := func(s []amr.Method) [3]bool {
@@ -116,6 +118,18 @@ func TestSatisfies_ExhaustiveImplications(t *testing.T) {
 			return v
 		}
 		v := verdict(set)
+
+		// Oracle in set terms (design 5.3), independent of the implementation.
+		firstFactor := in["pwd"] || in["sso"]
+		possession := in["otp"] || in["hwk"] || in["swk"] || in["rc"] || in["email"]
+		key := in["hwk"] || in["swk"]
+		wantAny := firstFactor || possession
+		wantMulti := (firstFactor && possession) || (in["mfa"] && key)
+		wantPR := wantMulti && key
+		if want := [3]bool{wantAny, wantMulti, wantPR}; v != want {
+			t.Errorf("%v: got any/multi/phr %v, want %v", set, v, want)
+		}
+
 		if v[2] && !v[1] {
 			t.Errorf("%v: PhishingResistant without MultiFactor", set)
 		}
@@ -128,6 +142,42 @@ func TestSatisfies_ExhaustiveImplications(t *testing.T) {
 		if verdict(rev) != v || verdict(dup) != v {
 			t.Errorf("%v: verdict depends on order or duplicates", set)
 		}
+	}
+}
+
+func TestSatisfies_PolicyOverrides(t *testing.T) {
+	t.Parallel()
+	noHWK := amr.Standard()
+	delete(noHWK.Factors, amr.HWK)
+	tests := []struct {
+		name         string
+		p            amr.Policy
+		set          []amr.Method
+		any, mf, phr bool
+	}{
+		{"swk reclassified Unknown", amr.Standard().With(amr.SWK, amr.Factor{}), []amr.Method{"swk", "mfa"}, false, false, false},
+		{"hwk removed from policy", noHWK, []amr.Method{"hwk", "mfa"}, false, false, false},
+		{"hwk reclassified Knowledge", amr.Standard().With(amr.HWK, amr.Factor{Class: amr.Knowledge, PhishingResistant: true}), []amr.Method{"hwk", "mfa"}, true, false, false},
+		{"hwk reclassified Federated", amr.Standard().With(amr.HWK, amr.Factor{Class: amr.Federated, PhishingResistant: true}), []amr.Method{"hwk", "mfa"}, true, false, false},
+		{"Unknown never phishing resistant", amr.Standard().With("x", amr.Factor{Class: amr.Unknown, PhishingResistant: true}), []amr.Method{"pwd", "otp", "x"}, true, true, false},
+		{"undefined class counts for nothing", amr.Standard().With("x", amr.Factor{Class: amr.Class(9), PhishingResistant: true}), []amr.Method{"x"}, false, false, false},
+		{"undefined class beside pwd", amr.Standard().With("x", amr.Factor{Class: amr.Class(9)}), []amr.Method{"pwd", "x"}, true, false, false},
+		{"zero policy", amr.Policy{}, []amr.Method{"pwd", "otp", "hwk", "swk", "mfa"}, false, false, false},
+		{"two possession methods", app, []amr.Method{"otp", "hwk"}, true, false, false},
+		{"two app possession methods", app, []amr.Method{"rc", "email"}, true, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := [3]bool{
+				tt.p.Satisfies(tt.set, amr.AnyFactor),
+				tt.p.Satisfies(tt.set, amr.MultiFactor),
+				tt.p.Satisfies(tt.set, amr.PhishingResistant),
+			}
+			if want := [3]bool{tt.any, tt.mf, tt.phr}; got != want {
+				t.Errorf("got %v, want %v", got, want)
+			}
+		})
 	}
 }
 

@@ -85,11 +85,18 @@ const (
 //
 // A first factor is a Knowledge or Federated method. MultiFactor needs a first
 // factor plus a Possession method, never two first factors; or MFA beside HWK
-// or SWK from the same assertion. MFA alone is nothing.
+// or SWK from the same assertion, where HWK or SWK is classified Possession.
+// MFA alone is nothing.
+//
+// A flat set cannot say which assertion MFA came from, so it must hold only
+// methods this application verified itself. Never copy an upstream identity
+// provider's amr claim into it; record a federated sign-in as one
+// application-defined Federated method.
 func (p Policy) Satisfies(methods []Method, r Requirement) bool {
-	var first, possession, webauthn, phishingResistant bool
+	var first, possession, webauthn, uv, phishingResistant bool
 	for _, m := range methods {
 		if m == MFA {
+			uv = true
 			continue
 		}
 		f, ok := p.Factors[m]
@@ -104,7 +111,7 @@ func (p Policy) Satisfies(methods []Method, r Requirement) bool {
 		default:
 			continue
 		}
-		if m == HWK || m == SWK {
+		if (m == HWK || m == SWK) && f.Class == Possession {
 			webauthn = true
 		}
 		if f.PhishingResistant {
@@ -112,7 +119,7 @@ func (p Policy) Satisfies(methods []Method, r Requirement) bool {
 		}
 	}
 	anyF := first || possession
-	multi := (first && possession) || (webauthn && hasMethod(methods, MFA))
+	multi := (first && possession) || (webauthn && uv)
 	switch r {
 	case AnyFactor:
 		return anyF
@@ -123,15 +130,6 @@ func (p Policy) Satisfies(methods []Method, r Requirement) bool {
 	default:
 		return false
 	}
-}
-
-func hasMethod(methods []Method, want Method) bool {
-	for _, m := range methods {
-		if m == want {
-			return true
-		}
-	}
-	return false
 }
 
 // Fresh reports whether authTime is recent enough: at most within before now.

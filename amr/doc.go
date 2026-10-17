@@ -9,5 +9,9 @@
 // The policy fails closed: a method the [Policy] does not classify counts for
 // nothing, and so does an undefined [Requirement]. Unknown is never a pass.
 //
+// The method set holds only methods this application verified itself. Never
+// copy an upstream identity provider's amr claim into it: record a federated
+// sign-in as one application-defined Federated method.
+//
 // Freshness is a separate question from strength; see [Fresh].
 package amr

@@ -385,6 +385,11 @@ Rules:
 - `Satisfies` is exhaustively table-tested over every subset of the methods in
   the policy.
 
+The method set holds only methods this application verified itself: a flat set
+cannot say which assertion `mfa` came from, so never copy an upstream identity
+provider's `amr` claim into it; record a federated sign-in as one
+application-defined `Federated` method.
+
 The application persists the method set as a JSON array on its session row or in
 its token, beside the time of authentication.
 
