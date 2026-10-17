@@ -186,7 +186,12 @@ rest it must trust.
    `webauthn.FinishRegistration(ctx, flows, creds, …)`. The application passes
    a value bound to its own transaction, so a new credential, the sessions it
    revokes, the audit row and the outbound notice commit together or not at
-   all. The library never opens, commits or assumes a transaction.
+   all. The library never opens, commits or assumes a transaction. Two writes
+   must persist even when `Finish` fails, so neither may ride a transaction the
+   application rolls back on failure: the flow `Take` (pass a `FlowStore`
+   outside it, or a rolled-back failure leaves the flow reusable) and
+   `MarkCloneSuspected` (commit it, or give it a store of its own, before
+   rolling back, or the clone is forgotten).
 2. **Every invariant that needs atomicity is one named store method, and the
    library calls it itself.** Its contract states the SQL shape and the
    concurrency guarantee; the application never has to remember to enforce it.
@@ -195,9 +200,12 @@ rest it must trust.
    (conditional on the stored counter), `HandleStore.Ensure`
    (create-if-absent).
 3. **A field the library needs is never answered by its zero value.** A loaded
-   credential with an empty ID, public key, RP ID, a zero `CreatedAt` or a zero
-   `Version` is refused as a store fault (fail closed). Booleans cannot be
-   checked this way, which is what rule 4 is for.
+   credential with an empty ID, public key, RP ID, a zero `CreatedAt`, or a
+   `Version` that is zero or above the current one is refused as a store fault
+   (fail closed). A `Begin` returns a store fault as an infrastructure failure
+   that matches no sentinel; a `Finish` refuses the ceremony with
+   `ErrInvalidCredentials`. Booleans cannot be checked this way, which is what
+   rule 4 is for.
 4. **The conformance suite round-trips every exported field.** `authtest` fills
    each exported field of every stored struct with a distinct non-zero value by
    reflection and requires deep equality on the way back. A field added in a
@@ -481,7 +489,7 @@ type HandleStore interface {
 }
 
 type Credential struct {
-    Version          uint16    // set by the library; zero on load is a store fault
+    Version          uint16    // set by the library; 0 or above CurrentVersion on load is a store fault
     ID               []byte
     Subject          string
     RPID             string
@@ -496,7 +504,7 @@ type Credential struct {
     Discoverable     *bool     // credProps rk; nil when the client did not report it
     CreatedAt        time.Time
     LastUsedAt       time.Time
-    CloneSuspectedAt time.Time
+    CloneSuspectedAt time.Time // non-zero: refused until the application clears it
 }
 
 // AssertionUpdate is what one verified assertion changes.
@@ -512,8 +520,9 @@ type AssertionUpdate struct {
 }
 ```
 
-`Version` is the credential's schema version, set by the library. Version 1 is
-reserved for credentials imported from v1, whose backup flags were never recorded:
+`Version` is the credential's schema version, set by the library. Version 1
+(`ImportedVersion`) is reserved for credentials imported from v1, whose backup
+flags were never recorded:
 for those, the first assertion records the flags instead of comparing them and
 moves the credential to the current version.
 
@@ -586,7 +595,12 @@ package adds, in order, and each is a test named for the attack:
 8. Counter: stored and received both 0 is normal (synced passkeys never count).
    Received greater than stored advances. Otherwise, with a non-zero stored
    counter, the credential is marked clone-suspected and the ceremony fails with
-   `ErrCloneSuspected`, so the application can tell the owner. A canonical DER
+   `ErrCloneSuspected`, so the application can tell the owner. A credential
+   already marked is refused with `ErrCloneSuspected` once its signature
+   verifies, whatever its counter, without a new mark or a recorded use, until
+   the application clears the mark after the owner confirms, or deletes the
+   credential. The error is a `*CloneSuspectedError` naming the subject and the
+   credential, with `New` set when this ceremony set the mark. A canonical DER
    ECDSA signature is required (carried over from v1).
 9. `RecordAssertion` must apply; `applied=false` fails the ceremony. A failed write
    is never a pass.
@@ -698,7 +712,10 @@ takes no identifier:
   maps to no subject. The holder of that credential learns only that this RP has
   forgotten it, which is what WebAuthn Level 3's
   `PublicKeyCredential.signalUnknownCredential` exists to act on.
-- `ErrCloneSuspected`: the signature was valid and the counter went backwards.
+- `ErrCloneSuspected`: the signature was valid and the counter went backwards,
+  or the credential is already marked and stays refused until the application
+  clears the mark. It is a `*CloneSuspectedError` carrying the subject, so the
+  application can tell the owner even after a discoverable sign-in.
 
 Timing is equalised by doing the real work — the v1 dummy-hash approach — not by
 sleeping.
@@ -743,9 +760,10 @@ it chooses. The migration document must cover, at minimum:
 - WebAuthn credentials registered by v1 carry over as second factors: a v1
   credential's user handle is the subject ID, so the application seeds its
   `HandleStore` with that value for those subjects before any `Begin` runs for
-  them (`Ensure` then returns it, and their discoverable sign-in resolves). Every
-  `Begin` calls `Ensure`, which stores a fresh random handle for a subject that
-  has none, permanently, so a `Begin` before seeding strands the v1 handle. Their
+  them (`Ensure` then returns it, and their discoverable sign-in resolves).
+  `BeginRegistration` and `BeginSecondFactor` call `Ensure`, which stores a
+  fresh random handle for a subject that has none, permanently, so either one
+  before seeding strands the v1 handle. Their
   backup flags move from v1's metadata keys into the typed fields; a credential
   whose flags were never recorded is imported with `Version: 1` and takes them
   from its next assertion (§5.4).

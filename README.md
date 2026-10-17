@@ -51,10 +51,11 @@ rp, err := webauthn.New(webauthn.Config{
 You supply three stores, passed on every call and never held: a
 `store.FlowStore` (single-use ceremony state), a `webauthn.CredentialStore` and
 a `webauthn.HandleStore`. Each `Begin` returns `Begun`: send `Options` to the
-browser (`PublicKeyCredential.parse*OptionsFromJSON`) and keep `FlowID`
-beside the session. Each `Finish` takes the browser's `toJSON()` output and an
-`Expect` naming the flow, the purpose and, where the ceremony has one, the
-subject.
+browser (`PublicKeyCredential.parse*OptionsFromJSON`), pass `Mediation` to the
+`navigator.credentials` call when it is set (`"conditional"`), and keep
+`FlowID` beside the session. Each `Finish` takes the browser's `toJSON()`
+output and an `Expect` naming the flow, the purpose and, where the ceremony has
+one, the subject.
 
 ```go
 // Add a credential for a subject you have already authenticated.
@@ -81,7 +82,21 @@ verified, err = rp.FinishSecondFactor(ctx, flows, creds,
 Every verification failure matches exactly one of `webauthn.ErrInvalidCredentials`,
 `webauthn.ErrUnknownCredential` and `webauthn.ErrCloneSuspected` (a duplicate
 credential ID on registration is `store.ErrDuplicate`). Branch with
-`errors.Is`. An error's text is for logs only: never send it to a client.
+`errors.Is`. An error that matches none of them is an infrastructure failure,
+such as a store outage or a store answering against its contract: answer it as
+a server error (500), never as a failed sign-in. An error's text is for logs
+only: never send it to a client.
+
+`ErrCloneSuspected` is a `*webauthn.CloneSuspectedError` (`errors.As`). When
+its `New` is true, that ceremony marked the credential: tell its `Subject`
+that the key may have been cloned. A marked credential is refused until you
+clear its `CloneSuspectedAt` in your store after the owner confirms, or delete
+it.
+
+Decide whether a subject needs a second factor from your own records, never
+from `BeginSecondFactor`'s error: its `ErrInvalidCredentials` means the
+subject holds no credential to assert, and a subject your records hold as
+enrolled whose `Begin` fails, for any reason, is refused, not let through.
 
 If you import subjects from v1, seed their user handles through your
 `HandleStore` before the first `BeginRegistration` or `BeginSecondFactor`:
@@ -91,9 +106,20 @@ both call `Ensure`, which creates a handle for a subject that has none.
 #### Implement the stores, then prove them
 
 Map `CredentialStore` and `HandleStore` onto your own tables, and `FlowStore`
-onto a table or cache with an atomic take. Then run the conformance suites in
-your tests; they exercise the contract a database can get wrong, such as a
-single-use `Take` under concurrency and a conditional `RecordAssertion`.
+onto a table or cache with an atomic take. Pass stores bound to your request's
+transaction, so a new credential and your own writes commit together, with two
+writes that must persist even when a `Finish` fails: the flow `Take` (pass a
+`FlowStore` outside any transaction you roll back on failure) and
+`MarkCloneSuspected` (commit it, or give it a store of its own, before rolling
+back).
+
+The library never deletes a flow: `Take` only refuses consumed and expired
+ones, so purge them on a schedule. `BeginPasskey` is unauthenticated and
+writes a flow per call: rate-limit it.
+
+Then run the conformance suites in your tests; they exercise the contract a
+database can get wrong, such as a single-use `Take` under concurrency and a
+conditional `RecordAssertion`.
 
 ```go
 func TestStores(t *testing.T) {

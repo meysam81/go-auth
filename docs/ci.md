@@ -8,8 +8,8 @@ targeting `main`, a push to `main`, and a merge group.
 | `test`           | `go test ./... -race -covermode=atomic`, plus the per-package coverage floor |
 | `checks`         | `prettier --check`, `go vet`, `gofmt`, `golangci-lint`                       |
 | `build`          | `go build ./...`                                                             |
-| `build-examples` | the `examples/complete` module, which has its own `go.mod`                   |
-| `govulncheck`    | both modules, scanned with a current toolchain                               |
+| `build-examples` | `go build` and `go vet` of `examples/passkeys`                               |
+| `govulncheck`    | the module, scanned with a current toolchain                                 |
 | `fuzz`           | every `Fuzz*` target at a bounded budget                                     |
 | `release-please` | release automation; gated to `push` on `main`                                |
 

@@ -27,6 +27,12 @@ var (
 )
 
 // Config configures the relying party.
+//
+// Now is the clock for what the package records: a credential's CreatedAt,
+// LastUsedAt and CloneSuspectedAt, and Verified.At. Flow expiry does not
+// follow it: go-webauthn sets a flow's expiry from the wall clock at Begin
+// and checks it against the wall clock at Finish, and the FlowStore enforces
+// it against its own clock.
 type Config struct {
 	RPID       string           // registrable domain or the origin's host; fixed for the life of every credential
 	RPName     string           // shown by credential managers

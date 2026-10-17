@@ -62,14 +62,19 @@ column is the delivery order; only G1 packages exist before their phase ships.
 
 ### Error Handling
 
-- Define package-level sentinel errors (e.g., `ErrInvalidCode`, `ErrNotEnabled`)
-- Wrap errors with context using `fmt.Errorf("context: %w", err)`
-- Check for `store.ErrNotFound` for missing resources
+- A verification failure matches exactly one sentinel: build it with the
+  package's `fail()` (in `webauthn`, a clone is a `*CloneSuspectedError`),
+  never by wrapping a sentinel with `%w`
+- An infrastructure failure (a store outage, a store fault at `Begin`) matches
+  no sentinel; wrap a store's error with context using
+  `fmt.Errorf("webauthn: context: %w", err)`
+- Stores return `store.ErrNotFound` and `store.ErrDuplicate`; the ceremony
+  functions never surface `store.ErrNotFound`
 
 ### Naming Conventions
 
 - Packages: lowercase, single-word (e.g., `audit`, `totp`)
-- Interfaces: descriptive names ending in `-er` where appropriate (e.g., `UserStore`, `AuditLogger`)
+- Interfaces: small, named for what they hold or do (e.g., `CredentialStore`, `FlowStore`)
 - Constructors: `NewXxx(config Config) (*Xxx, error)`
 - Config structs: named `Config` within each package
 

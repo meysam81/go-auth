@@ -1,10 +1,5 @@
 # go-auth v2 G1 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use
-> superpowers:subagent-driven-development (recommended) or
-> superpowers:executing-plans to implement this plan task-by-task. Steps use
-> checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Turn `main` into the `github.com/meysam81/go-auth/v2` module and ship
 G1 (`amr`, `store`, `webauthn`, `authtest`, `examples/passkeys`) as
 `v2.0.0-alpha.1`.
@@ -43,14 +38,15 @@ stdlib `encoding/json`, `crypto/ecdsa`, `crypto/ed25519`.
 - errcheck runs with `check-blank: true`: no `_ =` discards.
 - Each §5.4 check has a test named for the attack that fails when the check is
   removed.
-- Commits: conventional commits; no `Co-Authored-By`; a `Claude-Session`
-  trailer. No reference to any consuming product in code, docs, commits or PR
-  text.
+- Commits: conventional commits. No reference to any consuming product in
+  code, docs, commits or PR text.
 
 ## Review Focus
 
-- A response body that is not JSON, is truncated, or is huge must fail with
-  `ErrInvalidCredentials` before any store call (Task 6 and Task 7 tests).
+- A response body larger than 64 KiB must fail with `ErrInvalidCredentials`
+  before any store call. One that is not JSON or is truncated is refused after
+  the flow is taken (and so consumed), before any credential store call (Task
+  6 and Task 7 tests).
 - The same assertion submitted twice concurrently must yield exactly one success
   (Task 7 `TestPasskey_ConcurrentReplay_OneWinner`).
 - A configured origin with a trailing slash, a path or an uppercase host must be
@@ -83,10 +79,9 @@ stdlib `encoding/json`, `crypto/ecdsa`, `crypto/ed25519`.
 
 - [ ] **Step 1: Branch the work and cut `v1` locally**
 
-Work in `/home/meysam/codes/personal/go-auth-v2-design` (holds the design and
-this plan). Run `git branch -m docs/v2-design feat/v2-g1` and
-`git branch v1 origin/main`. Pushing `v1` is outward-facing: ask the founder
-before `git push origin v1`.
+Work on the branch that holds the design and this plan, renamed to
+`feat/v2-g1`, and cut `v1` from the pre-v2 `main` (`git branch v1
+origin/main`). Pushing `v1` is outward-facing and waits for the maintainer.
 
 - [ ] **Step 2: Move the module to v2**
 
@@ -724,8 +719,8 @@ banner says the stores are in memory and the example is not production code.
       implementing the two stores and running `authtest.WebAuthnStoreSuite` and
       `authtest.FlowStoreSuite`; design status line "G1 implemented".
 
-- [ ] **Step 5: Commit, then ask before pushing** — `docs: v2 G1 readme and
-coverage floors`. With the founder's go-ahead: push `v1` and `feat/v2-g1`,
-      open the PR (body: what ships, the mutation table, the test commands and
-      results, the v1 branch note), let release-please cut `v2.0.0-alpha.1` after
-      merge, and remove `release-as` in a follow-up commit.
+- [ ] **Step 5: Commit, then the maintainer pushes** — `docs: v2 G1 readme and
+coverage floors`. The maintainer pushes `v1` and `feat/v2-g1`,
+      opens the PR (body: what ships, the mutation table, the test commands and
+      results, the v1 branch note), lets release-please cut `v2.0.0-alpha.1`
+      after merge, and removes `release-as` in a follow-up commit.
