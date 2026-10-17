@@ -26,7 +26,10 @@ var (
 // ErrCloneSuspected and no other sentinel, and errors.As retrieves it.
 //
 // When New is true, this ceremony set the mark: tell the credential's owner,
-// Subject. A marked credential is refused, whatever its counter, until the
+// Subject. Two concurrent regressing ceremonies can both report New, so
+// deduplicate the notices by CredentialID. Subject and CredentialID stay on
+// the server: the refused client gets the same answer as any failed sign-in.
+// A marked credential is refused, whatever its counter, until the
 // application, after the owner confirms, clears its CloneSuspectedAt in its
 // own store, or deletes it; the store interfaces have no method for either.
 type CloneSuspectedError struct {

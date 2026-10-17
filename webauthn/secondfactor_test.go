@@ -518,6 +518,34 @@ func TestSecondFactor_CloneSuspectedCredential_Refused(t *testing.T) {
 	}
 }
 
+// The clone refusal comes only after a verified signature, on the
+// second-factor path too: a forged assertion for a marked credential is an
+// ordinary ErrInvalidCredentials and writes nothing.
+func TestSecondFactor_CloneSuspectedCredential_ForgedSignature(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil)
+	a := newAuthenticator(t, authtest.AuthenticatorConfig{SignCount: 10, CounterStep: 1})
+	cred := h.enrollKey(t, a, alice)
+	marked := h.clock.Now()
+	if err := h.creds.MarkCloneSuspected(t.Context(), alice.ID, cred.ID, marked); err != nil {
+		t.Fatalf("MarkCloneSuspected: %v", err)
+	}
+	h.clock.Advance(time.Minute)
+
+	creds := &recordOverride{CredentialStore: h.creds}
+	b := h.beginSecondFactor(t, alice, stepUp)
+	_, err := h.rp.FinishSecondFactor(t.Context(), h.flows, creds, stepUpExpect(alice, b),
+		assertion(t, a, b, func(c *authtest.Ceremony) { c.CorruptSignature = true }))
+	requireNotCloneError(t, err)
+	if got := creds.recorded(); len(got) != 0 {
+		t.Fatalf("a forged assertion called RecordAssertion %d times", len(got))
+	}
+	if c := h.only(t, alice); !c.CloneSuspectedAt.Equal(marked) || c.SignCount != 10 || !c.LastUsedAt.IsZero() {
+		t.Fatalf("CloneSuspectedAt %v, SignCount %d, LastUsedAt %v, want %v, 10, zero",
+			c.CloneSuspectedAt, c.SignCount, c.LastUsedAt, marked)
+	}
+}
+
 // Check 8 runs only after a verified signature: a forged assertion carrying a
 // lower counter must not mark the credential, or anyone could lock out its
 // holder.

@@ -68,8 +68,11 @@ column is the delivery order; only G1 packages exist before their phase ships.
 - An infrastructure failure (a store outage, a store fault at `Begin`) matches
   no sentinel; wrap a store's error with context using
   `fmt.Errorf("webauthn: context: %w", err)`
-- Stores return `store.ErrNotFound` and `store.ErrDuplicate`; the ceremony
-  functions never surface `store.ErrNotFound`
+- Stores return `store.ErrNotFound` and `store.ErrDuplicate`. The ceremony
+  functions translate `store.ErrNotFound` where a store contract allows it
+  (`Take`, `Subject`, `RecordAssertion`, `MarkCloneSuspected`); from a store
+  that breaks its contract (e.g. returns it from `List`) it passes through
+  wrapped, as an infrastructure failure
 
 ### Naming Conventions
 

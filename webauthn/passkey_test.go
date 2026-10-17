@@ -891,6 +891,45 @@ func TestPasskey_CloneSuspectedCredential_Refused(t *testing.T) {
 	}
 }
 
+// requireNotCloneError fails unless err is ErrInvalidCredentials and nothing
+// else, with no *CloneSuspectedError reachable through errors.As.
+func requireNotCloneError(t *testing.T, err error) {
+	t.Helper()
+	requireOnly(t, err, webauthn.ErrInvalidCredentials)
+	var cs *webauthn.CloneSuspectedError
+	if errors.As(err, &cs) {
+		t.Fatalf("err = %v carries a *CloneSuspectedError", err)
+	}
+}
+
+// The clone refusal comes only after a verified signature: a forged assertion
+// for a marked credential is an ordinary ErrInvalidCredentials, so it learns
+// nothing about the mark, and writes nothing.
+func TestPasskey_CloneSuspectedCredential_ForgedSignature(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil)
+	a := newAuthenticator(t, authtest.AuthenticatorConfig{UserVerified: true, Discoverable: true, SignCount: 10, CounterStep: 1})
+	cred := h.enroll(t, a, alice)
+	marked := h.clock.Now()
+	if err := h.creds.MarkCloneSuspected(t.Context(), alice.ID, cred.ID, marked); err != nil {
+		t.Fatalf("MarkCloneSuspected: %v", err)
+	}
+	h.clock.Advance(time.Minute)
+
+	creds := &recordOverride{CredentialStore: h.creds}
+	b := h.beginPasskey(t, signIn)
+	_, err := h.rp.FinishPasskey(t.Context(), h.flows, creds, h.creds, signInExpect(b),
+		assertion(t, a, b, func(c *authtest.Ceremony) { c.CorruptSignature = true }))
+	requireNotCloneError(t, err)
+	if got := creds.recorded(); len(got) != 0 {
+		t.Fatalf("a forged assertion called RecordAssertion %d times", len(got))
+	}
+	if c := h.only(t, alice); !c.CloneSuspectedAt.Equal(marked) || c.SignCount != 10 || !c.LastUsedAt.IsZero() {
+		t.Fatalf("CloneSuspectedAt %v, SignCount %d, LastUsedAt %v, want %v, 10, zero",
+			c.CloneSuspectedAt, c.SignCount, c.LastUsedAt, marked)
+	}
+}
+
 // Check 8 runs only after a verified signature: a forged assertion carrying a
 // lower counter must not mark the credential, or anyone could lock out its
 // holder.

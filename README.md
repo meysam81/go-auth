@@ -89,9 +89,11 @@ only: never send it to a client.
 
 `ErrCloneSuspected` is a `*webauthn.CloneSuspectedError` (`errors.As`). When
 its `New` is true, that ceremony marked the credential: tell its `Subject`
-that the key may have been cloned. A marked credential is refused until you
-clear its `CloneSuspectedAt` in your store after the owner confirms, or delete
-it.
+that the key may have been cloned. Two concurrent ceremonies can both report
+`New`, so deduplicate the notices by `CredentialID`. `Subject` and
+`CredentialID` stay on the server: answer the refused client exactly as any
+failed sign-in. A marked credential is refused until you clear its
+`CloneSuspectedAt` in your store after the owner confirms, or delete it.
 
 Decide whether a subject needs a second factor from your own records, never
 from `BeginSecondFactor`'s error: its `ErrInvalidCredentials` means the
