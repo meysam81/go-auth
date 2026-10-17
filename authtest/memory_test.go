@@ -1,6 +1,7 @@
 package authtest_test
 
 import (
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -44,12 +45,12 @@ func TestMemoryFlowStore_InjectedClockExpiresAndDropsEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	now = now.Add(time.Minute) // expiry is exclusive: at ExpiresAt the flow is gone
-	if _, err := s.Take(ctx, "id"); err == nil {
-		t.Fatal("Take at ExpiresAt succeeded, want store.ErrNotFound")
+	if _, err := s.Take(ctx, "id"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Take at ExpiresAt error = %v, want store.ErrNotFound", err)
 	}
 	now = now.Add(-time.Hour) // the clock going back must not resurrect the entry
-	if _, err := s.Take(ctx, "id"); err == nil {
-		t.Fatal("expired entry survived its failed Take")
+	if _, err := s.Take(ctx, "id"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expired entry survived its failed Take: error = %v", err)
 	}
 }
 
@@ -156,5 +157,52 @@ func TestFillNonZero_SetsEveryFieldDistinct(t *testing.T) {
 	}
 	if p.N == int(p.U) {
 		t.Fatalf("values are not distinct: %+v", p)
+	}
+}
+
+func TestMemoryFlowStore_PutExistingIDIsDuplicate(t *testing.T) {
+	t.Parallel()
+	s := authtest.NewMemoryFlowStore(nil)
+	ctx := t.Context()
+	f := store.Flow{Kind: "k", ExpiresAt: time.Now().Add(time.Hour)}
+	if err := s.Put(ctx, "id", f); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put(ctx, "id", f); !errors.Is(err, store.ErrDuplicate) {
+		t.Fatalf("second Put error = %v, want store.ErrDuplicate", err)
+	}
+}
+
+func TestMemoryWebAuthnStore_ZeroValueAndForeignPaths(t *testing.T) {
+	t.Parallel()
+	var m authtest.MemoryWebAuthnStore // the zero value is usable
+	ctx := t.Context()
+	if _, err := m.Subject(ctx, []byte{1}); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Subject on a zero store error = %v, want store.ErrNotFound", err)
+	}
+	if _, err := m.Ensure(ctx, "a", []byte{1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Ensure(ctx, "b", []byte{1}); !errors.Is(err, store.ErrDuplicate) {
+		t.Fatalf("Ensure of a handle another subject holds error = %v, want store.ErrDuplicate", err)
+	}
+	if err := m.MarkCloneSuspected(ctx, "a", []byte{9}, time.Now()); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("MarkCloneSuspected of an unknown credential error = %v, want store.ErrNotFound", err)
+	}
+}
+
+type namedString string
+
+type fillNamed struct {
+	Tags    []namedString
+	private int //nolint:unused // proves FillNonZero and diffFields skip unexported fields
+}
+
+func TestFillNonZero_NamedStringSlice(t *testing.T) {
+	t.Parallel()
+	var p fillNamed
+	authtest.FillNonZero(t, &p)
+	if len(p.Tags) != 2 || p.Tags[0] == "" {
+		t.Fatalf("named string slice not filled: %+v", p)
 	}
 }

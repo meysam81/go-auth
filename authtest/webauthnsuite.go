@@ -3,6 +3,7 @@ package authtest
 import (
 	"bytes"
 	"errors"
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -35,13 +36,13 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 		t1 := t0.Add(48 * time.Hour)
 
 		// newCred is a credential with every field non-zero, then pinned to
-		// the values the tests reason about.
-		newCred := func(t *testing.T, subject, rp string, id byte) webauthn.Credential {
+		// the values the tests reason about. Its ID is random.
+		newCred := func(t *testing.T, subject, rp string) webauthn.Credential {
 			t.Helper()
 			var c webauthn.Credential
 			FillNonZero(t, &c)
 			c.Subject, c.RPID = subject, rp
-			c.ID = bytes.Repeat([]byte{id}, 16)
+			c.ID = randBytes(t, 16)
 			c.Version = 1
 			c.SignCount = 5
 			c.BackupEligible, c.BackupState = false, false
@@ -63,14 +64,17 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 			}
 			return got
 		}
-		// only lists the subject's single credential.
-		only := func(t *testing.T, cs webauthn.CredentialStore, subject string) webauthn.Credential {
+		// byID lists the subject's credentials and returns the one with id.
+		byID := func(t *testing.T, cs webauthn.CredentialStore, subject string, id []byte) webauthn.Credential {
 			t.Helper()
 			got := list(t, cs, subject)
-			if len(got) != 1 {
-				t.Fatalf("List returned %d credentials, want 1", len(got))
+			for i := range got {
+				if bytes.Equal(got[i].ID, id) {
+					return got[i]
+				}
 			}
-			return got[0]
+			t.Fatalf("credential %x missing from List (%d listed)", id, len(got))
+			return webauthn.Credential{}
 		}
 		assertSame := func(t *testing.T, got, want webauthn.Credential, why string) {
 			t.Helper()
@@ -85,35 +89,36 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 				Version: webauthn.CurrentVersion, At: t1,
 			}
 		}
+		// withSibling inserts c and a second credential of the same subject and
+		// RP ID whose counter is sibCount. A synced passkey's siblings often
+		// share a counter of zero, so a write that forgets the credential_id
+		// predicate hits them too.
+		withSibling := func(t *testing.T, cs webauthn.CredentialStore, c webauthn.Credential, sibCount uint32) webauthn.Credential {
+			t.Helper()
+			sib := newCred(t, c.Subject, c.RPID)
+			sib.SignCount = sibCount
+			insert(t, cs, c)
+			insert(t, cs, sib)
+			return sib
+		}
 
 		t.Run("InsertThenList", func(t *testing.T) {
 			cs, _ := h.NewStores(t)
 			subject := h.NewSubject(t)
-			a, b := newCred(t, subject, rpID, 1), newCred(t, subject, rpID, 2)
+			a, b := newCred(t, subject, rpID), newCred(t, subject, rpID)
 			insert(t, cs, a)
 			insert(t, cs, b)
-			got := list(t, cs, subject)
-			if len(got) != 2 {
+			if got := list(t, cs, subject); len(got) != 2 {
 				t.Fatalf("List returned %d credentials, want 2", len(got))
 			}
-			for _, want := range []*webauthn.Credential{&a, &b} {
-				found := false
-				for i := range got {
-					if bytes.Equal(got[i].ID, want.ID) {
-						found = true
-						assertSame(t, got[i], *want, "listed credential")
-					}
-				}
-				if !found {
-					t.Fatalf("credential %x missing from List", want.ID)
-				}
-			}
+			assertSame(t, byID(t, cs, subject, a.ID), a, "first listed credential")
+			assertSame(t, byID(t, cs, subject, b.ID), b, "second listed credential")
 		})
 
 		t.Run("DuplicateIDSameSubject_ErrDuplicate", func(t *testing.T) {
 			cs, _ := h.NewStores(t)
 			subject := h.NewSubject(t)
-			c := newCred(t, subject, rpID, 1)
+			c := newCred(t, subject, rpID)
 			insert(t, cs, c)
 			if err := cs.Insert(ctx, c); !errors.Is(err, store.ErrDuplicate) {
 				t.Fatalf("second Insert error = %v, want store.ErrDuplicate", err)
@@ -123,31 +128,39 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 		t.Run("DuplicateIDOtherSubject_ErrDuplicate", func(t *testing.T) {
 			cs, _ := h.NewStores(t)
 			owner, intruder := h.NewSubject(t), h.NewSubject(t)
-			c := newCred(t, owner, rpID, 1)
+			c := newCred(t, owner, rpID)
 			insert(t, cs, c)
-			stolen := newCred(t, intruder, rpID, 1) // same credential ID, other subject
-			if err := cs.Insert(ctx, stolen); !errors.Is(err, store.ErrDuplicate) {
-				t.Fatalf("Insert of an ID another subject holds: error = %v, want store.ErrDuplicate (the unique index is on the credential ID alone)", err)
+			// The same credential ID under another subject, on the same RP ID
+			// and on a different one: the unique index is on the ID alone.
+			for _, rp := range []string{rpID, "other.test"} {
+				stolen := newCred(t, intruder, rp)
+				stolen.ID = c.ID
+				if err := cs.Insert(ctx, stolen); !errors.Is(err, store.ErrDuplicate) {
+					t.Fatalf("Insert of an ID another subject holds (RP ID %q): error = %v, want store.ErrDuplicate (a unique index on the credential ID alone)", rp, err)
+				}
 			}
 			if got := list(t, cs, intruder); len(got) != 0 {
 				t.Fatalf("the refused credential was stored for the other subject: %+v", got)
 			}
-			assertSame(t, only(t, cs, owner), c, "the owner's credential")
+			assertSame(t, byID(t, cs, owner, c.ID), c, "the owner's credential")
 		})
 
 		t.Run("ListFiltersByRPID", func(t *testing.T) {
 			cs, _ := h.NewStores(t)
 			subject := h.NewSubject(t)
-			here, there := newCred(t, subject, rpID, 1), newCred(t, subject, "other.test", 2)
+			here, there := newCred(t, subject, rpID), newCred(t, subject, "other.test")
 			insert(t, cs, here)
 			insert(t, cs, there)
-			assertSame(t, only(t, cs, subject), here, "credential for the asked RP ID")
+			if got := list(t, cs, subject); len(got) != 1 {
+				t.Fatalf("List returned %d credentials for the asked RP ID, want 1", len(got))
+			}
+			assertSame(t, byID(t, cs, subject, here.ID), here, "credential for the asked RP ID")
 		})
 
 		t.Run("ListOtherSubjectIsEmpty", func(t *testing.T) {
 			cs, _ := h.NewStores(t)
 			owner, other := h.NewSubject(t), h.NewSubject(t)
-			insert(t, cs, newCred(t, owner, rpID, 1))
+			insert(t, cs, newCred(t, owner, rpID))
 			if got := list(t, cs, other); len(got) != 0 {
 				t.Fatalf("List for a subject with no credentials returned %+v", got)
 			}
@@ -156,38 +169,59 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 		t.Run("RecordAssertion_Applies", func(t *testing.T) {
 			cs, _ := h.NewStores(t)
 			subject := h.NewSubject(t)
-			c := newCred(t, subject, rpID, 1)
-			insert(t, cs, c)
+			c := newCred(t, subject, rpID)
+			c.SignCount = 0
+			sib := withSibling(t, cs, c, 0)
+
+			// First assertion: backup eligible, not yet backed up. Comparing the
+			// whole credential also proves nothing else moved.
 			u := update(c)
+			u.BackupEligible, u.BackupState = true, false
 			applied, err := cs.RecordAssertion(ctx, u)
 			if err != nil || !applied {
 				t.Fatalf("RecordAssertion = (%v, %v), want (true, nil)", applied, err)
 			}
 			want := c
-			want.SignCount, want.BackupEligible, want.BackupState = u.SignCount, u.BackupEligible, u.BackupState
+			want.SignCount, want.BackupEligible, want.BackupState = u.SignCount, true, false
 			want.Version, want.LastUsedAt = u.Version, u.At
-			// Comparing the whole credential also proves nothing else moved.
-			assertSame(t, only(t, cs, subject), want, "credential after an applied assertion")
+			assertSame(t, byID(t, cs, subject, c.ID), want, "credential after the first assertion")
+			assertSame(t, byID(t, cs, subject, sib.ID), sib, "sibling credential after the first assertion")
+
+			// Second assertion: the credential is now backed up too.
+			u2 := update(want)
+			u2.BackupEligible, u2.BackupState = true, true
+			u2.At = t1.Add(time.Hour)
+			applied, err = cs.RecordAssertion(ctx, u2)
+			if err != nil || !applied {
+				t.Fatalf("second RecordAssertion = (%v, %v), want (true, nil)", applied, err)
+			}
+			want.SignCount, want.BackupState, want.LastUsedAt = u2.SignCount, true, u2.At
+			assertSame(t, byID(t, cs, subject, c.ID), want, "credential after the second assertion")
+			assertSame(t, byID(t, cs, subject, sib.ID), sib, "sibling credential after the second assertion")
 		})
 
 		t.Run("RecordAssertion_StaleCounter_NotApplied", func(t *testing.T) {
 			cs, _ := h.NewStores(t)
 			subject := h.NewSubject(t)
-			c := newCred(t, subject, rpID, 1)
-			insert(t, cs, c)
+			c := newCred(t, subject, rpID)
+			c.SignCount = 0
+			// The sibling's counter equals the stale PrevSignCount below, so a
+			// write that ignores the credential ID would update it.
+			sib := withSibling(t, cs, c, 1)
 			u := update(c)
-			u.PrevSignCount = c.SignCount - 1 // the counter moved since the library read it
+			u.PrevSignCount = 1 // the counter moved since the library read it
 			applied, err := cs.RecordAssertion(ctx, u)
 			if err != nil || applied {
 				t.Fatalf("RecordAssertion with a stale counter = (%v, %v), want (false, nil)", applied, err)
 			}
-			assertSame(t, only(t, cs, subject), c, "credential after a stale assertion")
+			assertSame(t, byID(t, cs, subject, c.ID), c, "credential after a stale assertion")
+			assertSame(t, byID(t, cs, subject, sib.ID), sib, "sibling credential after a stale assertion")
 		})
 
 		t.Run("RecordAssertion_WrongSubject_NotApplied", func(t *testing.T) {
 			cs, _ := h.NewStores(t)
 			owner, other := h.NewSubject(t), h.NewSubject(t)
-			c := newCred(t, owner, rpID, 1)
+			c := newCred(t, owner, rpID)
 			insert(t, cs, c)
 			u := update(c)
 			u.Subject = other // right credential ID, wrong subject
@@ -195,13 +229,13 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 			if err != nil || applied {
 				t.Fatalf("RecordAssertion for another subject = (%v, %v), want (false, nil)", applied, err)
 			}
-			assertSame(t, only(t, cs, owner), c, "credential after another subject's assertion")
+			assertSame(t, byID(t, cs, owner, c.ID), c, "credential after another subject's assertion")
 		})
 
 		t.Run("ConcurrentRecordAssertion_OneWinner", func(t *testing.T) {
 			cs, _ := h.NewStores(t)
 			subject := h.NewSubject(t)
-			c := newCred(t, subject, rpID, 1)
+			c := newCred(t, subject, rpID)
 			insert(t, cs, c)
 			const callers = 16
 			var wg sync.WaitGroup
@@ -233,20 +267,22 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 		t.Run("MarkCloneSuspected_Visible", func(t *testing.T) {
 			cs, _ := h.NewStores(t)
 			subject := h.NewSubject(t)
-			c := newCred(t, subject, rpID, 1)
-			insert(t, cs, c)
+			c := newCred(t, subject, rpID)
+			c.SignCount = 0
+			sib := withSibling(t, cs, c, 0)
 			if err := cs.MarkCloneSuspected(ctx, subject, c.ID, t1); err != nil {
 				t.Fatalf("MarkCloneSuspected: %v", err)
 			}
 			want := c
 			want.CloneSuspectedAt = t1
-			assertSame(t, only(t, cs, subject), want, "credential after MarkCloneSuspected")
+			assertSame(t, byID(t, cs, subject, c.ID), want, "credential after MarkCloneSuspected")
+			assertSame(t, byID(t, cs, subject, sib.ID), sib, "sibling credential after MarkCloneSuspected")
 		})
 
 		t.Run("Ensure_CreatesOnce", func(t *testing.T) {
 			_, hs := h.NewStores(t)
 			subject := h.NewSubject(t)
-			first, second := bytes.Repeat([]byte{0x01}, 64), bytes.Repeat([]byte{0x02}, 64)
+			first, second := randBytes(t, 64), randBytes(t, 64)
 			got, err := hs.Ensure(ctx, subject, first)
 			if err != nil || !bytes.Equal(got, first) {
 				t.Fatalf("first Ensure = (%x, %v), want (%x, nil)", got, err, first)
@@ -269,9 +305,10 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 			errs := make([]error, callers)
 			start := make(chan struct{})
 			for i := range callers {
+				proposed := randBytes(t, 64)
 				wg.Go(func() {
 					<-start
-					results[i], errs[i] = hs.Ensure(ctx, subject, bytes.Repeat([]byte{byte(i + 1)}, 64))
+					results[i], errs[i] = hs.Ensure(ctx, subject, proposed)
 				})
 			}
 			close(start)
@@ -292,13 +329,15 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 		t.Run("SubjectByHandle", func(t *testing.T) {
 			_, hs := h.NewStores(t)
 			a, b := h.NewSubject(t), h.NewSubject(t)
-			ha, hb := bytes.Repeat([]byte{0x0a}, 64), bytes.Repeat([]byte{0x0b}, 64)
+			ha, hb := randBytes(t, 64), randBytes(t, 64)
+			// Each Ensure returns the handle it stored, not another subject's.
 			for _, e := range []struct {
 				subject string
 				handle  []byte
 			}{{a, ha}, {b, hb}} {
-				if _, err := hs.Ensure(ctx, e.subject, e.handle); err != nil {
-					t.Fatalf("Ensure: %v", err)
+				got, err := hs.Ensure(ctx, e.subject, e.handle)
+				if err != nil || !bytes.Equal(got, e.handle) {
+					t.Fatalf("Ensure(%q) = (%x, %v), want (%x, nil)", e.subject, got, err, e.handle)
 				}
 			}
 			for _, e := range []struct {
@@ -309,23 +348,67 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 					t.Fatalf("Subject(%x) = (%q, %v), want %q", e.handle, got, err, e.subject)
 				}
 			}
+			// Handles match exactly: a prefix and an extension are other handles.
+			for name, near := range map[string][]byte{
+				"a prefix":    ha[:len(ha)-1],
+				"an extended": append(bytes.Clone(ha), 0),
+			} {
+				if got, err := hs.Subject(ctx, near); !errors.Is(err, store.ErrNotFound) {
+					t.Fatalf("Subject(%s handle) = (%q, %v), want store.ErrNotFound", name, got, err)
+				}
+			}
 		})
 
 		t.Run("UnknownHandle_ErrNotFound", func(t *testing.T) {
 			_, hs := h.NewStores(t)
-			if _, err := hs.Subject(ctx, bytes.Repeat([]byte{0xee}, 64)); !errors.Is(err, store.ErrNotFound) {
+			if _, err := hs.Subject(ctx, randBytes(t, 64)); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("Subject of an unknown handle error = %v, want store.ErrNotFound", err)
 			}
 		})
 
-		t.Run("CredentialRoundTripsEveryField", func(t *testing.T) {
+		// roundTrip inserts a fully populated credential, shaped by shape, and
+		// expects List to return it unchanged.
+		roundTrip := func(t *testing.T, shape func(c *webauthn.Credential)) {
+			t.Helper()
 			cs, _ := h.NewStores(t)
 			subject := h.NewSubject(t)
 			var want webauthn.Credential
 			FillNonZero(t, &want)
 			want.Subject, want.RPID = subject, rpID
+			want.ID = randBytes(t, 16)
+			shape(&want)
 			insert(t, cs, want)
-			assertSame(t, only(t, cs, subject), want, "round trip")
+			assertSame(t, byID(t, cs, subject, want.ID), want, "round trip")
+		}
+
+		t.Run("CredentialRoundTripsEveryField", func(t *testing.T) {
+			roundTrip(t, func(c *webauthn.Credential) {
+				c.SignCount = math.MaxUint32 // the top of an unsigned 32-bit counter
+				c.Algorithm = -257           // a negative COSE algorithm
+				// Instants in zones on both sides of UTC: a store that keeps the
+				// wall clock and drops the offset moves them.
+				c.CreatedAt = c.CreatedAt.In(time.FixedZone("+14", 14*3600))
+				c.LastUsedAt = c.LastUsedAt.In(time.FixedZone("-12", -12*3600))
+				c.CloneSuspectedAt = c.CloneSuspectedAt.In(time.FixedZone("+5:45", 5*3600+45*60))
+			})
+		})
+
+		t.Run("CredentialRoundTrips_InvertedFlags", func(t *testing.T) {
+			roundTrip(t, func(c *webauthn.Credential) {
+				no := false
+				c.BackupEligible, c.BackupState, c.UVInitialized = true, false, false
+				c.Discoverable = &no
+			})
+		})
+
+		t.Run("CredentialRoundTrips_BackedUpNotUVInitialized", func(t *testing.T) {
+			roundTrip(t, func(c *webauthn.Credential) {
+				c.BackupEligible, c.BackupState, c.UVInitialized = false, true, true
+			})
+		})
+
+		t.Run("CredentialRoundTrips_DiscoverableUnknown", func(t *testing.T) {
+			roundTrip(t, func(c *webauthn.Credential) { c.Discoverable = nil })
 		})
 	}
 }

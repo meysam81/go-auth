@@ -62,20 +62,17 @@ func (m *memoryFlowStore) Take(_ context.Context, id string) (store.Flow, error)
 
 // MemoryWebAuthnStore is an in-memory [webauthn.CredentialStore] and
 // [webauthn.HandleStore]. For tests and examples, never production. It
-// deep-copies credentials on the way in and out.
+// deep-copies credentials on the way in and out. The zero value is ready to use.
 type MemoryWebAuthnStore struct {
-	handles   map[string][]byte // subject -> handle
-	bySubject map[string]string // string(handle) -> subject
-	creds     []webauthn.Credential
-	mu        sync.Mutex
+	handles  map[string][]byte // subject -> handle
+	byHandle map[string]string // string(handle) -> subject
+	creds    []webauthn.Credential
+	mu       sync.Mutex
 }
 
 // NewMemoryWebAuthnStore returns an empty [MemoryWebAuthnStore].
 func NewMemoryWebAuthnStore() *MemoryWebAuthnStore {
-	return &MemoryWebAuthnStore{
-		handles:   make(map[string][]byte),
-		bySubject: make(map[string]string),
-	}
+	return &MemoryWebAuthnStore{}
 }
 
 func cloneCredential(c webauthn.Credential) webauthn.Credential {
@@ -160,11 +157,14 @@ func (m *MemoryWebAuthnStore) Ensure(_ context.Context, subject string, h []byte
 	if have, ok := m.handles[subject]; ok {
 		return bytes.Clone(have), nil
 	}
-	if _, taken := m.bySubject[string(h)]; taken {
+	if _, taken := m.byHandle[string(h)]; taken {
 		return nil, store.ErrDuplicate
 	}
+	if m.handles == nil {
+		m.handles, m.byHandle = make(map[string][]byte), make(map[string]string)
+	}
 	m.handles[subject] = bytes.Clone(h)
-	m.bySubject[string(h)] = subject
+	m.byHandle[string(h)] = subject
 	return bytes.Clone(h), nil
 }
 
@@ -172,7 +172,7 @@ func (m *MemoryWebAuthnStore) Ensure(_ context.Context, subject string, h []byte
 func (m *MemoryWebAuthnStore) Subject(_ context.Context, handle []byte) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s, ok := m.bySubject[string(handle)]
+	s, ok := m.byHandle[string(handle)]
 	if !ok {
 		return "", store.ErrNotFound
 	}

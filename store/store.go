@@ -24,7 +24,10 @@ type Flow struct {
 
 // FlowStore holds single-use ceremony state.
 type FlowStore interface {
-	// Put stores the flow under id.
+	// Put stores the flow under id. It returns [ErrDuplicate] when id already
+	// holds an unconsumed flow, and leaves that flow untouched: a flow id is
+	// never overwritten. Ids are random and single-use, so whether a consumed
+	// id may be stored again is unspecified.
 	Put(ctx context.Context, id string, f Flow) error
 
 	// Take fetches and consumes atomically. It MUST NOT be a Get followed by a

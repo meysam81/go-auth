@@ -1,13 +1,33 @@
 package authtest
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"reflect"
 	"testing"
 	"time"
 )
 
+// randBytes returns n bytes from crypto/rand. The suites draw every flow id,
+// credential id and user handle from it, so a harness whose stores share one
+// database without truncation between subtests still sees unique keys.
+func randBytes(t *testing.T, n int) []byte {
+	t.Helper()
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		t.Fatalf("crypto/rand: %v", err)
+	}
+	return b
+}
+
+// randID returns prefix followed by 16 random bytes in hex.
+func randID(t *testing.T, prefix string) string {
+	t.Helper()
+	return prefix + hex.EncodeToString(randBytes(t, 16))
+}
+
 // FillNonZero sets every exported field of the struct v points to a distinct
-// non-zero value. Supported kinds are strings, byte and string slices, bools,
+// non-zero value; signed integers are negative. Supported kinds are strings, byte and string slices, bools,
 // signed and unsigned integers, byte arrays, *bool and [time.Time] (a
 // whole-second UTC instant). Any other kind fails the test, so a new field of
 // a new kind forces the suites to learn it instead of silently skipping it.
@@ -49,11 +69,14 @@ func fillValue(t *testing.T, f reflect.Value, name string, n int) {
 	case f.CanUint():
 		f.SetUint(uint64(n)) // small enough for every unsigned width
 	case f.CanInt():
-		f.SetInt(int64(n))
+		f.SetInt(-int64(n)) // negative, so a store that truncates or clamps a signed column is caught
 	case f.Kind() == reflect.Slice && f.Type().Elem().Kind() == reflect.Uint8:
 		f.SetBytes([]byte{byte(n), byte(n + 1), byte(n + 2)})
 	case f.Kind() == reflect.Slice && f.Type().Elem().Kind() == reflect.String:
-		f.Set(reflect.ValueOf([]string{name + "-1", name + "-2"}).Convert(f.Type()))
+		s := reflect.MakeSlice(f.Type(), 2, 2)
+		s.Index(0).SetString(name + "-1")
+		s.Index(1).SetString(name + "-2")
+		f.Set(s)
 	case f.Kind() == reflect.Array && f.Type().Elem().Kind() == reflect.Uint8:
 		for j := range f.Len() {
 			f.Index(j).SetUint(uint64(n + j + 1))
@@ -73,6 +96,9 @@ func fillValue(t *testing.T, f reflect.Value, name string, n int) {
 func diffFields(a, b any) string {
 	av, bv := reflect.ValueOf(a), reflect.ValueOf(b)
 	for i := range av.NumField() {
+		if !av.Type().Field(i).IsExported() {
+			continue
+		}
 		name := av.Type().Field(i).Name
 		x, y := av.Field(i), bv.Field(i)
 		if x.Type() == timeType {
