@@ -52,7 +52,11 @@
           "type": "style"
         }
       ],
-      "release-type": "go"
+      "prerelease": true,
+      "prerelease-type": "alpha",
+      "release-as": "2.0.0-alpha.1",
+      "release-type": "go",
+      "versioning": "prerelease"
     }
   }
 }

@@ -11,13 +11,10 @@
 #
 #   go test -race -covermode=atomic ./...
 #
-# on the harden/security-overhaul-v1 branch, then rounded DOWN by two to three
+# on the branch under review, then rounded DOWN by two to three
 # points. The margin absorbs the only legitimate source of drift -- a test whose
 # path depends on timing under -race -- and nothing else: a real regression is
-# tens of points, not two. Measured at the time of writing: audit 62.9,
-# auth/basic 86.5, auth/jwt 90.3, auth/oidc 94.1, auth/totp 86.2,
-# auth/webauthn 85.9, middleware 69.3, provider 92.9, session 88.2,
-# storage 97.9.
+# tens of points, not two.
 #
 # Raising a floor after new tests land is a one-line change here. LOWERING one
 # is a decision to accept a regression, and belongs in a review, not in a commit
@@ -29,22 +26,6 @@
 # close.
 #
 # Format: <package path relative to the module root> <floor percent>
-audit 60
-auth/basic 84
-auth/jwt 88
-auth/oidc 92
-auth/totp 84
-auth/webauthn 83
-middleware 67
-provider 90
-session 86
-storage 95
-
-# The examples are runnable demo binaries with no test files, so their coverage
-# is 0 by construction and a floor above 0 would be unachievable without testing
-# `main`. They are not untested code paths in the library: the compile gate that
-# guards them is the build-examples job, which builds and vets them on every
-# run. They are listed explicitly because "no floor recorded" is a hard failure.
-examples/basic 0
-examples/jwt 0
-examples/oidc 0
+#
+# v2 phase G1: the v1 floors were removed with the v1 packages; the new
+# packages get measured floors in the final G1 task.
