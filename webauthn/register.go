@@ -15,13 +15,13 @@ import (
 	"github.com/meysam81/go-auth/v2/store"
 )
 
-const userHandleSize = 64 // bytes from crypto/rand, created once per subject
+const userHandleSize = 64 // bytes from crypto/rand, created once per subject; also WebAuthn's maximum
 
 // RegistrationOptions selects what a registration creates.
 type RegistrationOptions struct {
 	Kind        CredentialKind
 	Purpose     string // bound into the flow; FinishRegistration's Expect must name it
-	Conditional bool   // mediation "conditional" (an upgrade after a password sign-in)
+	Conditional bool   // mediation "conditional" (an upgrade after a password sign-in); Passkey only
 }
 
 // BeginRegistration starts adding a credential for sub, a subject the caller
@@ -29,10 +29,11 @@ type RegistrationOptions struct {
 // use, lists the subject's credentials in excludeCredentials, and writes one
 // flow that FinishRegistration consumes.
 //
-// An empty sub.ID, sub.Name or opts.Purpose, or a Kind other than Passkey or
-// SecurityKey, is a programming error: Begin returns a plain error and writes
-// nothing. A store error is returned wrapped; a stored credential that fails
-// the store contract is ErrInvalidCredentials.
+// An empty sub.ID, sub.Name or opts.Purpose, a Kind other than Passkey or
+// SecurityKey, or a conditional SecurityKey, is a programming error: Begin
+// returns a plain error and writes nothing. A store error is returned
+// wrapped; a user handle or stored credential that fails the store contract
+// is ErrInvalidCredentials.
 func (rp *RP) BeginRegistration(ctx context.Context, flows store.FlowStore, creds CredentialStore, handles HandleStore, sub Subject, opts RegistrationOptions) (Begun, error) {
 	if err := validateRegistration(sub, opts); err != nil {
 		return Begun{}, err
@@ -44,6 +45,9 @@ func (rp *RP) BeginRegistration(ctx context.Context, flows store.FlowStore, cred
 	handle, err := handles.Ensure(ctx, sub.ID, fresh)
 	if err != nil {
 		return Begun{}, fmt.Errorf("webauthn: ensure user handle: %w", err)
+	}
+	if len(handle) == 0 || len(handle) > userHandleSize {
+		return Begun{}, fail(ErrInvalidCredentials, fmt.Sprintf("store fault: user handle of %d bytes", len(handle)), nil)
 	}
 	existing, err := rp.credentials(ctx, creds, sub.ID)
 	if err != nil {
@@ -87,6 +91,10 @@ func validateRegistration(sub Subject, opts RegistrationOptions) error {
 		return errors.New("webauthn: purpose is required")
 	case opts.Kind != Passkey && opts.Kind != SecurityKey:
 		return fmt.Errorf("webauthn: unknown credential kind %d", opts.Kind)
+	case opts.Conditional && opts.Kind != Passkey:
+		// Conditional create is a password manager upgrading a password
+		// sign-in to a passkey, and it skips user presence.
+		return errors.New("webauthn: only a passkey registration can be conditional")
 	}
 	return nil
 }
@@ -182,7 +190,9 @@ func (rp *RP) FinishRegistration(ctx context.Context, flows store.FlowStore, cre
 
 	if err = creds.Insert(ctx, c); err != nil {
 		if errors.Is(err, store.ErrDuplicate) {
-			return Credential{}, fmt.Errorf("webauthn: credential ID already registered: %w", store.ErrDuplicate)
+			// The store's words stay in the text; only store.ErrDuplicate is
+			// wrapped, so no sentinel in the store's chain reaches the result.
+			return Credential{}, fmt.Errorf("webauthn: credential ID already registered: %w (store: %s)", store.ErrDuplicate, err.Error())
 		}
 		return Credential{}, fmt.Errorf("webauthn: insert credential: %w", err)
 	}

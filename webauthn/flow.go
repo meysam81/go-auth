@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
+	"github.com/go-webauthn/webauthn/protocol"
 	gowebauthn "github.com/go-webauthn/webauthn/webauthn"
 
 	"github.com/meysam81/go-auth/v2/store"
@@ -32,12 +34,17 @@ const (
 // flowPayload is the state a Begin writes and its Finish reads. The
 // application stores it without interpreting it.
 type flowPayload struct {
-	Purpose   string                 `json:"purpose"`
-	Subject   string                 `json:"subject,omitempty"` // empty for a passkey sign-in
-	Handle    []byte                 `json:"handle,omitempty"`
-	RPID      string                 `json:"rp_id"`
-	RequireUV bool                   `json:"require_uv"`
-	Session   gowebauthn.SessionData `json:"session"` // go-webauthn's documented JSON form
+	Purpose string `json:"purpose"`
+	Subject string `json:"subject,omitempty"` // empty for a passkey sign-in
+	Handle  []byte `json:"handle,omitempty"`
+	RPID    string `json:"rp_id"`
+
+	// RequireUV is the package's own record that the ceremony requires user
+	// verification, kept apart from the session go-webauthn enforces it from.
+	// takeFlow refuses a payload where the two disagree.
+	RequireUV bool `json:"require_uv"`
+
+	Session gowebauthn.SessionData `json:"session"` // go-webauthn's documented JSON form
 }
 
 // newFlowID returns a fresh flow ID: 32 bytes from crypto/rand, base64url.
@@ -68,10 +75,10 @@ func putFlow(ctx context.Context, flows store.FlowStore, kind string, p *flowPay
 
 // takeFlow consumes the flow e names and returns its payload, decoded into a
 // fresh value. The flow must be of kind, written by this relying party, for
-// e.Purpose and for e.Subject; register and second-factor flows always name a
-// subject, a passkey flow never does. Every refusal is ErrInvalidCredentials;
-// a store error other than store.ErrNotFound is returned wrapped, as the
-// infrastructure failure it is.
+// e.Purpose and for e.Subject, and agree with what the package itself writes
+// (payloadFault). Every refusal is ErrInvalidCredentials; a store error other
+// than store.ErrNotFound is returned wrapped, as the infrastructure failure it
+// is.
 func (rp *RP) takeFlow(ctx context.Context, flows store.FlowStore, e Expect, kind string) (flowPayload, error) {
 	if e.FlowID == "" {
 		return flowPayload{}, fail(ErrInvalidCredentials, "no flow ID", nil)
@@ -97,8 +104,35 @@ func (rp *RP) takeFlow(ctx context.Context, flows store.FlowStore, e Expect, kin
 		return flowPayload{}, fail(ErrInvalidCredentials, "flow for another purpose", nil)
 	case p.Subject != e.Subject:
 		return flowPayload{}, fail(ErrInvalidCredentials, "flow for another subject", nil)
-	case (kind == flowRegister || kind == flowSecondFactor) && p.Subject == "":
-		return flowPayload{}, fail(ErrInvalidCredentials, "store fault: flow names no subject", nil)
+	}
+	if reason := rp.payloadFault(&p, kind); reason != "" {
+		return flowPayload{}, fail(ErrInvalidCredentials, "store fault: "+reason, nil)
 	}
 	return p, nil
+}
+
+// payloadFault names what in a flow of kind disagrees with what the package
+// writes, or returns "". The flow store is the application's, so every value
+// the package can derive from its own configuration is checked again: register
+// and second-factor flows name a subject, the session is for this RP ID and
+// bound to no single origin, its algorithms are configured ones, and the two
+// user-verification records agree.
+func (rp *RP) payloadFault(p *flowPayload, kind string) string {
+	s := &p.Session
+	switch {
+	case (kind == flowRegister || kind == flowSecondFactor) && p.Subject == "":
+		return "flow names no subject"
+	case s.RelyingPartyID != rp.id:
+		return "session for another RP ID"
+	case s.Origin != "":
+		return "session bound to an origin"
+	case p.RequireUV != (s.UserVerification == protocol.VerificationRequired):
+		return "user verification records disagree"
+	}
+	for _, cp := range s.CredParams {
+		if !slices.Contains(rp.algorithms, int(cp.Algorithm)) {
+			return fmt.Sprintf("session algorithm %d is not configured", cp.Algorithm)
+		}
+	}
+	return ""
 }

@@ -6,8 +6,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -97,6 +99,31 @@ type listOverride struct {
 func (s listOverride) List(_ context.Context, subject, rpID string) ([]webauthn.Credential, error) {
 	return s.list(subject, rpID)
 }
+
+// insertOverride is a CredentialStore whose Insert answers from a function
+// and stores nothing.
+type insertOverride struct {
+	webauthn.CredentialStore
+	insert func(webauthn.Credential) error
+}
+
+func (s insertOverride) Insert(_ context.Context, c webauthn.Credential) error { return s.insert(c) }
+
+// takeOutage is a FlowStore whose Take fails with err.
+type takeOutage struct {
+	store.FlowStore
+	err error
+}
+
+func (s takeOutage) Take(context.Context, string) (store.Flow, error) { return store.Flow{}, s.err }
+
+// ensureOverride is a HandleStore whose Ensure answers handle.
+type ensureOverride struct {
+	webauthn.HandleStore
+	handle []byte
+}
+
+func (s ensureOverride) Ensure(context.Context, string, []byte) ([]byte, error) { return s.handle, nil }
 
 type harness struct {
 	rp    *webauthn.RP
@@ -232,8 +259,9 @@ type credentialDescriptor struct {
 }
 
 type authenticatorSelection struct {
-	ResidentKey      string `json:"residentKey"`
-	UserVerification string `json:"userVerification"`
+	AuthenticatorAttachment string `json:"authenticatorAttachment"`
+	ResidentKey             string `json:"residentKey"`
+	UserVerification        string `json:"userVerification"`
 }
 
 type creationExtensions struct {
@@ -359,6 +387,8 @@ func TestRegister_Passkey_Options(t *testing.T) {
 		t.Errorf("excludeCredentials = %v, want none", o.ExcludeCredentials)
 	case len(o.Hints) != 0:
 		t.Errorf("hints = %q, want none", o.Hints)
+	case o.AuthenticatorSelection.AuthenticatorAttachment != "":
+		t.Errorf("authenticatorAttachment = %q, want none", o.AuthenticatorSelection.AuthenticatorAttachment)
 	case b.Mediation != "":
 		t.Errorf("Mediation = %q, want empty", b.Mediation)
 	}
@@ -376,6 +406,10 @@ func TestRegister_SecurityKey_Options(t *testing.T) {
 		t.Errorf("userVerification = %q, want preferred", o.AuthenticatorSelection.UserVerification)
 	case !slices.Equal(o.Hints, []string{"security-key"}):
 		t.Errorf("hints = %q, want [security-key]", o.Hints)
+	// go-webauthn derives it from the hint: WebAuthn Level 3's advice for
+	// clients that predate hints.
+	case o.AuthenticatorSelection.AuthenticatorAttachment != "cross-platform":
+		t.Errorf("authenticatorAttachment = %q, want cross-platform", o.AuthenticatorSelection.AuthenticatorAttachment)
 	case b.Mediation != "":
 		t.Errorf("Mediation = %q, want empty", b.Mediation)
 	}
@@ -571,6 +605,11 @@ func TestRegister_FlowOfAnotherRP(t *testing.T) {
 	b := h.begin(t, alice, passkey)
 	_, err = other.FinishRegistration(t.Context(), h.flows, h.creds, expectFor(alice, b), respond(t, passkeyAuthenticator(t), b))
 	h.requireRefused(t, err, alice)
+	// A shared store routing a flow to the wrong relying party is not
+	// tampering: the log must not send the operator hunting for a store fault.
+	if strings.Contains(err.Error(), "store fault") {
+		t.Fatalf("err = %v, want a flow of another relying party, not a store fault", err)
+	}
 	if got, listErr := h.creds.List(t.Context(), alice.ID, "app.example.test"); listErr != nil || len(got) != 0 {
 		t.Fatalf("List(app.example.test) = %d credentials, %v, want none", len(got), listErr)
 	}
@@ -661,6 +700,9 @@ func TestRegister_OversizedResponse(t *testing.T) {
 			_, err := h.finish(t, expectFor(alice, b), resp)
 			if tc.refuse {
 				h.requireRefused(t, err, alice)
+				if _, takes := h.flows.recorded(); takes != 0 {
+					t.Fatalf("an oversized response reached the flow store (%d Take calls)", takes)
+				}
 				return
 			}
 			if err != nil {
@@ -729,6 +771,9 @@ func TestBeginRegistration_RefusesBadInput(t *testing.T) {
 		{"empty purpose", alice, webauthn.RegistrationOptions{Kind: webauthn.Passkey}},
 		{"empty subject ID", webauthn.Subject{Name: "alice@example.test"}, passkey},
 		{"empty subject name", webauthn.Subject{ID: alice.ID}, passkey},
+		// Conditional create is the password manager upgrading a password
+		// sign-in to a passkey; it skips user presence.
+		{"conditional security key", alice, webauthn.RegistrationOptions{Kind: webauthn.SecurityKey, Purpose: purpose, Conditional: true}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -808,5 +853,102 @@ func TestBeginRegistration_StoreError(t *testing.T) {
 	}
 	if puts, _ := h.flows.recorded(); len(puts) != 0 {
 		t.Fatalf("a failed Begin wrote %d flow(s)", len(puts))
+	}
+}
+
+// A failing store at Finish is an infrastructure error, never a verification
+// result, and never a stored credential.
+func TestFinishRegistration_StoreError(t *testing.T) {
+	t.Parallel()
+	down := errors.New("database is down")
+	tests := []struct {
+		name  string
+		flows func(store.FlowStore) store.FlowStore
+		creds func(webauthn.CredentialStore) webauthn.CredentialStore
+	}{
+		{
+			name:  "Take",
+			flows: func(f store.FlowStore) store.FlowStore { return takeOutage{FlowStore: f, err: down} },
+			creds: func(c webauthn.CredentialStore) webauthn.CredentialStore { return c },
+		},
+		{
+			name:  "Insert",
+			flows: func(f store.FlowStore) store.FlowStore { return f },
+			creds: func(c webauthn.CredentialStore) webauthn.CredentialStore {
+				return insertOverride{CredentialStore: c, insert: func(webauthn.Credential) error { return down }}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t, nil)
+			b := h.begin(t, alice, passkey)
+			c, err := h.rp.FinishRegistration(t.Context(), tc.flows(h.flows), tc.creds(h.creds), expectFor(alice, b),
+				respond(t, passkeyAuthenticator(t), b))
+			if !errors.Is(err, down) || isSentinel(err) || errors.Is(err, store.ErrDuplicate) {
+				t.Fatalf("err = %v, want the store's error and no sentinel", err)
+			}
+			if !reflect.DeepEqual(c, webauthn.Credential{}) {
+				t.Fatalf("a failed Finish returned %+v, want the zero Credential", c)
+			}
+			if got := h.list(t, alice); len(got) != 0 {
+				t.Fatalf("a failed Finish left %d credential(s)", len(got))
+			}
+		})
+	}
+}
+
+// The duplicate keeps the store's own words for the log, and a sentinel in
+// the store's error chain never leaks into the result.
+func TestFinishRegistration_DuplicateKeepsStoreContext(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil)
+	storeErr := fmt.Errorf("unique index credentials_id: %w", errors.Join(store.ErrDuplicate, webauthn.ErrCloneSuspected))
+	creds := insertOverride{CredentialStore: h.creds, insert: func(webauthn.Credential) error { return storeErr }}
+	b := h.begin(t, alice, passkey)
+
+	_, err := h.rp.FinishRegistration(t.Context(), h.flows, creds, expectFor(alice, b), respond(t, passkeyAuthenticator(t), b))
+	if !errors.Is(err, store.ErrDuplicate) || isSentinel(err) {
+		t.Fatalf("err = %v, want store.ErrDuplicate and no webauthn sentinel", err)
+	}
+	if !strings.Contains(err.Error(), "unique index credentials_id") {
+		t.Fatalf("err = %q, want the store's context", err)
+	}
+}
+
+// A user handle the store answers outside 1 to 64 bytes is a store fault,
+// refused by the package before any flow is written.
+func TestBeginRegistration_UserHandleFault(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		size  int
+		fault bool
+	}{
+		{"empty", 0, true},
+		{"one byte", 1, false},
+		{"65 bytes", 65, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t, nil)
+			handles := ensureOverride{HandleStore: h.creds, handle: bytes.Repeat([]byte{7}, tc.size)}
+			_, err := h.rp.BeginRegistration(t.Context(), h.flows, h.creds, handles, alice, passkey)
+			puts, _ := h.flows.recorded()
+			if !tc.fault {
+				if err != nil || len(puts) != 1 {
+					t.Fatalf("%d-byte handle: err = %v, %d flow(s) written", tc.size, err, len(puts))
+				}
+				return
+			}
+			if !errors.Is(err, webauthn.ErrInvalidCredentials) || !strings.Contains(err.Error(), "store fault") {
+				t.Fatalf("err = %v, want a store-fault ErrInvalidCredentials", err)
+			}
+			if len(puts) != 0 {
+				t.Fatalf("a store fault wrote %d flow(s)", len(puts))
+			}
+		})
 	}
 }

@@ -171,6 +171,15 @@ type FlowStore interface {
 Flow IDs are 256-bit `crypto/rand` values. A flow is never extended or
 rewritten: a ceremony that needs a second round mints a new flow.
 
+The flow store must be as confidential and integrity-protected as the credential
+store. A WebAuthn payload carries the challenge, the RP ID, the allowed
+algorithms, the user-verification requirement and the conditional-create
+exemption from user presence; whoever can rewrite it can relax them. The library
+cross-checks what it can derive from its own configuration (the RP ID, the
+algorithms, that no ceremony is bound to a single origin, that its two
+user-verification records agree) and refuses a mismatch as a store fault; the
+rest it must trust.
+
 ### 4.2 Rules for typed stores
 
 1. **Stores are passed per call, never held.** Every function that touches state
@@ -509,11 +518,11 @@ moves the credential to the current version.
 
 #### Ceremonies
 
-| Function                                   | When                                                         | Options sent                                                                                                                                                                                                                         | UV                                                   |
-| ------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- |
-| `BeginRegistration` / `FinishRegistration` | an authenticated subject adds a credential                   | `excludeCredentials` = the subject's credentials; passkey: `residentKey: required`; security key: `residentKey: discouraged`, `hints: ["security-key"]`; optional `mediation: "conditional"` for an upgrade after a password sign-in | required for a passkey, preferred for a security key |
-| `BeginPasskey` / `FinishPasskey`           | sign-in with no identifier                                   | no `allowCredentials`; usable with `mediation: "conditional"` (autofill) or modal                                                                                                                                                    | required                                             |
-| `BeginSecondFactor` / `FinishSecondFactor` | a subject the caller has already authenticated, or a step-up | `allowCredentials` = the subject's credentials                                                                                                                                                                                       | preferred; the caller may require it                 |
+| Function                                   | When                                                         | Options sent                                                                                                                                                                                                                                                                                     | UV                                                                                |
+| ------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
+| `BeginRegistration` / `FinishRegistration` | an authenticated subject adds a credential                   | `excludeCredentials` = the subject's credentials; passkey: `residentKey: required`; security key: `residentKey: discouraged`, `hints: ["security-key"]`, `authenticatorAttachment: "cross-platform"`; optional `mediation: "conditional"` for an upgrade after a password sign-in (passkey only) | required for a passkey (preferred when conditional), preferred for a security key |
+| `BeginPasskey` / `FinishPasskey`           | sign-in with no identifier                                   | no `allowCredentials`; usable with `mediation: "conditional"` (autofill) or modal                                                                                                                                                                                                                | required                                                                          |
+| `BeginSecondFactor` / `FinishSecondFactor` | a subject the caller has already authenticated, or a step-up | `allowCredentials` = the subject's credentials                                                                                                                                                                                                                                                   | preferred; the caller may require it                                              |
 
 Every `Begin` writes one `Flow` holding the ceremony kind, the caller's purpose
 string (`"login"`, `"stepup"`, …), the subject (when known), the RP ID and the
