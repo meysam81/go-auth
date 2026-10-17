@@ -277,8 +277,7 @@ jobs:
           echo "fuzzed $found target(s)"
 
   # F-23: the runnable examples are `main` packages with no tests, so the root
-  # build covers them only if they live in this module. There are none in G1;
-  # the passkeys example arrives with its own build step.
+  # build covers them only if they live in this module.
   build-examples:
     permissions:
       contents: read
@@ -292,13 +291,8 @@ jobs:
           go-version-file: go.mod
       - name: Build examples
         run: |
-          set -euo pipefail
-          if [ -d examples ]; then
-            go build -v ./examples/...
-            go vet ./examples/...
-          else
-            echo "no examples in this release"
-          fi
+          go build -v ./examples/passkeys
+          go vet ./examples/passkeys
 
   release-please:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
