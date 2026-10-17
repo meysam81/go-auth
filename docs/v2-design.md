@@ -352,7 +352,7 @@ type Requirement uint8
 
 const (
     AnyFactor         Requirement = iota + 1
-    MultiFactor                   // two classes, or one WebAuthn assertion with mfa
+    MultiFactor                   // a first factor plus a possession factor, or one WebAuthn assertion with mfa
     PhishingResistant             // MultiFactor with a phishing-resistant method among them
 )
 
@@ -360,6 +360,12 @@ func (p Policy) Satisfies(methods []Method, r Requirement) bool
 ```
 
 Rules:
+
+- A first factor is a `Knowledge` or `Federated` method; multi-factor needs a
+  first factor plus a `Possession` method, never two first factors: a password
+  plus a federated login proves nothing about a device the user holds. Whether
+  a federated login alone vouches for more is the application's call, made
+  outside `Satisfies`.
 
 - `mfa` counts only beside `hwk` or `swk` from the same assertion: `{swk, mfa}`
   is multi-factor (a user-verifying authenticator is a multi-factor
