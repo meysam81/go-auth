@@ -1,7 +1,6 @@
 package webauthn
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -64,10 +63,11 @@ func (rp *RP) BeginPasskey(ctx context.Context, flows store.FlowStore, opts Pass
 // tell its authenticator the credential is gone. A valid signature whose
 // counter did not advance past a non-zero stored counter marks the credential
 // clone-suspected and is ErrCloneSuspected. Every other verification failure
-// is ErrInvalidCredentials: a response larger than 64 KiB, one without a user
-// handle or user verification, and an assertion the store did not record
-// included. A store error is returned wrapped. The flow is consumed by every
-// attempt that reaches it, a response that fails to parse included.
+// is ErrInvalidCredentials: a response larger than 64 KiB, one without user
+// verification or without a user handle or with one longer than 64 bytes, and
+// an assertion the store did not record included. A store error is returned
+// wrapped. The flow is consumed by every attempt that reaches it, a response
+// that fails to parse included. Error text is for logs, never for a client.
 func (rp *RP) FinishPasskey(ctx context.Context, flows store.FlowStore, creds CredentialStore, handles HandleStore, e Expect, response []byte) (Verified, error) {
 	if len(response) > maxResponseSize {
 		return Verified{}, fail(ErrInvalidCredentials, "response larger than 64 KiB", nil)
@@ -80,8 +80,11 @@ func (rp *RP) FinishPasskey(ctx context.Context, flows store.FlowStore, creds Cr
 	if err != nil {
 		return Verified{}, fail(ErrInvalidCredentials, "unreadable assertion response", err)
 	}
-	if len(parsed.Response.UserHandle) == 0 {
+	switch n := len(parsed.Response.UserHandle); {
+	case n == 0:
 		return Verified{}, fail(ErrInvalidCredentials, "discoverable assertion without a user handle", nil)
+	case n > userHandleSize:
+		return Verified{}, fail(ErrInvalidCredentials, fmt.Sprintf("user handle of %d bytes, longer than 64", n), nil)
 	}
 
 	// go-webauthn calls the handler before verifying the assertion and wraps
@@ -132,10 +135,8 @@ func (rp *RP) discover(ctx context.Context, creds CredentialStore, handles Handl
 	if err != nil {
 		return Credential{}, err
 	}
-	for i := range list {
-		if bytes.Equal(list[i].ID, rawID) {
-			return list[i], nil
-		}
+	if i := indexOf(list, rawID); i >= 0 {
+		return list[i], nil
 	}
 	return Credential{}, fail(ErrUnknownCredential, "credential not held by the user handle's subject for this RP ID", nil)
 }

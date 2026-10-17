@@ -502,12 +502,14 @@ type Credential struct {
 
 // AssertionUpdate is what one verified assertion changes.
 type AssertionUpdate struct {
-    Subject       string
-    CredentialID  []byte
-    PrevSignCount uint32 // the counter the library read; the update applies only while it still holds
-    SignCount     uint32
-    BackupState   bool
-    At            time.Time
+    Subject        string
+    CredentialID   []byte
+    PrevSignCount  uint32    // the counter the library read; the update applies only while it still holds
+    SignCount      uint32
+    BackupEligible bool      // equals the stored value except when adopting a Version 1 credential
+    BackupState    bool
+    Version        uint16    // CurrentVersion after any assertion
+    At             time.Time // becomes the credential's last_used_at
 }
 ```
 
@@ -515,6 +517,13 @@ type AssertionUpdate struct {
 reserved for credentials imported from v1, whose backup flags were never recorded:
 for those, the first assertion records the flags instead of comparing them and
 moves the credential to the current version.
+
+The adoption has one race. A synced Version 1 credential stays at counter 0, so
+two assertions that both carry a valid signature but different BE both match the
+conditional update (`sign_count = 0` still holds after the first), and the last
+write's flags stand. Two valid signatures with different flags need the
+credential's private key, so this is not an outside attack; closing it would add
+a version condition to `RecordAssertion` and change the store contract.
 
 #### Ceremonies
 
@@ -566,8 +575,10 @@ package adds, in order, and each is a test named for the attack:
    is malformed, `ErrInvalidCredentials`) and resolves to a subject; the
    credential ID is among that subject's credentials for this RP ID. Either miss
    is `ErrUnknownCredential`.
-6. Second-factor assertion: the credential is among the flow subject's
-   credentials. A miss is `ErrInvalidCredentials`.
+6. Second-factor assertion: the credential was listed in `allowCredentials` and
+   is among the flow subject's credentials for this RP ID when `Finish` runs. A
+   miss is `ErrInvalidCredentials`, never `ErrUnknownCredential`: the caller
+   already knows the subject.
 7. BE equals the stored value (it never changes; a change is refused and logged);
    BE=0 with BS=1 refused; a new BS is stored.
 8. Counter: stored and received both 0 is normal (synced passkeys never count).
@@ -671,6 +682,12 @@ authentication functions never surface it.
 authenticated. Nothing a stranger can submit reveals whether an account exists or
 which credentials it holds.
 
+That holds for the random 64-byte user handles the library creates. A subject
+imported from v1 keeps its v1 user ID as its handle (§8), which may be guessable:
+a guessed handle that resolves costs a credential lookup an unresolved one does
+not, so for those subjects the guarantee is weaker. An error's text names which
+lookup missed; it is for logs only and never reaches a client.
+
 Two narrow, documented exceptions, both after a valid signature or on a path that
 takes no identifier:
 
@@ -726,6 +743,9 @@ it chooses. The migration document must cover, at minimum:
   their discoverable sign-in resolves). Their backup flags move from v1's metadata
   keys into the typed fields; a credential whose flags were never recorded is
   imported with `Version: 1` and takes them from its next assertion (§5.4).
+  That handle is the v1 user ID, not 64 random bytes, and may be guessable, so
+  §6's "nothing a stranger can submit reveals whether an account exists" holds
+  only for subjects whose handle the library created.
 - Password digests carry forward unchanged: the v2 verifier understands bcrypt
   and reports `NeedsRehash` so a deployment migrates to argon2id on next sign-in.
 - TOTP `$gat1$` secrets and `$gab1$`/`$gab2$` recovery digests stay verifiable

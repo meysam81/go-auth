@@ -1,12 +1,16 @@
 package webauthn
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"fmt"
 
 	"github.com/go-webauthn/webauthn/protocol"
 	gowebauthn "github.com/go-webauthn/webauthn/webauthn"
 )
+
+const userHandleSize = 64 // bytes from crypto/rand, created once per subject; also WebAuthn's maximum
 
 // user adapts a subject and its stored credentials to go-webauthn's User.
 type user struct {
@@ -84,6 +88,16 @@ func (rp *RP) credentials(ctx context.Context, creds CredentialStore, subject st
 	return list, nil
 }
 
+// indexOf returns the index of the credential id in list, or -1.
+func indexOf(list []Credential, id []byte) int {
+	for i := range list {
+		if bytes.Equal(list[i].ID, id) {
+			return i
+		}
+	}
+	return -1
+}
+
 // storeFault names what makes a loaded credential unusable, or returns "".
 func storeFault(c *Credential, subject, rpID string) string {
 	switch {
@@ -101,4 +115,22 @@ func storeFault(c *Credential, subject, rpID string) string {
 		return "credential of another RP ID"
 	}
 	return ""
+}
+
+// ensureHandle returns the subject's user handle, storing a fresh random one
+// first when the subject has none. A handle the store answers outside 1 to 64
+// bytes is a store fault; a store error is returned wrapped.
+func ensureHandle(ctx context.Context, handles HandleStore, subject string) ([]byte, error) {
+	fresh := make([]byte, userHandleSize)
+	if _, err := rand.Read(fresh); err != nil {
+		return nil, fmt.Errorf("webauthn: user handle: %w", err)
+	}
+	handle, err := handles.Ensure(ctx, subject, fresh)
+	if err != nil {
+		return nil, fmt.Errorf("webauthn: ensure user handle: %w", err)
+	}
+	if len(handle) == 0 || len(handle) > userHandleSize {
+		return nil, fail(ErrInvalidCredentials, fmt.Sprintf("store fault: user handle of %d bytes", len(handle)), nil)
+	}
+	return handle, nil
 }

@@ -377,15 +377,38 @@ func TestPasskey_WithoutUserPresence(t *testing.T) {
 	h.requireSignInRefused(t, err, webauthn.ErrInvalidCredentials, alice)
 }
 
-// A discoverable assertion without a user handle is malformed: it names no
-// subject to look up.
-func TestPasskey_MissingUserHandle(t *testing.T) {
+// A discoverable assertion without a user handle names no subject to look
+// up, and one longer than WebAuthn's 64 bytes is no handle any subject holds:
+// both are malformed, refused before the handle store is asked.
+func TestPasskey_MalformedUserHandle(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, nil)
-	a := passkeyAuthenticator(t)
-	h.enroll(t, a, alice)
-	_, err := h.signIn(t, a, func(c *authtest.Ceremony) { c.UserHandle = nil })
-	h.requireSignInRefused(t, err, webauthn.ErrInvalidCredentials, alice)
+	tests := []struct {
+		name   string
+		handle []byte
+	}{
+		{"missing", nil},
+		{"65 bytes", bytes.Repeat([]byte{0x5a}, 65)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t, nil)
+			a := passkeyAuthenticator(t)
+			h.enroll(t, a, alice)
+			lookups := 0
+			handles := subjectOverride{HandleStore: h.creds, subject: func(handle []byte) (string, error) {
+				lookups++
+				return h.creds.Subject(t.Context(), handle)
+			}}
+			b := h.beginPasskey(t, signIn)
+			resp := assertion(t, a, b, func(c *authtest.Ceremony) { c.UserHandle = tc.handle })
+			_, err := h.rp.FinishPasskey(t.Context(), h.flows, h.creds, handles, signInExpect(b), resp)
+			h.requireSignInRefused(t, err, webauthn.ErrInvalidCredentials, alice)
+			if lookups != 0 {
+				t.Fatalf("a malformed user handle reached the handle store (%d Subject calls)", lookups)
+			}
+		})
+	}
 }
 
 // A passkey sign-in has no subject until the assertion names one; an Expect
@@ -412,6 +435,16 @@ func TestPasskey_TopOrigin(t *testing.T) {
 		c.CrossOrigin = true
 		c.TopOrigin = "https://evil.example"
 	})
+	h.requireSignInRefused(t, err, webauthn.ErrInvalidCredentials, alice)
+}
+
+// Check 2: topOrigin present without crossOrigin.
+func TestPasskey_TopOriginOnly(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil)
+	a := passkeyAuthenticator(t)
+	h.enroll(t, a, alice)
+	_, err := h.signIn(t, a, func(c *authtest.Ceremony) { c.TopOrigin = "https://evil.example" })
 	h.requireSignInRefused(t, err, webauthn.ErrInvalidCredentials, alice)
 }
 
@@ -544,21 +577,37 @@ func TestPasskey_Version1Credential_AdoptsFlags(t *testing.T) {
 	}
 }
 
-// Check 9: a write the store did not apply is never a pass.
+// Check 9: a write the store did not apply is never a pass, and a credential
+// gone from the store never surfaces store.ErrNotFound.
 func TestPasskey_RecordAssertionNotApplied(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, nil)
-	a := passkeyAuthenticator(t)
-	h.enroll(t, a, alice)
-	creds := &recordOverride{CredentialStore: h.creds, record: func(webauthn.AssertionUpdate) (bool, error) { return false, nil }}
-	b := h.beginPasskey(t, signIn)
-	v, err := h.rp.FinishPasskey(t.Context(), h.flows, creds, h.creds, signInExpect(b), assertion(t, a, b))
-	h.requireSignInRefused(t, err, webauthn.ErrInvalidCredentials, alice)
-	if !reflect.DeepEqual(v, webauthn.Verified{}) {
-		t.Fatalf("a refused sign-in returned %+v, want the zero Verified", v)
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"not applied", nil},
+		{"credential gone", store.ErrNotFound},
 	}
-	if got := creds.recorded(); len(got) != 1 {
-		t.Fatalf("RecordAssertion called %d times, want 1", len(got))
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t, nil)
+			a := passkeyAuthenticator(t)
+			h.enroll(t, a, alice)
+			creds := &recordOverride{CredentialStore: h.creds, record: func(webauthn.AssertionUpdate) (bool, error) { return false, tc.err }}
+			b := h.beginPasskey(t, signIn)
+			v, err := h.rp.FinishPasskey(t.Context(), h.flows, creds, h.creds, signInExpect(b), assertion(t, a, b))
+			h.requireSignInRefused(t, err, webauthn.ErrInvalidCredentials, alice)
+			if errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("err = %v surfaces store.ErrNotFound", err)
+			}
+			if !reflect.DeepEqual(v, webauthn.Verified{}) {
+				t.Fatalf("a refused sign-in returned %+v, want the zero Verified", v)
+			}
+			if got := creds.recorded(); len(got) != 1 {
+				t.Fatalf("RecordAssertion called %d times, want 1", len(got))
+			}
+		})
 	}
 }
 
@@ -780,6 +829,22 @@ func TestPasskey_CounterRegression_DeviceBound(t *testing.T) {
 	if !c.CloneSuspectedAt.Equal(h.clock.Now()) || c.SignCount != 10 || !c.LastUsedAt.IsZero() {
 		t.Fatalf("CloneSuspectedAt %v, SignCount %d, LastUsedAt %v, want %v, 10, zero",
 			c.CloneSuspectedAt, c.SignCount, c.LastUsedAt, h.clock.Now())
+	}
+}
+
+// Check 8 runs only after a verified signature: a forged assertion carrying a
+// lower counter must not mark the credential, or anyone could lock out its
+// holder.
+func TestPasskey_ForgedCounterRegression_DoesNotMark(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil)
+	a := newAuthenticator(t, authtest.AuthenticatorConfig{UserVerified: true, Discoverable: true, SignCount: 10})
+	h.enroll(t, a, alice)
+	a.SetSignCount(5)
+	_, err := h.signIn(t, a, func(c *authtest.Ceremony) { c.CorruptSignature = true })
+	h.requireSignInRefused(t, err, webauthn.ErrInvalidCredentials, alice)
+	if c := h.only(t, alice); c.SignCount != 10 {
+		t.Fatalf("SignCount = %d after a forged assertion, want 10", c.SignCount)
 	}
 }
 

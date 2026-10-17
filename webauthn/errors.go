@@ -11,7 +11,8 @@ var (
 
 	// ErrUnknownCredential is returned by a discoverable sign-in when the
 	// presented credential or user handle maps to no subject. A failure
-	// matches exactly one sentinel.
+	// matches exactly one sentinel. The error's text says which of the two
+	// missed; it is for logs only, never for a client.
 	ErrUnknownCredential = errors.New("webauthn: unknown credential")
 
 	// ErrCloneSuspected is returned when a valid signature carried a counter

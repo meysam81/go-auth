@@ -67,10 +67,12 @@ func (rp *RP) settle(ctx context.Context, creds CredentialStore, stored Credenti
 		Version:        CurrentVersion,
 		At:             now,
 	})
-	if err != nil {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return Verified{}, fail(ErrInvalidCredentials, "credential removed during the ceremony", nil)
+	case err != nil:
 		return Verified{}, fmt.Errorf("webauthn: record assertion: %w", err)
-	}
-	if !applied {
+	case !applied:
 		return Verified{}, fail(ErrInvalidCredentials, "assertion not recorded: the stored counter changed concurrently", nil)
 	}
 

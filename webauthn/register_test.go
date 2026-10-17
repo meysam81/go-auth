@@ -117,13 +117,16 @@ type takeOutage struct {
 
 func (s takeOutage) Take(context.Context, string) (store.Flow, error) { return store.Flow{}, s.err }
 
-// ensureOverride is a HandleStore whose Ensure answers handle.
+// ensureOverride is a HandleStore whose Ensure answers handle and err.
 type ensureOverride struct {
 	webauthn.HandleStore
 	handle []byte
+	err    error
 }
 
-func (s ensureOverride) Ensure(context.Context, string, []byte) ([]byte, error) { return s.handle, nil }
+func (s ensureOverride) Ensure(context.Context, string, []byte) ([]byte, error) {
+	return s.handle, s.err
+}
 
 type harness struct {
 	rp    *webauthn.RP

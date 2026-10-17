@@ -2,7 +2,6 @@ package webauthn
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,8 +13,6 @@ import (
 
 	"github.com/meysam81/go-auth/v2/store"
 )
-
-const userHandleSize = 64 // bytes from crypto/rand, created once per subject; also WebAuthn's maximum
 
 // RegistrationOptions selects what a registration creates.
 type RegistrationOptions struct {
@@ -38,16 +35,9 @@ func (rp *RP) BeginRegistration(ctx context.Context, flows store.FlowStore, cred
 	if err := validateRegistration(sub, opts); err != nil {
 		return Begun{}, err
 	}
-	fresh := make([]byte, userHandleSize)
-	if _, err := rand.Read(fresh); err != nil {
-		return Begun{}, fmt.Errorf("webauthn: user handle: %w", err)
-	}
-	handle, err := handles.Ensure(ctx, sub.ID, fresh)
+	handle, err := ensureHandle(ctx, handles, sub.ID)
 	if err != nil {
-		return Begun{}, fmt.Errorf("webauthn: ensure user handle: %w", err)
-	}
-	if len(handle) == 0 || len(handle) > userHandleSize {
-		return Begun{}, fail(ErrInvalidCredentials, fmt.Sprintf("store fault: user handle of %d bytes", len(handle)), nil)
+		return Begun{}, err
 	}
 	existing, err := rp.credentials(ctx, creds, sub.ID)
 	if err != nil {

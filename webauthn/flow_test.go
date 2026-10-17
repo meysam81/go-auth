@@ -185,3 +185,43 @@ func TestTakeFlow_PasskeyStoreFaults(t *testing.T) {
 		})
 	}
 }
+
+// A second-factor flow names its subject, and its two user-verification
+// records agree: the package writes no other kind, so a payload that does is
+// a store fault, even when the Expect agrees with it.
+func TestTakeFlow_SecondFactorStoreFaults(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		edit  func(*flowPayload)
+		fault bool
+	}{
+		{"valid", func(*flowPayload) {}, false},
+		{"second-factor flow names no subject", func(p *flowPayload) { p.Subject = "" }, true},
+		{"user verification records disagree", func(p *flowPayload) { p.RequireUV = false }, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rp := newTestRP(t)
+			p := validPayload(rp)
+			p.Session.Extensions, p.Session.CredParams, p.Session.Mediation = protocol.SessionExtensions{}, nil, ""
+			tc.edit(&p)
+			flows := &mapFlows{flows: make(map[string]store.Flow)}
+			id, err := putFlow(t.Context(), flows, flowSecondFactor, &p, p.Session.Expires)
+			if err != nil {
+				t.Fatalf("putFlow: %v", err)
+			}
+			_, err = rp.takeFlow(t.Context(), flows, Expect{FlowID: id, Purpose: p.Purpose, Subject: p.Subject}, flowSecondFactor)
+			if !tc.fault {
+				if err != nil {
+					t.Fatalf("takeFlow: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrInvalidCredentials) || !strings.Contains(err.Error(), "store fault") {
+				t.Fatalf("err = %v, want a store-fault ErrInvalidCredentials", err)
+			}
+		})
+	}
+}
