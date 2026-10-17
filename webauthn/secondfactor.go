@@ -89,9 +89,13 @@ func (rp *RP) BeginSecondFactor(ctx context.Context, flows store.FlowStore, cred
 // ErrUnknownCredential: the caller already knows the subject. go-webauthn also
 // requires the subject to still hold every credential the options listed, so
 // removing any of them fails a ceremony in flight; a fresh Begin lists what
-// remains. User verification is required only when Begin's opts.RequireUV was
-// set, and Verified.Methods carries mfa only when this assertion verified the
-// user.
+// remains.
+//
+// Finish enforces what Begin recorded in the flow: user verification is
+// required only when Begin's opts.RequireUV was set, and Expect carries no UV
+// requirement of its own. Give a UV-required ceremony its own purpose, or
+// check that Verified.Methods holds mfa, which it does only when this
+// assertion verified the user.
 //
 // A valid signature whose counter did not advance past a non-zero stored
 // counter marks the credential clone-suspected and is ErrCloneSuspected. Every
@@ -100,11 +104,7 @@ func (rp *RP) BeginSecondFactor(ctx context.Context, flows store.FlowStore, cred
 // returned wrapped. The flow is consumed by every attempt that reaches it, a
 // response that fails to parse included. Error text is for logs, never for a
 // client.
-//
-// handles is not read: the flow carries the user handle BeginSecondFactor
-// ensured. It is taken so that FinishSecondFactor and FinishPasskey take the
-// same stores.
-func (rp *RP) FinishSecondFactor(ctx context.Context, flows store.FlowStore, creds CredentialStore, handles HandleStore, e Expect, response []byte) (Verified, error) {
+func (rp *RP) FinishSecondFactor(ctx context.Context, flows store.FlowStore, creds CredentialStore, e Expect, response []byte) (Verified, error) {
 	if len(response) > maxResponseSize {
 		return Verified{}, fail(ErrInvalidCredentials, "response larger than 64 KiB", nil)
 	}

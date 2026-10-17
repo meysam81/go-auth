@@ -1,6 +1,7 @@
 package webauthn
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -113,16 +114,22 @@ func (rp *RP) takeFlow(ctx context.Context, flows store.FlowStore, e Expect, kin
 
 // payloadFault names what in a flow of kind disagrees with what the package
 // writes, or returns "". The flow store is the application's, so every value
-// the package can derive from its own configuration is checked again: register
-// and second-factor flows name a subject, a passkey flow names none and
-// requires user verification, the session is for this RP ID and bound to no
-// single origin, its algorithms are configured ones, and the two
-// user-verification records agree.
+// the package can derive from its own configuration or from the payload itself
+// is checked again: register and second-factor flows name a subject and carry
+// the user handle their session was begun for, a second-factor session lists
+// the credentials it offered, a passkey flow names no subject and requires
+// user verification, the session is for this RP ID and bound to no single
+// origin, its algorithms are configured ones, and the two user-verification
+// records agree.
 func (rp *RP) payloadFault(p *flowPayload, kind string) string {
 	s := &p.Session
 	switch {
 	case (kind == flowRegister || kind == flowSecondFactor) && p.Subject == "":
 		return "flow names no subject"
+	case (kind == flowRegister || kind == flowSecondFactor) && !bytes.Equal(s.UserID, p.Handle):
+		return "session user ID differs from the flow's user handle"
+	case kind == flowSecondFactor && len(s.AllowedCredentialIDs) == 0:
+		return "second-factor session lists no credentials"
 	case kind == flowPasskey && p.Subject != "":
 		return "passkey flow names a subject"
 	case kind == flowPasskey && !p.RequireUV:

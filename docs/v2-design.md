@@ -518,12 +518,15 @@ reserved for credentials imported from v1, whose backup flags were never recorde
 for those, the first assertion records the flags instead of comparing them and
 moves the credential to the current version.
 
-The adoption has one race. A synced Version 1 credential stays at counter 0, so
-two assertions that both carry a valid signature but different BE both match the
-conditional update (`sign_count = 0` still holds after the first), and the last
-write's flags stand. Two valid signatures with different flags need the
-credential's private key, so this is not an outside attack; closing it would add
-a version condition to `RecordAssertion` and change the store contract.
+The adoption has one race. It needs two concurrent assertions of a synced
+Version 1 credential, which stays at counter 0, that both read it as Version 1
+before either writes, and that carry valid signatures with different BE. Both
+then adopt their own flags and both match the conditional update
+(`sign_count = 0` still holds after the first), so the last write's flags stand.
+An assertion that reads the credential after the first write sees the current
+version and is refused on BE. Two valid signatures with different flags need
+the credential's private key, so this is not an outside attack; closing it would
+add a version condition to `RecordAssertion` and change the store contract.
 
 #### Ceremonies
 
@@ -686,7 +689,8 @@ That holds for the random 64-byte user handles the library creates. A subject
 imported from v1 keeps its v1 user ID as its handle (§8), which may be guessable:
 a guessed handle that resolves costs a credential lookup an unresolved one does
 not, so for those subjects the guarantee is weaker. An error's text names which
-lookup missed; it is for logs only and never reaches a client.
+lookup missed; it is for logs only, and the application must never send it to a
+client.
 
 Two narrow, documented exceptions, both after a valid signature or on a path that
 takes no identifier:
@@ -739,10 +743,13 @@ it chooses. The migration document must cover, at minimum:
   directly and calls the library for verification only.
 - WebAuthn credentials registered by v1 carry over as second factors: a v1
   credential's user handle is the subject ID, so the application seeds its
-  `HandleStore` with that value for those subjects (`Ensure` then returns it, and
-  their discoverable sign-in resolves). Their backup flags move from v1's metadata
-  keys into the typed fields; a credential whose flags were never recorded is
-  imported with `Version: 1` and takes them from its next assertion (§5.4).
+  `HandleStore` with that value for those subjects before any `Begin` runs for
+  them (`Ensure` then returns it, and their discoverable sign-in resolves). Every
+  `Begin` calls `Ensure`, which stores a fresh random handle for a subject that
+  has none, permanently, so a `Begin` before seeding strands the v1 handle. Their
+  backup flags move from v1's metadata keys into the typed fields; a credential
+  whose flags were never recorded is imported with `Version: 1` and takes them
+  from its next assertion (§5.4).
   That handle is the v1 user ID, not 64 random bytes, and may be guessable, so
   §6's "nothing a stranger can submit reveals whether an account exists" holds
   only for subjects whose handle the library created.

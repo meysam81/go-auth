@@ -73,7 +73,7 @@ func (rp *RP) settle(ctx context.Context, creds CredentialStore, stored Credenti
 	case err != nil:
 		return Verified{}, fmt.Errorf("webauthn: record assertion: %w", err)
 	case !applied:
-		return Verified{}, fail(ErrInvalidCredentials, "assertion not recorded: the stored counter changed concurrently", nil)
+		return Verified{}, fail(ErrInvalidCredentials, "assertion not recorded: no row matched the stored counter", nil)
 	}
 
 	methods := []amr.Method{amr.HWK}

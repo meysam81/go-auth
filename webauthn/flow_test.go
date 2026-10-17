@@ -123,6 +123,8 @@ func TestTakeFlow_StoreFaults(t *testing.T) {
 		{"UV required by the package, not the session", func(p *flowPayload) { p.Session.UserVerification = protocol.VerificationPreferred }},
 		{"UV required by the session, not the package", func(p *flowPayload) { p.RequireUV = false }},
 		{"register flow names no subject", func(p *flowPayload) { p.Subject = "" }},
+		{"session user ID differs from the handle", func(p *flowPayload) { p.Session.UserID = []byte{9} }},
+		{"handle differs from the session user ID", func(p *flowPayload) { p.Handle = nil }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -186,9 +188,10 @@ func TestTakeFlow_PasskeyStoreFaults(t *testing.T) {
 	}
 }
 
-// A second-factor flow names its subject, and its two user-verification
-// records agree: the package writes no other kind, so a payload that does is
-// a store fault, even when the Expect agrees with it.
+// A second-factor flow names its subject, lists the credentials it offered,
+// carries the user handle its session was begun for, and its two
+// user-verification records agree: the package writes no other kind, so a
+// payload that does not is a store fault, even when the Expect agrees with it.
 func TestTakeFlow_SecondFactorStoreFaults(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -199,6 +202,9 @@ func TestTakeFlow_SecondFactorStoreFaults(t *testing.T) {
 		{"valid", func(*flowPayload) {}, false},
 		{"second-factor flow names no subject", func(p *flowPayload) { p.Subject = "" }, true},
 		{"user verification records disagree", func(p *flowPayload) { p.RequireUV = false }, true},
+		{"no allowed credentials", func(p *flowPayload) { p.Session.AllowedCredentialIDs = nil }, true},
+		{"session user ID differs from the handle", func(p *flowPayload) { p.Session.UserID = []byte{9} }, true},
+		{"handle differs from the session user ID", func(p *flowPayload) { p.Handle = nil }, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

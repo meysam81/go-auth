@@ -635,7 +635,7 @@ assertion's UV flag is set.
       RequireUV bool
   }
   func (rp *RP) BeginSecondFactor(ctx context.Context, flows store.FlowStore, creds CredentialStore, handles HandleStore, subject string, opts SecondFactorOptions) (Begun, error)
-  func (rp *RP) FinishSecondFactor(ctx context.Context, flows store.FlowStore, creds CredentialStore, handles HandleStore, e Expect, response []byte) (Verified, error)
+  func (rp *RP) FinishSecondFactor(ctx context.Context, flows store.FlowStore, creds CredentialStore, e Expect, response []byte) (Verified, error)
   ```
 
 - [ ] **Step 1: Write the failing tests**

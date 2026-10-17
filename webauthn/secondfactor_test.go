@@ -89,7 +89,7 @@ func stepUpExpect(sub webauthn.Subject, b webauthn.Begun) webauthn.Expect {
 
 func (h *harness) finishSecondFactor(t *testing.T, e webauthn.Expect, response []byte) (webauthn.Verified, error) {
 	t.Helper()
-	return h.rp.FinishSecondFactor(t.Context(), h.flows, h.creds, h.creds, e, response)
+	return h.rp.FinishSecondFactor(t.Context(), h.flows, h.creds, e, response)
 }
 
 // secondFactor runs one second-factor ceremony for alice: Begin with opts, a
@@ -279,14 +279,16 @@ func TestSecondFactor_Options(t *testing.T) {
 			if !slices.EqualFunc(got, want, bytes.Equal) {
 				t.Errorf("allowCredentials IDs = %x, want exactly alice's credentials for %s %x", got, rpID, want)
 			}
-			switch {
-			case o.UserVerification != tc.uv:
+			if o.UserVerification != tc.uv {
 				t.Errorf("userVerification = %q, want %q", o.UserVerification, tc.uv)
-			case o.RPID != rpID:
+			}
+			if o.RPID != rpID {
 				t.Errorf("rpId = %q, want %q", o.RPID, rpID)
-			case o.Timeout != int((5 * time.Minute).Milliseconds()):
+			}
+			if o.Timeout != int((5 * time.Minute).Milliseconds()) {
 				t.Errorf("timeout = %d, want 300000", o.Timeout)
-			case b.Mediation != "":
+			}
+			if b.Mediation != "" {
 				t.Errorf("Mediation = %q, want empty", b.Mediation)
 			}
 
@@ -573,7 +575,7 @@ func TestSecondFactor_RecordAssertionNotApplied(t *testing.T) {
 	h.enrollKey(t, a, alice)
 	creds := &recordOverride{CredentialStore: h.creds, record: func(webauthn.AssertionUpdate) (bool, error) { return false, nil }}
 	b := h.beginSecondFactor(t, alice, stepUp)
-	v, err := h.rp.FinishSecondFactor(t.Context(), h.flows, creds, h.creds, stepUpExpect(alice, b), assertion(t, a, b))
+	v, err := h.rp.FinishSecondFactor(t.Context(), h.flows, creds, stepUpExpect(alice, b), assertion(t, a, b))
 	h.requireStepUpRefused(t, err, alice)
 	if !reflect.DeepEqual(v, webauthn.Verified{}) {
 		t.Fatalf("a refused assertion returned %+v, want the zero Verified", v)
@@ -763,7 +765,7 @@ func TestSecondFactor_StoreFault(t *testing.T) {
 				return list, err
 			}}
 			b := h.beginSecondFactor(t, alice, stepUp)
-			_, err := h.rp.FinishSecondFactor(t.Context(), h.flows, creds, h.creds, stepUpExpect(alice, b), assertion(t, a, b))
+			_, err := h.rp.FinishSecondFactor(t.Context(), h.flows, creds, stepUpExpect(alice, b), assertion(t, a, b))
 			h.requireStepUpRefused(t, err, alice)
 			if !strings.Contains(err.Error(), "store fault") {
 				t.Fatalf("err = %v, want a store fault", err)
@@ -949,7 +951,7 @@ func TestFinishSecondFactor_StoreError(t *testing.T) {
 				creds = tc.creds(creds)
 			}
 			b := h.beginSecondFactor(t, alice, stepUp)
-			v, err := h.rp.FinishSecondFactor(t.Context(), flows, creds, h.creds, stepUpExpect(alice, b), assertion(t, a, b))
+			v, err := h.rp.FinishSecondFactor(t.Context(), flows, creds, stepUpExpect(alice, b), assertion(t, a, b))
 			if !errors.Is(err, down) || isSentinel(err) {
 				t.Fatalf("err = %v, want the store's error and no sentinel", err)
 			}
