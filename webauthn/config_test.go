@@ -30,8 +30,15 @@ func TestNew_RejectsBadConfig(t *testing.T) {
 		{"RPID uppercase", func(c *Config) { c.RPID = "Example.Test" }, "must be lowercase"},
 		{"RPID is IP", func(c *Config) { c.RPID = "192.0.2.1"; c.Origins = []string{"https://192.0.2.1"} }, "must not be an IP"},
 		{"RPID bad label", func(c *Config) { c.RPID = "-example.test" }, "valid DNS name"},
+		{"RPID too long", func(c *Config) {
+			l := strings.Repeat("a", 63)
+			c.RPID = l + "." + l + "." + l + "." + l
+			c.Origins = []string{"https://" + c.RPID}
+		}, "RPID is too long"},
 		{"empty RPName", func(c *Config) { c.RPName = "" }, "RPName is required"},
 		{"no origins", func(c *Config) { c.Origins = nil }, "at least one origin"},
+		{"unparsable origin", func(c *Config) { c.Origins = []string{"https://app.example.test:80a"} }, `invalid port ":80a"`},
+		{"http localhost under another RP ID", func(c *Config) { c.Origins = []string{"http://localhost"} }, "must be https"},
 		{"trailing slash", func(c *Config) { c.Origins = []string{"https://app.example.test/"} }, "optional port only"},
 		{"path", func(c *Config) { c.Origins = []string{"https://app.example.test/x"} }, "optional port only"},
 		{"query", func(c *Config) { c.Origins = []string{"https://app.example.test?x=1"} }, "optional port only"},
