@@ -84,8 +84,9 @@ credential ID on registration is `store.ErrDuplicate`). Branch with
 `errors.Is`. An error's text is for logs only: never send it to a client.
 
 If you import subjects from v1, seed their user handles through your
-`HandleStore` before the first `Begin`: every `Begin` calls `Ensure`, which
-creates a handle for a subject that has none.
+`HandleStore` before the first `BeginRegistration` or `BeginSecondFactor`:
+both call `Ensure`, which creates a handle for a subject that has none.
+`BeginPasskey` takes no `HandleStore`.
 
 #### Implement the stores, then prove them
 

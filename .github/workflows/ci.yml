@@ -227,7 +227,8 @@ jobs:
   # docs/security-hardening.md §6: the fuzz targets cover the WebAuthn ceremony
   # decoders, which are the parsers reachable with attacker-controlled bytes
   # before any credential is verified. A short bounded budget per target keeps
-  # this a regression gate on the checked-in corpus rather than a discovery run.
+  # this a regression gate on the seed inputs (added with f.Add) rather than a
+  # discovery run.
   fuzz:
     permissions:
       contents: read
