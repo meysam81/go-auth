@@ -7,6 +7,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -82,7 +83,8 @@ type Ceremony struct {
 	// TopOrigin is the client data topOrigin, sent only when non-empty.
 	TopOrigin string
 
-	// CrossOrigin is the client data crossOrigin, sent only when true.
+	// CrossOrigin is the client data crossOrigin. It is always sent, false by
+	// default, as WebAuthn Level 3 §5.8.1.1 serializes it.
 	CrossOrigin bool
 
 	// RPID is hashed into the authenticator data: rp.id of the creation
@@ -111,6 +113,13 @@ type Ceremony struct {
 	// user handle.
 	UserHandle []byte
 
+	// ReportedAlgorithm is sent as the registration response's
+	// publicKeyAlgorithm; it defaults to the configured algorithm. The client
+	// reports that member and no signature covers it, so a relying party must
+	// take the algorithm from the attested COSE key: forging it here shows
+	// whether it does. Assert ignores it.
+	ReportedAlgorithm int
+
 	// OmitCredProps withholds credProps from a registration whose options
 	// request it.
 	OmitCredProps bool
@@ -135,13 +144,16 @@ type Tamper func(*Ceremony)
 // excludeCredentials at registration nor allowCredentials at assertion, so a
 // test can reach every check the relying party makes on its own.
 //
-// Calls are serialized, and a Tamper runs inside the call: a Tamper must not
-// call SetSignCount on the Authenticator it was passed to.
+// Calls are serialized, and a Tamper runs inside the call, under the
+// Authenticator's lock: a Tamper must not call SetSignCount, Register or
+// Assert on the Authenticator running it, or the call deadlocks.
 type Authenticator struct {
 	cfg     AuthenticatorConfig
+	alg     int                // the COSE algorithm: -7 or -8
 	ecKey   *ecdsa.PrivateKey  // ES256; nil for Ed25519
 	edKey   ed25519.PrivateKey // Ed25519; nil for ES256
 	coseKey []byte             // the credential public key as a COSE_Key
+	spki    []byte             // the same key as DER SubjectPublicKeyInfo
 	credID  []byte
 
 	mu      sync.Mutex
@@ -159,10 +171,12 @@ func NewAuthenticator(cfg AuthenticatorConfig) (*Authenticator, error) {
 
 	var (
 		key any
+		pub any
 		err error
 	)
 	switch cfg.Algorithm {
 	case 0, int(webauthncose.AlgES256):
+		a.alg = int(webauthncose.AlgES256)
 		if a.ecKey, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader); err != nil {
 			return nil, fmt.Errorf("authtest: generate ES256 key: %w", err)
 		}
@@ -170,6 +184,7 @@ func NewAuthenticator(cfg AuthenticatorConfig) (*Authenticator, error) {
 		if point, err = a.ecKey.PublicKey.Bytes(); err != nil {
 			return nil, fmt.Errorf("authtest: encode ES256 key: %w", err)
 		}
+		pub = &a.ecKey.PublicKey
 		key = webauthncose.EC2PublicKeyData{
 			PublicKeyData: webauthncose.PublicKeyData{
 				KeyType:   int64(webauthncose.EllipticKey),
@@ -180,17 +195,19 @@ func NewAuthenticator(cfg AuthenticatorConfig) (*Authenticator, error) {
 			YCoord: point[33:65],
 		}
 	case int(webauthncose.AlgEdDSA):
-		var pub ed25519.PublicKey
-		if pub, a.edKey, err = ed25519.GenerateKey(rand.Reader); err != nil {
+		a.alg = int(webauthncose.AlgEdDSA)
+		var edPub ed25519.PublicKey
+		if edPub, a.edKey, err = ed25519.GenerateKey(rand.Reader); err != nil {
 			return nil, fmt.Errorf("authtest: generate Ed25519 key: %w", err)
 		}
+		pub = edPub
 		key = webauthncose.OKPPublicKeyData{
 			PublicKeyData: webauthncose.PublicKeyData{
 				KeyType:   int64(webauthncose.OctetKey),
 				Algorithm: int64(webauthncose.AlgEdDSA),
 			},
 			Curve:  int64(webauthncose.Ed25519),
-			XCoord: pub,
+			XCoord: edPub,
 		}
 	default:
 		return nil, fmt.Errorf("authtest: algorithm %d is not supported; use -7 (ES256) or -8 (Ed25519)", cfg.Algorithm)
@@ -198,6 +215,9 @@ func NewAuthenticator(cfg AuthenticatorConfig) (*Authenticator, error) {
 
 	if a.coseKey, err = webauthncbor.Marshal(key); err != nil {
 		return nil, fmt.Errorf("authtest: encode COSE key: %w", err)
+	}
+	if a.spki, err = x509.MarshalPKIXPublicKey(pub); err != nil {
+		return nil, fmt.Errorf("authtest: encode SubjectPublicKeyInfo: %w", err)
 	}
 	return a, nil
 }
@@ -219,9 +239,10 @@ func (a *Authenticator) SetSignCount(n uint32) {
 // Register answers navigator.credentials.create(). optionsJSON is the
 // PublicKeyCredentialCreationOptionsJSON object (the "publicKey" member, not
 // the object wrapping it); the result is the browser's
-// PublicKeyCredential.toJSON() of the new credential, with attestation
-// "none". The authenticator remembers user.id as the credential's user handle.
-// The counter does not move.
+// PublicKeyCredential.toJSON() of the new credential, with attestation "none"
+// and the Level 3 members authenticatorData, publicKey (DER
+// SubjectPublicKeyInfo) and publicKeyAlgorithm. The authenticator remembers
+// user.id as the credential's user handle. The counter does not move.
 func (a *Authenticator) Register(optionsJSON []byte, origin string, t ...Tamper) ([]byte, error) {
 	var opts creationOptions
 	if err := json.Unmarshal(optionsJSON, &opts); err != nil {
@@ -239,14 +260,15 @@ func (a *Authenticator) Register(optionsJSON []byte, origin string, t ...Tamper)
 	defer a.mu.Unlock()
 
 	c := Ceremony{
-		Type:         string(protocol.CreateCeremony),
-		Challenge:    base64.RawURLEncoding.EncodeToString(opts.Challenge),
-		Origin:       origin,
-		RPID:         rpID,
-		Flags:        a.flags() | byte(protocol.FlagAttestedCredentialData),
-		SignCount:    a.counter,
-		CredentialID: bytes.Clone(a.credID),
-		UserHandle:   bytes.Clone(opts.User.ID),
+		Type:              string(protocol.CreateCeremony),
+		Challenge:         base64.RawURLEncoding.EncodeToString(opts.Challenge),
+		Origin:            origin,
+		RPID:              rpID,
+		Flags:             a.flags() | byte(protocol.FlagAttestedCredentialData),
+		SignCount:         a.counter,
+		CredentialID:      bytes.Clone(a.credID),
+		UserHandle:        bytes.Clone(opts.User.ID),
+		ReportedAlgorithm: a.alg,
 	}
 	apply(&c, t)
 	if c.CorruptSignature || c.RawECDSA {
@@ -262,10 +284,11 @@ func (a *Authenticator) Register(optionsJSON []byte, origin string, t ...Tamper)
 	attested = append(attested, c.CredentialID...)
 	attested = append(attested, a.coseKey...)
 
+	authData := authenticatorData(&c, attested)
 	attestationObject, err := webauthncbor.Marshal(noneAttestation{
 		Format:    "none",
 		Statement: map[string]any{},
-		AuthData:  authenticatorData(&c, attested),
+		AuthData:  authData,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("authtest: encode attestation object: %w", err)
@@ -281,9 +304,12 @@ func (a *Authenticator) Register(optionsJSON []byte, origin string, t ...Tamper)
 		RawID: b64(c.CredentialID),
 		Type:  string(protocol.PublicKeyCredentialType),
 		Response: attestationResponseJSON{
-			ClientDataJSON:    b64(clientDataJSON),
-			AttestationObject: b64(attestationObject),
-			Transports:        []string{transport},
+			ClientDataJSON:     b64(clientDataJSON),
+			AuthenticatorData:  b64(authData),
+			Transports:         []string{transport},
+			PublicKey:          b64(a.spki),
+			PublicKeyAlgorithm: c.ReportedAlgorithm,
+			AttestationObject:  b64(attestationObject),
 		},
 		AuthenticatorAttachment: attachment,
 	}
@@ -304,7 +330,8 @@ func (a *Authenticator) Register(optionsJSON []byte, origin string, t ...Tamper)
 // result is the browser's PublicKeyCredential.toJSON() of the assertion. The
 // credential is used whether or not allowCredentials lists it, so a foreign
 // authenticator reaches the relying party's own credential checks. The counter
-// advances by CounterStep when a response is returned.
+// advances by CounterStep when a response is returned; an advance past the
+// largest uint32 is refused rather than wrapped.
 func (a *Authenticator) Assert(optionsJSON []byte, origin string, t ...Tamper) ([]byte, error) {
 	var opts requestOptions
 	if err := json.Unmarshal(optionsJSON, &opts); err != nil {
@@ -321,15 +348,19 @@ func (a *Authenticator) Assert(optionsJSON []byte, origin string, t ...Tamper) (
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	if a.cfg.CounterStep > math.MaxUint32-a.counter {
+		return nil, fmt.Errorf("authtest: counter %d plus step %d overflows uint32", a.counter, a.cfg.CounterStep)
+	}
 	next := a.counter + a.cfg.CounterStep
 	c := Ceremony{
-		Type:         string(protocol.AssertCeremony),
-		Challenge:    base64.RawURLEncoding.EncodeToString(opts.Challenge),
-		Origin:       origin,
-		RPID:         rpID,
-		Flags:        a.flags(),
-		SignCount:    next,
-		CredentialID: bytes.Clone(a.credID),
+		Type:              string(protocol.AssertCeremony),
+		Challenge:         base64.RawURLEncoding.EncodeToString(opts.Challenge),
+		Origin:            origin,
+		RPID:              rpID,
+		Flags:             a.flags(),
+		SignCount:         next,
+		CredentialID:      bytes.Clone(a.credID),
+		ReportedAlgorithm: a.alg,
 	}
 	if a.cfg.Discoverable {
 		c.UserHandle = bytes.Clone(a.handle)
@@ -461,18 +492,23 @@ func authenticatorData(c *Ceremony, attested []byte) []byte {
 	return append(data, attested...)
 }
 
+// clientData serializes the client data as browsers do (WebAuthn Level 3
+// §5.8.1.1): members in collectedClientData order, no HTML escaping, and no
+// trailing newline, which would otherwise end up in the signed bytes.
 func clientData(c *Ceremony) ([]byte, error) {
-	b, err := json.Marshal(collectedClientData{
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(collectedClientData{
 		Type:        c.Type,
 		Challenge:   c.Challenge,
 		Origin:      c.Origin,
 		CrossOrigin: c.CrossOrigin,
 		TopOrigin:   c.TopOrigin,
-	})
-	if err != nil {
+	}); err != nil {
 		return nil, fmt.Errorf("authtest: encode client data: %w", err)
 	}
-	return b, nil
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
 // b64 is the unpadded base64url the JSON forms of WebAuthn use.
@@ -513,7 +549,7 @@ type collectedClientData struct {
 	Type        string `json:"type"`
 	Challenge   string `json:"challenge"`
 	Origin      string `json:"origin"`
-	CrossOrigin bool   `json:"crossOrigin,omitempty"`
+	CrossOrigin bool   `json:"crossOrigin"`
 	TopOrigin   string `json:"topOrigin,omitempty"`
 }
 
@@ -534,10 +570,15 @@ type credentialJSON[R any] struct {
 	AuthenticatorAttachment string                     `json:"authenticatorAttachment,omitempty"`
 }
 
+// attestationResponseJSON is AuthenticatorAttestationResponseJSON, in the
+// member order of the IDL.
 type attestationResponseJSON struct {
-	ClientDataJSON    string   `json:"clientDataJSON"`
-	AttestationObject string   `json:"attestationObject"`
-	Transports        []string `json:"transports,omitempty"`
+	ClientDataJSON     string   `json:"clientDataJSON"`
+	AuthenticatorData  string   `json:"authenticatorData"`
+	Transports         []string `json:"transports"`
+	PublicKey          string   `json:"publicKey"`
+	PublicKeyAlgorithm int      `json:"publicKeyAlgorithm"`
+	AttestationObject  string   `json:"attestationObject"`
 }
 
 type assertionResponseJSON struct {
