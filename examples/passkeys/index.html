@@ -148,8 +148,12 @@
         }
         // Re-arm unless the page cancelled this request itself (a modal ceremony
         // is running and re-arms when it ends).
+        // The delay keeps a browser that rejects immediately (an unfocused
+        // page, say) from turning this into a tight loop.
         if (!controller.signal.aborted && autofill === controller) {
-          startAutofill();
+          setTimeout(() => {
+            if (autofill === controller) startAutofill();
+          }, 1000);
         }
       }
 
