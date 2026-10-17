@@ -15,7 +15,13 @@ lives on the `v1` branch.
 go build ./... && go vet ./...
 go test -race ./...
 golangci-lint run
+govulncheck ./...
+go test -run='^$' -fuzz='^FuzzFinishPasskey$' -fuzztime=30s ./webauthn/   # also FuzzFinishRegistration, FuzzFinishSecondFactor
 ```
+
+CI enforces the per-package coverage floors in `.coverage-floor` against
+`go test -race -covermode=atomic -coverprofile=coverage.txt ./...`; raise a
+floor when tests land, never lower one in an unrelated change.
 
 ## Project Structure
 
@@ -42,6 +48,7 @@ column is the delivery order; only G1 packages exist before their phase ships.
   audit/        event vocabulary and a Logger interface. Nothing else.          later
   httpmw/       credential extraction middleware                                later
   batteries/    optional wired-up flows; deferred                               -
+  examples/     runnable demonstrations (passkeys); not production code         G1
 ```
 
 ## Code Style Guidelines

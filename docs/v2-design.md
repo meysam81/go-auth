@@ -1,9 +1,8 @@
 # go-auth v2 — design
 
-Status: proposed. Phase G1 (`amr`, `webauthn`, `store`, `authtest`) is approved
-for implementation; G2 and G3 each get a design pass of their own before code
-(§11). Baseline: `v1.1.3`. Module becomes `github.com/meysam81/go-auth/v2`. Go
-1.26 or newer.
+Status: G1 implemented (`amr`, `webauthn`, `store`, `authtest`); G2 and G3 each
+get a design pass of their own before code (§11). Baseline: `v1.1.3`. Module
+becomes `github.com/meysam81/go-auth/v2`. Go 1.26 or newer.
 
 v1 was an audit and a repair. v2 is the shape the repairs kept pointing at. This
 document is the design; `docs/v2-plan.md` will be the execution plan.
