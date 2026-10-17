@@ -61,10 +61,12 @@ Persists everything, in its own schema, inside its own transactions.
 ## 2. Module and package layout
 
 One module, `github.com/meysam81/go-auth/v2`, with the boundary enforced by the
-linter rather than by convention. The phase column is the delivery order (§11).
+linter rather than by convention. The module lives at the repository root on
+`main` (the major-branch layout); v1 moves to a `v1` branch (§11). The phase
+column is the delivery order.
 
 ```
-v2/
+(repository root)
   amr/          authentication methods (RFC 8176), factor classes, policy        G1
   webauthn/     registration, second-factor and passkey ceremonies              G1
   store/        the single-use FlowStore and the shared error sentinels         G1
