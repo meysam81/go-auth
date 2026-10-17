@@ -737,7 +737,10 @@ a normal importable package, not a `_test.go` file:
 ```go
 func TestMyStores(t *testing.T) {
     authtest.FlowStoreSuite(func(t *testing.T) store.FlowStore { … })(t)
-    authtest.WebAuthnStoreSuite(func(t *testing.T) (webauthn.CredentialStore, webauthn.HandleStore) { … })(t)
+    authtest.WebAuthnStoreSuite(authtest.WebAuthnHarness{
+        NewStores:  func(t *testing.T) (webauthn.CredentialStore, webauthn.HandleStore) { … },
+        NewSubject: func(t *testing.T) string { … }, // a subject your store accepts
+    })(t)
 }
 ```
 
