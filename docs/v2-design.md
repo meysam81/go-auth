@@ -546,8 +546,10 @@ package adds, in order, and each is a test named for the attack:
 1. The flow exists, is unexpired, unconsumed (atomic `Take`), of the expected kind
    and purpose, and, when the ceremony names a subject, for that subject.
 2. `topOrigin` absent.
-3. User presence set. User verification set when the ceremony requires it; a
-   passkey sign-in without it is refused, never downgraded.
+3. User presence set, except for a conditional create (WebAuthn Level 3 §7.1
+   verifies UP only when mediation is not conditional). User verification set
+   when the ceremony requires it; a passkey sign-in without it is refused, never
+   downgraded.
 4. Registration: algorithm in the allow-list; credential ID absent for every
    subject (`Insert` → `ErrDuplicate`, which the application must not resolve by
    re-binding); BE=0 with BS=1 refused.
