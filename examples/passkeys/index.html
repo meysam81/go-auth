@@ -78,11 +78,24 @@
       "use strict";
 
       const status = document.getElementById("status");
+      const signinButton = document.getElementById("signin");
+      const registerButton = document.querySelector("#register-form button");
       let autofill = null; // AbortController of the pending conditional request
 
       function say(text, isError) {
         status.textContent = text;
         status.className = isError ? "error" : "";
+      }
+
+      // isQuiet is true for what a visitor causes by dismissing a prompt or by the
+      // page cancelling its own pending request: nothing to report.
+      function isQuiet(e) {
+        return e.name === "AbortError" || e.name === "NotAllowedError";
+      }
+
+      function setBusy(busy) {
+        signinButton.disabled = busy;
+        registerButton.disabled = busy;
       }
 
       async function post(path, body) {
@@ -103,51 +116,67 @@
         }
       }
 
-      // signIn runs one passkey ceremony. A conditional (autofill) ceremony stays
-      // pending until the visitor picks a passkey from the field; a modal one shows
-      // the browser's own prompt.
-      async function signIn(conditional) {
-        const begun = await post("/signin/begin", { conditional });
-        const options = PublicKeyCredential.parseRequestOptionsFromJSON(
-          begun.options,
-        );
-        const request = { publicKey: options };
-        if (conditional) {
-          autofill = new AbortController();
-          request.mediation = begun.mediation;
-          request.signal = autofill.signal;
-        }
-        const credential = await navigator.credentials.get(request);
+      async function finishSignIn(flowId, credential) {
         if (!credential) return;
         const done = await post("/signin/finish", {
-          flow_id: begun.flow_id,
+          flow_id: flowId,
           credential: credential.toJSON(),
         });
         say("Signed in as " + done.subject);
       }
 
+      // startAutofill leaves one conditional request pending: it resolves when the
+      // visitor picks a passkey from the username field. The controller exists before
+      // the first await so a modal ceremony can always cancel it.
       async function startAutofill() {
+        abortAutofill();
+        const controller = new AbortController();
+        autofill = controller;
         try {
-          await signIn(true);
+          const begun = await post("/signin/begin", { conditional: true });
+          const options = PublicKeyCredential.parseRequestOptionsFromJSON(
+            begun.options,
+          );
+          const credential = await navigator.credentials.get({
+            publicKey: options,
+            mediation: begun.mediation,
+            signal: controller.signal,
+          });
+          await finishSignIn(begun.flow_id, credential);
         } catch (e) {
-          if (e.name !== "AbortError") say(e.message, true);
+          if (!isQuiet(e)) say(e.message, true);
+        }
+        // Re-arm unless the page cancelled this request itself (a modal ceremony
+        // is running and re-arms when it ends).
+        if (!controller.signal.aborted && autofill === controller) {
+          startAutofill();
         }
       }
 
       async function modalSignIn() {
         // Only one ceremony can be pending: end the autofill request first.
         abortAutofill();
+        setBusy(true);
         try {
-          await signIn(false);
+          const begun = await post("/signin/begin", { conditional: false });
+          const options = PublicKeyCredential.parseRequestOptionsFromJSON(
+            begun.options,
+          );
+          const credential = await navigator.credentials.get({
+            publicKey: options,
+          });
+          await finishSignIn(begun.flow_id, credential);
         } catch (e) {
-          if (e.name !== "NotAllowedError") say(e.message, true);
+          if (!isQuiet(e)) say(e.message, true);
         }
+        setBusy(false);
         startAutofill();
       }
 
       async function register(event) {
         event.preventDefault();
         abortAutofill();
+        setBusy(true);
         const name = document.getElementById("register-name").value;
         try {
           const begun = await post("/register/begin", { name });
@@ -157,15 +186,18 @@
           const credential = await navigator.credentials.create({
             publicKey: options,
           });
-          const done = await post("/register/finish", {
-            flow_id: begun.flow_id,
-            name,
-            credential: credential.toJSON(),
-          });
-          say("Registered a passkey for " + done.subject + ". Now sign in.");
+          if (credential) {
+            const done = await post("/register/finish", {
+              flow_id: begun.flow_id,
+              name,
+              credential: credential.toJSON(),
+            });
+            say("Registered a passkey for " + done.subject + ". Now sign in.");
+          }
         } catch (e) {
-          if (e.name !== "NotAllowedError") say(e.message, true);
+          if (!isQuiet(e)) say(e.message, true);
         }
+        setBusy(false);
         startAutofill();
       }
 

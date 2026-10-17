@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"mime"
 	"net/http"
 	"os"
 	"os/signal"
@@ -158,8 +159,9 @@ func (s *server) index(w http.ResponseWriter, _ *http.Request) {
 }
 
 // registerBegin starts a registration. Demo only: the name the visitor types is
-// the subject. A real application registers a passkey for a subject it has
-// already authenticated.
+// the subject, so anyone can add a passkey to any existing name. In a real
+// application that is an account takeover: register a passkey only for a
+// subject the application has already authenticated.
 func (s *server) registerBegin(w http.ResponseWriter, r *http.Request) {
 	var req registerBeginRequest
 	if !s.decode(w, r, &req) {
@@ -181,6 +183,9 @@ func (s *server) registerBegin(w http.ResponseWriter, r *http.Request) {
 	s.json(w, http.StatusOK, beginResponse{FlowID: begun.FlowID, Options: begun.Options, Mediation: begun.Mediation})
 }
 
+// registerFinish completes a registration. The subject comes from the request
+// body here only because the demo has no sessions. A real application takes it
+// from its authenticated session, never from the request body.
 func (s *server) registerFinish(w http.ResponseWriter, r *http.Request) {
 	var req registerFinishRequest
 	if !s.decode(w, r, &req) {
@@ -197,7 +202,7 @@ func (s *server) registerFinish(w http.ResponseWriter, r *http.Request) {
 		webauthn.Expect{FlowID: req.FlowID, Purpose: purposeRegister, Subject: name},
 		req.Credential)
 	if err != nil {
-		s.finishError(w, err)
+		s.finishError(w, "registration failed", err)
 		return
 	}
 	s.json(w, http.StatusOK, subjectResponse{Subject: name})
@@ -230,7 +235,7 @@ func (s *server) signinFinish(w http.ResponseWriter, r *http.Request) {
 		webauthn.Expect{FlowID: req.FlowID, Purpose: purposeSignin},
 		req.Credential)
 	if err != nil {
-		s.finishError(w, err)
+		s.finishError(w, "sign-in failed", err)
 		return
 	}
 	// A real application would start a session here.
@@ -238,23 +243,34 @@ func (s *server) signinFinish(w http.ResponseWriter, r *http.Request) {
 }
 
 // finishError logs the real error and answers with a fixed message: the
-// library's error text is for logs, never for a client.
-func (s *server) finishError(w http.ResponseWriter, err error) {
+// library's error text is for logs, never for a client. failed names the
+// ceremony ("registration failed" or "sign-in failed").
+func (s *server) finishError(w http.ResponseWriter, failed string, err error) {
 	switch {
+	case errors.Is(err, store.ErrDuplicate):
+		// FinishRegistration returns this when any subject already holds the
+		// credential ID. Never resolve it by re-binding the credential.
+		s.fail(w, http.StatusConflict, "that passkey is already registered", err)
 	case errors.Is(err, webauthn.ErrUnknownCredential):
 		// A real application would also call
 		// PublicKeyCredential.signalUnknownCredential in the browser so the
 		// credential manager can drop the stale passkey.
 		s.fail(w, http.StatusUnauthorized, "unknown passkey", err)
 	case errors.Is(err, webauthn.ErrInvalidCredentials), errors.Is(err, webauthn.ErrCloneSuspected):
-		s.fail(w, http.StatusUnauthorized, "sign-in failed", err)
+		s.fail(w, http.StatusUnauthorized, failed, err)
 	default:
 		s.fail(w, http.StatusInternalServerError, "something went wrong", err)
 	}
 }
 
-// decode reads a size-limited JSON body into dst, answering 400 on failure.
+// decode reads a size-limited JSON body into dst. It answers 415 for any other
+// content type, which also keeps cross-site form posts out, and 400 for a body
+// that does not parse.
 func (s *server) decode(w http.ResponseWriter, r *http.Request, dst any) bool {
+	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
+		s.fail(w, http.StatusUnsupportedMediaType, "send application/json", nil)
+		return false
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
 		s.fail(w, http.StatusBadRequest, "invalid request", err)
