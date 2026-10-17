@@ -142,3 +142,46 @@ func TestTakeFlow_StoreFaults(t *testing.T) {
 		})
 	}
 }
+
+// A passkey flow names no subject and always requires user verification: the
+// package writes no other kind, so a payload that does is a store fault, even
+// when the Expect agrees with it.
+func TestTakeFlow_PasskeyStoreFaults(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		edit  func(*flowPayload)
+		fault bool
+	}{
+		{"valid", func(*flowPayload) {}, false},
+		{"passkey flow names a subject", func(p *flowPayload) { p.Subject = "subject-alice" }, true},
+		{"passkey flow without user verification", func(p *flowPayload) {
+			p.RequireUV = false
+			p.Session.UserVerification = protocol.VerificationPreferred
+		}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rp := newTestRP(t)
+			p := validPayload(rp)
+			p.Subject, p.Handle, p.Session.UserID = "", nil, nil
+			tc.edit(&p)
+			flows := &mapFlows{flows: make(map[string]store.Flow)}
+			id, err := putFlow(t.Context(), flows, flowPasskey, &p, p.Session.Expires)
+			if err != nil {
+				t.Fatalf("putFlow: %v", err)
+			}
+			_, err = rp.takeFlow(t.Context(), flows, Expect{FlowID: id, Purpose: p.Purpose, Subject: p.Subject}, flowPasskey)
+			if !tc.fault {
+				if err != nil {
+					t.Fatalf("takeFlow: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrInvalidCredentials) || !strings.Contains(err.Error(), "store fault") {
+				t.Fatalf("err = %v, want a store-fault ErrInvalidCredentials", err)
+			}
+		})
+	}
+}

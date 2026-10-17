@@ -91,6 +91,8 @@ func New(cfg Config) (*RP, error) {
 		RPTopOriginVerificationMode: protocol.TopOriginExplicitVerificationMode,
 		AttestationPreference:       protocol.PreferNoAttestation,
 		Timeouts:                    gowebauthn.TimeoutsConfig{Login: t, Registration: t},
+		// Check 8: an ECDSA signature must be canonical DER, never BER.
+		Signature: protocol.SignaturePolicy{ECDSAEncoding: protocol.ECDSASignatureEncodingDER},
 
 		ExtensionsUnsolicitedOutputPolicy: protocol.UnsolicitedOutputPolicyReject,
 	})

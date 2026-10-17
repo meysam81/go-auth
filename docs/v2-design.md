@@ -562,9 +562,10 @@ package adds, in order, and each is a test named for the attack:
 4. Registration: algorithm in the allow-list; credential ID absent for every
    subject (`Insert` → `ErrDuplicate`, which the application must not resolve by
    re-binding); BE=0 with BS=1 refused.
-5. Discoverable assertion: the user handle is present and resolves to a subject;
-   the credential ID is among that subject's credentials for this RP ID. Either
-   miss is `ErrUnknownCredential`.
+5. Discoverable assertion: the user handle is present (a response without one
+   is malformed, `ErrInvalidCredentials`) and resolves to a subject; the
+   credential ID is among that subject's credentials for this RP ID. Either miss
+   is `ErrUnknownCredential`.
 6. Second-factor assertion: the credential is among the flow subject's
    credentials. A miss is `ErrInvalidCredentials`.
 7. BE equals the stored value (it never changes; a change is refused and logged);
