@@ -8,9 +8,11 @@
 // interprets.
 //
 // Every store keeps a [time.Time] as an instant to at least the microsecond,
-// the finest PostgreSQL and MySQL keep: it may truncate or round below that,
-// and return the instant in any location. A column that keeps seconds, or the
-// wall clock without its offset, does not meet the contract.
+// the finest PostgreSQL and MySQL keep: it may drop what lies below that, in
+// either direction, and return the instant in any location. A store that keeps
+// whole seconds, or drops the offset and so moves a time written from another
+// zone (PostgreSQL timestamp without time zone, read back as UTC), does not
+// meet the contract.
 //
 // The library never deletes a flow: [FlowStore.Take] only refuses consumed
 // and expired ones, so the application purges them on a schedule. It also

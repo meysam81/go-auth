@@ -71,6 +71,7 @@ type AssertionUpdate struct {
 
 // CredentialStore holds WebAuthn credentials. Rename, delete and listing for a
 // settings page are the application's own queries; the library calls only these.
+// Times are kept to the microsecond, as package [store] says.
 type CredentialStore interface {
 	// Insert stores a new credential. It returns store.ErrDuplicate when ANY
 	// subject already holds this credential ID (a unique index on the ID, not

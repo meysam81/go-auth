@@ -36,9 +36,12 @@ func FlowStoreSuite(newStore func(t *testing.T) store.FlowStore) func(t *testing
 		ctx := t.Context()
 		// The subtests run in sequence: an application's newStore may reset a
 		// shared database, so independence is not assumed.
-		// A wall-clock instant keeps its nanoseconds: a store must keep at least
-		// the microsecond.
-		future := func() time.Time { return time.Now().Add(time.Hour).UTC() }
+		// An hour ahead, at a fixed sub-second part below the microsecond and at
+		// an odd microsecond count, so every run writes the same remainder
+		// whatever the platform clock's resolution.
+		future := func() time.Time {
+			return time.Now().Add(time.Hour).Truncate(time.Second).Add(345_679_901 * time.Nanosecond).UTC()
+		}
 
 		t.Run("PutThenTake", func(t *testing.T) {
 			s := newStore(t)

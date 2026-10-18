@@ -40,7 +40,9 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 		t.Helper()
 		ctx := t.Context()
 		const rpID = "example.test"
-		t0 := time.Date(2026, 1, 2, 3, 4, 5, 123_456_789, time.UTC) // below the microsecond too
+		// Below the microsecond too, at an odd microsecond count, so a store
+		// that keeps a coarser grain (2 µs, 10 µs) moves it.
+		t0 := time.Date(2026, 1, 2, 3, 4, 5, 123_457_789, time.UTC)
 		t1 := t0.Add(48 * time.Hour)
 
 		// newCred is a credential with every field non-zero, then pinned to
@@ -573,7 +575,10 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 				// wall clock and drops the offset moves them.
 				c.CreatedAt = c.CreatedAt.In(time.FixedZone("+14", 14*3600))
 				c.LastUsedAt = c.LastUsedAt.In(time.FixedZone("-12", -12*3600))
-				c.CloneSuspectedAt = c.CloneSuspectedAt.In(time.FixedZone("+5:45", 5*3600+45*60))
+				// On an exact microsecond: a store may drop what lies below it in
+				// either direction, but one that shifts every time by a microsecond
+				// moves this one by a whole one.
+				c.CloneSuspectedAt = c.CloneSuspectedAt.Truncate(time.Microsecond).In(time.FixedZone("+5:45", 5*3600+45*60))
 			})
 		})
 
@@ -651,6 +656,6 @@ func asRegistered(t *testing.T, subject, rpID string) webauthn.Credential {
 		RPID:      rpID,
 		PublicKey: randBytes(t, 77),
 		Algorithm: -7,
-		CreatedAt: time.Date(2026, 1, 2, 3, 4, 5, 987_654_321, time.UTC),
+		CreatedAt: time.Date(2026, 1, 2, 3, 4, 5, 987_653_321, time.UTC),
 	}
 }

@@ -61,7 +61,7 @@ func fillValue(t *testing.T, f reflect.Value, name string, n int) {
 	t.Helper()
 	switch {
 	case f.Type() == timeType:
-		f.Set(reflect.ValueOf(time.Unix(1_700_000_000+int64(n)*3600, 123_456_789+int64(n)).UTC()))
+		f.Set(reflect.ValueOf(time.Unix(1_700_000_000+int64(n)*3600, 123_457_789+int64(n)).UTC()))
 		return
 	case f.Kind() == reflect.String:
 		f.SetString(name + "-" + string(rune('a'+n%26)) + string(rune('A'+n%7)))
@@ -123,7 +123,7 @@ func diffFields(a, b any) string {
 }
 
 // sameInstant reports whether a and b are the same instant to the
-// microsecond: a store may truncate or round what lies below it.
+// microsecond: a store may drop what lies below it, in either direction.
 func sameInstant(a, b time.Time) bool {
 	d := a.Sub(b)
 	return d > -time.Microsecond && d < time.Microsecond

@@ -38,6 +38,9 @@ func TestDiffFields_TimesToTheMicrosecond(t *testing.T) {
 	}{
 		{"truncated to the microsecond", at.Truncate(time.Microsecond), ""},
 		{"rounded to the microsecond", at.Round(time.Microsecond), ""},
+		{"999 ns earlier", at.Add(-999 * time.Nanosecond), ""},
+		{"999 ns later", at.Add(999 * time.Nanosecond), ""},
+		{"one microsecond earlier", at.Add(-time.Microsecond), "At"},
 		{"in another location", at.In(time.FixedZone("+14", 14*3600)), ""},
 		{"truncated to the millisecond", at.Truncate(time.Millisecond), "At"},
 		{"truncated to the second", at.Truncate(time.Second), "At"},
