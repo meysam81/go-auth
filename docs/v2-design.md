@@ -886,10 +886,13 @@ never standalone programs in the tree, which rot and ship in the module zip.
 - The swap, at `v2.0.0`, in this order. Freeze `main`. Before the `2.0.0`
   release PR merges, merge `main` into `v2` with a signed merge commit, so `v2`
   contains `main`: v1-only changes resolve as deleted, `ci.yml` keeps `v2`'s
-  jobs with the branches `main` and `v1`, and `renovate.json` lists `main` and
-  `v1`. Edit v1's entries out of the release PR's notes, then merge it.
-  Fast-forward `v1` to `main`'s tip and `main` to `v2`, then delete `v2` and
-  any release PR left on it. The merge commit and the fast-forward need an
+  jobs with the branches `main`, `v1` and `v2` (a push runs the workflow in the
+  pushed commit, so dropping `v2` here would leave the release PR's merge
+  untagged), and `renovate.json` lists `main` and `v1`. Edit v1's entries out of
+  the release PR's notes and its `CHANGELOG.md`, with no other push to `v2` in
+  between, then merge it. Fast-forward `v1` to `main`'s tip and `main` to `v2`,
+  then delete `v2` and any release PR left on it, and drop `v2` from `ci.yml` in
+  a later commit on `main`. The merge commit and the fast-forward need an
   admin bypass of the pull-request, squash-only, linear-history and
   signed-commit rules. Merging `main` in after `2.0.0` is tagged would make its
   newer v1 commits releasable again and open a duplicate `2.0.1` on both
