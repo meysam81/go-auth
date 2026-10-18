@@ -15,19 +15,26 @@
 //
 // Take marks a flow used and leaves the row; delete consumed and expired rows
 // on a schedule of your own, for example
-// DELETE FROM flows WHERE used_at IS NOT NULL OR expires_at <= ?.
+// DELETE FROM flows WHERE used_at IS NOT NULL OR expires_at <= ? with
+// time.Now().UnixMicro() as the argument. Times are INTEGER Unix microseconds:
+// bound as a time.Time the argument is TEXT, every integer sorts below text in
+// SQLite, and the statement deletes every flow, live ones included.
 //
 // # Porting it to another database
 //
-// Keep these decisions; each is a rule the conformance suites check:
+// Keep these decisions. The conformance suites check the behaviour they
+// produce wherever the interfaces can see it; which errors are
+// [store.ErrDuplicate] and the time precision are pinned by this package's
+// own tests, so port those tests with the code:
 //
 //   - Every state change is one conditional statement, judged by its
 //     affected-row count or its RETURNING row: Take is UPDATE ... WHERE
 //     used_at IS NULL AND expires_at > now, RecordAssertion is UPDATE ...
 //     WHERE sign_count = the previous count. Never a read followed by a
 //     write: two concurrent callers both pass the read. On MySQL, connect
-//     with clientFoundRows=true, or an update that changes no column (two
-//     assertions in one second of a DATETIME column) reports no row.
+//     with clientFoundRows=true, or an update that changes no column (a
+//     counter that stays 0 and a last-used time equal to the stored one)
+//     reports no row.
 //   - The credential ID has a unique index of its own, not one on (subject,
 //     credential ID): an ID belongs to at most one subject. A violation of
 //     that index, and only that one, is [store.ErrDuplicate]; tell it apart

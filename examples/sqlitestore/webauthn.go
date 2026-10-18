@@ -90,8 +90,8 @@ FROM webauthn_credentials
 WHERE subject = :subject AND rp_id = :rp_id
 ORDER BY created_at, credential_id`
 
-// List returns the subject's credentials for rpID, oldest first. Every time
-// is in UTC, and an empty Transports is nil.
+// List returns the subject's credentials for rpID in a stable order. Every
+// time is in UTC, and an empty Transports is nil.
 func (s *WebAuthnStore) List(ctx context.Context, subject, rpID string) (creds []webauthn.Credential, err error) {
 	rows, err := s.db.QueryContext(ctx, listCredentials,
 		sql.Named("subject", subject),

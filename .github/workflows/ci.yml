@@ -342,13 +342,18 @@ jobs:
           cache-dependency-path: |
             go.sum
             examples/passkeys/e2e/go.sum
-      # ubuntu-latest ships Google Chrome; the test fails, rather than skips,
-      # when CI is set and no browser is found.
+      # Google Chrome, not the image's /usr/bin/chromium: Ubuntu 24.04 lets only
+      # a browser with an AppArmor profile use unprivileged user namespaces,
+      # and only Chrome's install ships one, so Chromium dies with "No usable
+      # sandbox!". The sandbox stays on. Without a browser under CI the test
+      # fails rather than skips.
       - name: Drive the example in Chrome
         working-directory: examples/passkeys/e2e
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
         run: |
           go vet ./...
-          go mod tidy -diff
+          go mod tidy -diff || { echo "::error::run go mod tidy in examples/passkeys/e2e"; exit 1; }
           go test -count=1 -v ./...
 
   # The authtest conformance suites against a real database: the reference
@@ -377,8 +382,10 @@ jobs:
       - name: Run the conformance suites on SQLite
         working-directory: examples/sqlitestore
         run: |
+          # The module replaces the library with this tree, so a dependency
+          # change at the root changes its go.mod too (Renovate tidies both).
+          go mod tidy -diff || { echo "::error::run go mod tidy in examples/sqlitestore after changing the root go.mod"; exit 1; }
           go vet ./...
-          go mod tidy -diff
           go test -race -count=1 ./...
 
   # The squash commit takes the pull request's title (the repository setting

@@ -57,18 +57,23 @@ so adding a job means adding it there, and a job cannot land ungated.
 ## The separate modules
 
 Two test suites live in Go modules of their own, so their drivers never enter
-the library's dependency graph, its `go.sum`, or `.dependency-footprint`. Each
-replaces `github.com/meysam81/go-auth/v2` with the tree it sits in, so it
-always tests the code beside it. The root `go test ./...` does not reach them;
-their jobs run `go vet`, `go mod tidy -diff` and the tests.
+the library's dependency graph, its `go.sum`, or `.dependency-footprint`. Both
+test the code beside them: `examples/sqlitestore` replaces
+`github.com/meysam81/go-auth/v2` with this tree, and the browser test builds
+`examples/passkeys` from it. The root `go test ./...` does not reach them; their
+jobs run `go vet`, `go mod tidy -diff` and the tests. A change to the root
+`go.mod` changes `examples/sqlitestore/go.mod` too: run `go mod tidy` there
+(Renovate does it with `gomodTidyAll`).
 
 - `examples/passkeys/e2e` (chromedp) builds and starts the passkeys example and
   drives it in headless Chrome with a CDP virtual authenticator, for a
   device-bound key and a synced passkey: registration, the autofill sign-in the
   page arms afterwards, and the sign-in button. Only a browser shows that what
-  `PublicKeyCredential.toJSON` sends is what the library accepts. Locally:
-  `cd examples/passkeys/e2e && go test ./...` (set `CHROME_PATH` if Chrome is
-  not on `PATH`; without a browser it skips, except under `CI`).
+  `PublicKeyCredential.toJSON` sends is what the library accepts. It refuses to
+  run when something already listens on `localhost:8080`, the address the
+  example is bound to. Locally: `cd examples/passkeys/e2e && go test ./...`
+  (set `CHROME_PATH` if Chrome is not on `PATH`; without a browser it skips,
+  unless `CI` is true).
 - `examples/sqlitestore` (modernc.org/sqlite) is a reference implementation of
   `store.FlowStore`, `webauthn.CredentialStore` and `webauthn.HandleStore`,
   proven by `authtest.FlowStoreSuite` and `authtest.WebAuthnStoreSuite` plus

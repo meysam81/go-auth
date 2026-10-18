@@ -207,7 +207,9 @@ func TestTimes_TruncatedToPrecisionAndReadInUTC(t *testing.T) {
 // remainder is truncated away, so a flow expires early, never late.
 func TestTake_ExpiryAtStoredPrecision(t *testing.T) {
 	t.Parallel()
-	expires := time.Date(2026, 1, 2, 3, 4, 5, 999, time.UTC) // 999 ns past the stored microsecond
+	// 999 ns past the stored microsecond, and off the whole second, so a store
+	// that compares in seconds keeps the flow alive past its expiry and fails.
+	expires := time.Date(2026, 1, 2, 3, 4, 5, 123456999, time.UTC)
 	for name, tc := range map[string]struct {
 		now   time.Time
 		found bool
