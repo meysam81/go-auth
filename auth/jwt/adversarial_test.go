@@ -1374,6 +1374,11 @@ func TestJWT_TruncatedOrExtendedSigningKeyRejected(t *testing.T) {
 
 	ctx := context.Background()
 	secret := advSecret(t, 32)
+	// HMAC pads a key shorter than the hash's block size with zero bytes, so a
+	// key and the same key with trailing 0x00 bytes are one HMAC key. With a
+	// random last byte, "the secret with its last byte removed" was that key
+	// one run in 256; a non-zero last byte keeps every case below distinct.
+	secret[len(secret)-1] |= 1
 	userStore := storage.NewInMemoryUserStore()
 	user := advStoredUser(ctx, t, userStore, advUserID)
 
@@ -1397,7 +1402,9 @@ func TestJWT_TruncatedOrExtendedSigningKeyRejected(t *testing.T) {
 		{"the first half of the secret", secret[:len(secret)/2]},
 		{"the secret without its first byte", secret[1:]},
 		{"the secret with a newline appended", append(append([]byte{}, secret...), '\n')},
-		{"the secret with a random byte appended", append(append([]byte{}, secret...), advSecret(t, 1)...)},
+		// Non-zero, for the padding reason above: the secret with 0x00
+		// appended is the secret as an HMAC key.
+		{"the secret with a random byte appended", append(append([]byte{}, secret...), advSecret(t, 1)[0]|1)},
 		{"the secret doubled", append(append([]byte{}, secret...), secret...)},
 		{"the secret reversed", reversed},
 		{"the secret hex-encoded", []byte(fmt.Sprintf("%x", secret))},
