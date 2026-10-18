@@ -43,7 +43,7 @@ column is the delivery order; only G1 packages exist before their phase ships.
   oidcrp/       OIDC relying party: handshake in, verified claims out           G3
   httpx/        outbound transport that refuses non-public addresses            G3
   jwtx/         JWT mint and verify                                             G3
-  hash/         password hashing: pluggable, PHC-encoded, parameter-bounded     later
+  hash/         password hashing: pluggable, parameter-bounded; bcrypt first    G3
   normalize/    PRECIS identifier normalisation                                 later
   audit/        event vocabulary and a Logger interface. Nothing else.          later
   httpmw/       credential extraction middleware                                later

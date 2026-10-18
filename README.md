@@ -10,7 +10,9 @@ identity decision.
 
 ## v2 alpha
 
-`main` is the v2 module, in alpha. Its import path is:
+The `v2` branch carries the v2 module, in alpha. `main` keeps v1
+(`github.com/meysam81/go-auth`) until `v2.0.0`, when `v2` merges into it. The v2
+import path is:
 
 ```go
 import "github.com/meysam81/go-auth/v2/store"

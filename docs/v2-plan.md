@@ -1,5 +1,9 @@
 # go-auth v2 G1 Implementation Plan
 
+> **Amended 2026-10-18:** G1 lands on the `v2` branch, not `main`; `main` keeps
+> v1 until `v2.0.0` (design §2, §11). Where this plan says `main` becomes the v2
+> module, read `v2`.
+
 **Goal:** Turn `main` into the `github.com/meysam81/go-auth/v2` module and ship
 G1 (`amr`, `store`, `webauthn`, `authtest`, `examples/passkeys`) as
 `v2.0.0-alpha.1`.

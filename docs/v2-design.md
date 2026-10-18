@@ -60,9 +60,10 @@ Persists everything, in its own schema, inside its own transactions.
 ## 2. Module and package layout
 
 One module, `github.com/meysam81/go-auth/v2`, with the boundary enforced by the
-linter rather than by convention. The module lives at the repository root on
-`main` (the major-branch layout); v1 moves to a `v1` branch (§11). The phase
-column is the delivery order.
+linter rather than by convention. The module lives at the repository root (the
+major-branch layout). Until `v2.0.0` it is built on a `v2` branch, so `main`
+never offers less than v1 did; at `v2.0.0` it replaces `main` and v1 continues on
+a `v1` branch (§11). The phase column is the delivery order.
 
 ```
 (repository root)
@@ -79,7 +80,7 @@ column is the delivery order.
   oidcrp/       OIDC relying party: handshake in, verified claims out           G3
   httpx/        outbound transport that refuses non-public addresses            G3
   jwtx/         JWT mint and verify                                             G3
-  hash/         password hashing: pluggable, PHC-encoded, parameter-bounded     later
+  hash/         password hashing: pluggable, parameter-bounded; bcrypt first    G3
   normalize/    PRECIS identifier normalisation                                 later
   audit/        event vocabulary and a Logger interface. Nothing else.          later
   httpmw/       credential extraction middleware                                later
@@ -254,7 +255,7 @@ it lives minutes, and only the library ever reads it.
 
 ## 5. Primitives
 
-### 5.1 `hash` — password hashing (later)
+### 5.1 `hash` — password hashing (G3)
 
 Modelled on Kratos's `hash/` package, which gets the shape right.
 
@@ -277,9 +278,13 @@ type Result struct {
 
 Decisions:
 
-- **argon2id default**, bcrypt retained for verification and available for
-  generation. PHC-style encoding carries algorithm and every parameter, so the
-  application's column is `TEXT` and nothing else.
+- **bcrypt in G3; argon2id, the eventual default, later.** G3 ships `Verify`,
+  the bounds, the limiter and a bcrypt `Hasher`, so `v2.0.0` hashes and verifies
+  what v1 did. argon2id generation and the other importers get a design pass of
+  their own; until then `NeedsRehash` compares a bcrypt digest's cost with
+  policy. Every encoding carries its algorithm and parameters (bcrypt's
+  `$2b$<cost>$`, PHC for the rest), so the application's column is `TEXT` and
+  nothing else.
 - **`NeedsRehash` compares parameters, not just the algorithm prefix.** Kratos's
   `Understands` returns true for any argon2id hash regardless of cost, so it
   rehashes on algorithm change but not on a cost increase. That is a gap; we
@@ -770,8 +775,9 @@ it chooses. The migration document must cover, at minimum:
   That handle is the v1 user ID, not 64 random bytes, and may be guessable, so
   §6's "nothing a stranger can submit reveals whether an account exists" holds
   only for subjects whose handle the library created.
-- Password digests carry forward unchanged: the v2 verifier understands bcrypt
-  and reports `NeedsRehash` so a deployment migrates to argon2id on next sign-in.
+- Password digests carry forward unchanged: the G3 verifier understands bcrypt
+  and reports `NeedsRehash` when a digest's cost is below policy; once argon2id
+  lands, the same signal moves a deployment to it on next sign-in.
 - TOTP `$gat1$` secrets and `$gab1$`/`$gab2$` recovery digests stay verifiable
   in G2, with golden vectors.
 - Reset and verification token digests carry forward, but the HMAC keying is new,
@@ -848,8 +854,8 @@ never standalone programs in the tree, which rot and ship in the module zip.
 | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
 | G1    | `amr`, `webauthn`, `store` (FlowStore), `authtest` (flow + WebAuthn suites, virtual authenticator), `examples/passkeys`                                             | `v2.0.0-alpha.N` |
 | G2    | `challenge` (hand-off token, durable state, step-up), `attempt`, `totp` (durable replay guard), `recovery` (keyed digests with a key fingerprint, legacy verifiers) | `v2.0.0-beta.N`  |
-| G3    | `session` (refresh families, reuse detection, hashed tokens), `token`, `oidcrp`, `httpx`, `jwtx`                                                                    | `v2.0.0`         |
-| later | `hash`, `normalize`, `audit`, `httpmw`, an attestation policy, a reference SQL store, `batteries`                                                                   | `v2.x`           |
+| G3    | `session` (refresh families, reuse detection, hashed tokens), `token`, `oidcrp`, `httpx`, `jwtx`, `hash` (bcrypt hash and verify, bounds, limiter)                  | `v2.0.0`         |
+| later | `hash` argon2id and other importers, `normalize`, `audit`, `httpmw`, an attestation policy, a reference SQL store, `batteries`                                      | `v2.x`           |
 
 - G1 exit: every check in §5.4 has a virtual-authenticator test that fails when
   the check is removed; the conformance suites pass against the example's store
@@ -861,7 +867,10 @@ never standalone programs in the tree, which rot and ship in the module zip.
   runs the full suite, and the checks in §5.4 stay in this package even where
   go-webauthn also performs them.
 - Go 1.26 is the floor because go-webauthn v0.18 requires it.
-- v1 stays on a `v1` maintenance branch for twelve months of security fixes.
+- v2 is built on the `v2` branch, and its alpha and beta tags are cut there.
+  `main` keeps v1, and v1 fixes keep landing there, until `v2.0.0`. Then the `v1`
+  branch is fast-forwarded to `main`'s tip, `v2` merges into `main`, and v1
+  continues on `v1` for twelve months of security fixes.
 
 ---
 
@@ -875,3 +884,7 @@ never standalone programs in the tree, which rot and ship in the module zip.
 - **2026-10-17 — no HTTP handlers in the core.** Building blocks and a runnable
   example; batteries deferred (§7).
 - **2026-10-17 — dependency.** go-webauthn, pinned exactly; Go 1.26 floor (§11).
+- **2026-10-18 — branch and scope.** v2 is built on a `v2` branch until
+  `v2.0.0`, so `main` never offers less than v1 did. `hash` moves from later to
+  G3 with bcrypt, so `v2.0.0` covers v1 except the removals in §3 (§2, §5.1,
+  §11).
