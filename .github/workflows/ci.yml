@@ -7,6 +7,13 @@ on:
     branches:
       - main
       - v2
+    # `edited` re-runs the checks when the title changes: the title is what
+    # pr-title and api-diff read.
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
   push:
     branches:
       - main
@@ -32,11 +39,20 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Twice: on the oldest Go that go.mod admits, which is the floor every
+  # consumer is promised, and on the newest release, which is what most of them
+  # build with. A use of a newer standard-library API fails the first; a
+  # toolchain change fails the second. -shuffle=on randomises test order, so a
+  # test that only passes after another one has run is caught here.
   test:
     permissions:
       contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        go: [go.mod, stable]
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -45,11 +61,12 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version-file: go.mod
+          go-version: ${{ matrix.go == 'stable' && 'stable' || '' }}
+          go-version-file: ${{ matrix.go == 'go.mod' && 'go.mod' || '' }}
       - name: Install dependencies
         run: go mod download
       - name: Run tests
-        run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
+        run: go test -v -race -shuffle=on -coverprofile=coverage.txt -covermode=atomic ./...
       # F-23: three packages shipped at 0.0 % coverage. The floors in
       # .coverage-floor are a ratchet -- a package may climb, never slide back.
       # The gate reads the file rather than hardcoding, so raising a floor after
@@ -60,7 +77,10 @@ jobs:
       # floor recorded fails (an ungated package is indistinguishable from one at
       # 0 %), and a floor whose package produced no coverage rows at all fails --
       # that is what a suite silently dropping out of the build looks like.
+      # The floor is measured once, on the go.mod leg; the two legs run the same
+      # tests, so a second measurement adds nothing but a second upload.
       - name: Enforce per-package coverage floor
+        if: matrix.go == 'go.mod'
         run: |
           cat > /tmp/coverage-floor.awk <<'AWK'
           FNR == NR {
@@ -116,6 +136,7 @@ jobs:
             exit 1
           fi
       - name: Upload coverage to Codecov
+        if: matrix.go == 'go.mod'
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
         with:
           files: ./coverage.txt
@@ -146,6 +167,17 @@ jobs:
         run: npx --yes prettier@3.9.6 --check .
       - name: Run go vet
         run: go vet ./...
+      # A go.mod or go.sum that `go mod tidy` would change is a dependency
+      # change nobody reviewed, or a go.sum line nothing needs.
+      - name: go.mod and go.sum are tidy
+        run: go mod tidy -diff
+      # See .github/dependency-footprint.sh for why the indirect half matters.
+      - name: The dependency footprint is unchanged
+        run: |
+          if ! diff -u .dependency-footprint <(.github/dependency-footprint.sh); then
+            echo "::error::the packages this module compiles in changed; run \`.github/dependency-footprint.sh > .dependency-footprint\` and review the added lines"
+            exit 1
+          fi
       - name: Run go fmt
         run: |
           if [ -n "$(gofmt -l .)" ]; then
@@ -279,6 +311,119 @@ jobs:
           go build -v ./examples/passkeys
           go vet ./examples/passkeys
 
+  # The squash commit takes the pull request's title (the repository setting
+  # in docs/ci.md), and release-please reads that commit to choose the next
+  # version and write the changelog. A title it cannot parse is a change the
+  # release silently leaves out. The step runs only on pull requests; on a push
+  # or a merge group there is no title, and the job passes so ci-gate can.
+  pr-title:
+    permissions: {}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: The title is a conventional commit
+        if: github.event_name == 'pull_request'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          types='feat|fix|perf|revert|build|deps|chore|ci|docs|refactor|test|style'
+          if ! grep -qE "^(${types})(\([a-z0-9._/-]+\))?!?: [^ ]" <<<"$TITLE"; then
+            echo "::error::write the title as <type>(<scope>)!: <summary>, with a type from release-please-config.json: ${types//|/, }"
+            exit 1
+          fi
+
+  # Every exported identifier is a promise to the code that imports it. This
+  # compares the module's exported API with the pull request's base and puts
+  # the difference in the run summary. An incompatible change must be declared
+  # with `!` in the title. While .release-please-manifest.json holds a
+  # pre-release version an undeclared one is a warning: breaking changes are
+  # expected before v2.0.0. From the first stable release on it fails the job,
+  # because a declared break in a Go module means a new major module path.
+  api-diff:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup Go
+        if: github.event_name == 'pull_request'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+      # x/exp has no releases; the pin is a commit.
+      - name: Install apidiff
+        if: github.event_name == 'pull_request'
+        env:
+          APIDIFF_VERSION: v0.0.0-20260908205506-85c1c2202aba
+        run: go install "golang.org/x/exp/cmd/apidiff@${APIDIFF_VERSION}"
+      - name: Compare the exported API with the base
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          module=$(go list -m)
+          git worktree add --detach "$RUNNER_TEMP/base" "$BASE_SHA"
+          (cd "$RUNNER_TEMP/base" && apidiff -m -w "$RUNNER_TEMP/base.api" "$module")
+          apidiff -m -w "$RUNNER_TEMP/head.api" "$module"
+          report=$(apidiff -m "$RUNNER_TEMP/base.api" "$RUNNER_TEMP/head.api")
+          breaking=$(apidiff -m -incompatible "$RUNNER_TEMP/base.api" "$RUNNER_TEMP/head.api")
+          {
+            echo "## Exported API against the base"
+            echo
+            if [ -n "$report" ]; then
+              fence='```'
+              printf '%s\n%s\n%s\n' "$fence" "$report" "$fence"
+            else
+              echo "No change."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "$breaking" ]; then
+            exit 0
+          fi
+          printf '%s\n' "$breaking"
+          if grep -qE '^[a-z]+(\([^)]*\))?!: ' <<<"$TITLE"; then
+            echo "the title declares the incompatible change"
+            exit 0
+          fi
+          version=$(jq -r '."."' .release-please-manifest.json)
+          case "$version" in
+            *-*)
+              echo "::warning::incompatible API change not declared with '!' in the title; allowed while the module is at the pre-release $version"
+              ;;
+            *)
+              echo "::error::incompatible API change at the stable release $version; keep the old API, or declare the break with '!' and move the module to its next major path"
+              exit 1
+              ;;
+          esac
+
+  # actionlint (pre-commit) checks that a workflow is valid; zizmor checks that
+  # it is safe: template injection, credentials left in a checkout, excessive
+  # token scopes, unpinned actions.
+  workflows:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Audit the workflows with zizmor
+        env:
+          # renovate: pypi=zizmor
+          ZIZMOR_VERSION: 1.30.1
+          GH_TOKEN: ${{ github.token }}
+        run: pipx run "zizmor==${ZIZMOR_VERSION}" --format=github .github/workflows/
+
   release-please:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v2')
     runs-on: ubuntu-latest
@@ -315,6 +460,9 @@ jobs:
       - govulncheck
       - fuzz
       - build-examples
+      - pr-title
+      - api-diff
+      - workflows
     permissions:
       contents: read
     runs-on: ubuntu-latest
