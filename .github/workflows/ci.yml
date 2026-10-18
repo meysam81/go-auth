@@ -1,12 +1,16 @@
 name: ci
 
+# `v2` carries the v2 module until `v2.0.0`, when it merges into `main`
+# (docs/v2-design.md §11); its pull requests, pushes and releases run here too.
 on:
   pull_request:
     branches:
       - main
+      - v2
   push:
     branches:
       - main
+      - v2
   # Required by the merge queue. A queued pull request is tested on a temporary
   # `gh-readonly-queue/main/...` branch holding it plus everything ahead of it,
   # which is the whole point: it catches the pair of changes that each pass
@@ -223,16 +227,12 @@ jobs:
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - name: Run govulncheck
         run: govulncheck ./...
-      # The examples live in a separate module with their own go.sum, so the
-      # scan above never reaches their dependency graph.
-      - name: Run govulncheck on the examples module
-        working-directory: examples/complete
-        run: govulncheck ./...
 
   # docs/security-hardening.md §6: the fuzz targets cover the WebAuthn ceremony
   # decoders, which are the parsers reachable with attacker-controlled bytes
-  # before any credential is verified. A short bounded budget per target keeps
-  # this a regression gate on the checked-in corpus rather than a discovery run.
+  # before any credential is verified. Each target gets a bounded 30 s
+  # discovery run from its seed corpus; the seeds themselves (added with f.Add)
+  # run as ordinary tests in the test job.
   fuzz:
     permissions:
       contents: read
@@ -281,10 +281,8 @@ jobs:
           fi
           echo "fuzzed $found target(s)"
 
-  # F-23: examples/complete is a separate module with a `replace` back to the
-  # repo root, so it is not covered by the root build and an API change rots it
-  # silently. `go mod tidy` first: this module tracks the parent through the
-  # replace, and the signal worth failing on is the compile, not version drift.
+  # F-23: the runnable examples are `main` packages with no tests, so the root
+  # build covers them only if they live in this module.
   build-examples:
     permissions:
       contents: read
@@ -296,32 +294,13 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
-      - name: Cache Go modules
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum', '**/go.mod') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
-      - name: Build examples/complete
-        working-directory: examples/complete
+      - name: Build examples
         run: |
-          set -euo pipefail
-          go mod tidy
-          go build -v ./...
-          go vet ./...
-      - name: Report dependency drift in examples/complete
-        working-directory: examples/complete
-        run: |
-          if ! git diff --quiet -- go.mod go.sum; then
-            echo "::notice::examples/complete go.mod/go.sum are stale; run 'go mod tidy' there and commit the result"
-            git --no-pager diff -- go.mod go.sum
-          fi
+          go build -v ./examples/passkeys
+          go vet ./examples/passkeys
 
   release-please:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v2')
     runs-on: ubuntu-latest
     outputs:
       releases_created: ${{ steps.release-please.outputs.releases_created }}
@@ -337,3 +316,5 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          # The release PR and its tag belong to the branch that was pushed.
+          target-branch: ${{ github.ref_name }}

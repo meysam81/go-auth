@@ -4,46 +4,53 @@ This file provides guidance for AI assistants working on the go-auth project.
 
 ## Project Overview
 
-go-auth is a comprehensive, modular, and production-ready authentication library for Go applications. It provides multiple authentication methods with a storage-agnostic design following the Google Go Style Guide.
+go-auth v2 is a set of authentication primitives for Go: each package verifies
+one kind of credential and returns a verified fact. There is no user store and
+no identity decision in the library. The design is `docs/v2-design.md`.
+
+v2 is built on the `v2` branch until `v2.0.0`: branch from `v2` and open pull
+requests against it. `main` carries v1 until then, and the `v1` branch after.
 
 ## Build & Test Commands
 
 ```bash
-# Run all tests
-go test ./...
-
-# Run tests with coverage
-go test -cover ./...
-
-# Run tests for a specific package
-go test ./auth/jwt/...
-
-# Run linter
+go build ./... && go vet ./...
+go test -race ./...
 golangci-lint run
-
-# Build examples
-go build ./examples/basic
-go build ./examples/jwt
-go build ./examples/oidc
-go build ./examples/complete
+govulncheck ./...
+go test -run='^$' -fuzz='^FuzzFinishPasskey$' -fuzztime=30s ./webauthn/   # also FuzzFinishRegistration, FuzzFinishSecondFactor
 ```
+
+CI enforces the per-package coverage floors in `.coverage-floor` against
+`go test -race -covermode=atomic -coverprofile=coverage.txt ./...`; raise a
+floor when tests land, never lower one in an unrelated change.
 
 ## Project Structure
 
+One module, `github.com/meysam81/go-auth/v2`, at the repository root. The phase
+column is the delivery order; only G1 packages exist before their phase ships.
+
 ```
-go-auth/
-├── audit/          # Audit logging (SOC2/GDPR/HIPAA compliant)
-├── auth/
-│   ├── basic/      # Username/password authentication (bcrypt)
-│   ├── jwt/        # JWT access + refresh tokens
-│   ├── oidc/       # OIDC/OAuth2 SSO client
-│   ├── totp/       # Two-factor authentication (RFC 6238)
-│   └── webauthn/   # WebAuthn/Passkey authentication
-├── examples/       # Working examples for each auth method
-├── middleware/     # HTTP middleware (stdlib compatible)
-├── provider/       # 10+ OAuth2/OIDC providers
-├── session/        # Session management
-└── storage/        # Storage interfaces and in-memory implementations
+(repository root)
+  amr/          authentication methods (RFC 8176), factor classes, policy        G1
+  webauthn/     registration, second-factor and passkey ceremonies              G1
+  store/        the single-use FlowStore and the shared error sentinels         G1
+  authtest/     conformance suites and a virtual authenticator                  G1
+  challenge/    typed hand-off token, durable challenge state, step-up          G2
+  attempt/      failed-attempt budgets                                          G2
+  totp/         RFC 6238 enrolment and validation, durable replay guard         G2
+  recovery/     recovery codes: generation, keyed digests, legacy verifiers     G2
+  token/        opaque secret mint / digest / verify (reset, verification)      G3
+  session/      session identifiers, rotation, refresh families                 G3
+  oidcrp/       OIDC relying party: handshake in, verified claims out           G3
+  httpx/        outbound transport that refuses non-public addresses            G3
+  jwtx/         JWT mint and verify                                             G3
+  hash/         password hashing: pluggable, parameter-bounded; bcrypt first    G3
+  normalize/    PRECIS identifier normalisation                                 later
+  audit/        event vocabulary and a Logger interface. Nothing else.          later
+  httpmw/       credential extraction middleware                                later
+  batteries/    optional wired-up flows; deferred                               -
+  examples/     runnable demonstrations (passkeys); not production code         G1
 ```
 
 ## Code Style Guidelines
@@ -57,14 +64,22 @@ go-auth/
 
 ### Error Handling
 
-- Define package-level sentinel errors (e.g., `ErrInvalidCode`, `ErrNotEnabled`)
-- Wrap errors with context using `fmt.Errorf("context: %w", err)`
-- Check for `storage.ErrNotFound` for missing resources
+- A verification failure matches exactly one sentinel: build it with the
+  package's `fail()` (in `webauthn`, a clone is a `*CloneSuspectedError`),
+  never by wrapping a sentinel with `%w`
+- An infrastructure failure (a store outage, a store fault at `Begin`) matches
+  no sentinel; wrap a store's error with context using
+  `fmt.Errorf("webauthn: context: %w", err)`
+- Stores return `store.ErrNotFound` and `store.ErrDuplicate`. The ceremony
+  functions translate `store.ErrNotFound` where a store contract allows it
+  (`Take`, `Subject`, `RecordAssertion`, `MarkCloneSuspected`); from a store
+  that breaks its contract (e.g. returns it from `List`) it passes through
+  wrapped, as an infrastructure failure
 
 ### Naming Conventions
 
 - Packages: lowercase, single-word (e.g., `audit`, `totp`)
-- Interfaces: descriptive names ending in `-er` where appropriate (e.g., `UserStore`, `AuditLogger`)
+- Interfaces: small, named for what they hold or do (e.g., `CredentialStore`, `FlowStore`)
 - Constructors: `NewXxx(config Config) (*Xxx, error)`
 - Config structs: named `Config` within each package
 
@@ -87,88 +102,13 @@ func NewManager(cfg Config) (*Manager, error) {
 }
 ```
 
-## Authentication Methods
+## Storage
 
-### Basic Auth (`auth/basic`)
-
-- Username/password with bcrypt hashing
-- Registration and authentication flows
-
-### JWT (`auth/jwt`)
-
-- Access and refresh token pairs
-- Configurable TTLs
-- Token revocation support
-
-### TOTP (`auth/totp`)
-
-- RFC 6238 compliant
-- Backup codes support
-- QR code URL generation
-
-### WebAuthn (`auth/webauthn`)
-
-- Passkey/FIDO2 support
-- Registration and login flows
-
-### OIDC/OAuth2 (`auth/oidc`)
-
-- 10+ providers: Google, GitHub, Microsoft, GitLab, Auth0, Okta, Apple, Discord, Slack, LinkedIn
-- State management for CSRF protection
-
-## Storage Interfaces
-
-The library is storage-agnostic. Key interfaces in `storage/`:
-
-- `UserStore` - User CRUD operations
-- `CredentialStore` - Password hashes, WebAuthn credentials, TOTP secrets
-- `SessionStore` - Session management
-- `TokenStore` - JWT token storage/revocation
-- `OIDCStateStore` - OAuth2 state management
-
-In-memory implementations are provided for development/testing.
-
-## Middleware
-
-HTTP middleware in `middleware/` package:
-
-- `BasicAuthMiddleware` - Basic auth validation
-- `JWTMiddleware` - JWT token validation
-- `SessionMiddleware` - Session validation
-
-Token extractors:
-
-- `HeaderExtractor` - Extract from Authorization header
-- `CookieExtractor` - Extract from cookies
-- `MultiExtractor` - Try multiple sources
-
-## Audit Logging
-
-The `audit/` package provides compliance-ready logging:
-
-- Event types: auth, token, session, user operations
-- PII redaction support
-- Wrappers for auth components (e.g., `NewBasicAuthWrapper`)
-
-## Testing
-
-- Use in-memory storage implementations for tests
-- Test files follow `*_test.go` naming
-- Use table-driven tests where appropriate
-- Mock interfaces for unit testing
+Durable credentials are typed: each package declares the narrow store interface
+it calls. Short-lived ceremony state is opaque and lives in `store.FlowStore`.
+Check for `store.ErrNotFound` and `store.ErrDuplicate`.
 
 ## Dependencies
 
-Core dependencies (keep minimal):
-
-- `golang.org/x/crypto` - Password hashing
-- `github.com/golang-jwt/jwt/v5` - JWT
-- `github.com/go-webauthn/webauthn` - WebAuthn
-- `github.com/coreos/go-oidc/v3` - OIDC
-- `golang.org/x/oauth2` - OAuth2
-- `github.com/pquerna/otp` - TOTP
-
-## Version
-
-- Go version: 1.24.7
-- Current release: 1.1.1
+The direct-dependency allow-list is enforced by `depguard` in `.golangci.yml`.
+`github.com/go-webauthn/webauthn` is pinned exactly at `v0.18.2`.

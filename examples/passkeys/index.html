@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>go-auth passkeys example</title>
+    <style>
+      body {
+        font:
+          16px/1.5 system-ui,
+          sans-serif;
+        max-width: 32rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      .banner {
+        background: #fff3cd;
+        border: 1px solid #e0c36a;
+        padding: 0.75rem 1rem;
+        border-radius: 0.4rem;
+        color: #3d3000;
+      }
+      fieldset {
+        margin: 1.5rem 0;
+        border: 1px solid #ccc;
+        border-radius: 0.4rem;
+      }
+      input,
+      button {
+        font: inherit;
+        padding: 0.4rem 0.6rem;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        margin-bottom: 0.5rem;
+      }
+      #status {
+        min-height: 1.5rem;
+        font-weight: 600;
+      }
+      #status.error {
+        color: #a00;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Passkeys example</h1>
+    <p class="banner">
+      The stores are in memory and everything is forgotten when the server
+      stops. This example is not production code.
+    </p>
+    <p id="status" role="status"></p>
+
+    <fieldset>
+      <legend>Sign in</legend>
+      <label for="signin-name">Username</label>
+      <input
+        id="signin-name"
+        autocomplete="username webauthn"
+        placeholder="Pick a saved passkey"
+      />
+      <button id="signin" type="button">Sign in with a passkey</button>
+    </fieldset>
+
+    <fieldset>
+      <legend>Register a passkey</legend>
+      <form id="register-form">
+        <label for="register-name"
+          >Name (demo only: the name is the account)</label
+        >
+        <input id="register-name" autocomplete="off" maxlength="64" required />
+        <button type="submit">Create a passkey</button>
+      </form>
+    </fieldset>
+
+    <script>
+      "use strict";
+
+      const status = document.getElementById("status");
+      const signinButton = document.getElementById("signin");
+      const registerButton = document.querySelector("#register-form button");
+      let autofill = null; // AbortController of the pending conditional request
+
+      function say(text, isError) {
+        status.textContent = text;
+        status.className = isError ? "error" : "";
+      }
+
+      // isQuiet is true for what a visitor causes by dismissing a prompt or by the
+      // page cancelling its own pending request: nothing to report.
+      function isQuiet(e) {
+        return e.name === "AbortError" || e.name === "NotAllowedError";
+      }
+
+      function setBusy(busy) {
+        signinButton.disabled = busy;
+        registerButton.disabled = busy;
+      }
+
+      async function post(path, body) {
+        const res = await fetch(path, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || "request failed");
+        return data;
+      }
+
+      function abortAutofill() {
+        if (autofill) {
+          autofill.abort();
+          autofill = null;
+        }
+      }
+
+      async function finishSignIn(flowId, credential) {
+        if (!credential) return;
+        const done = await post("/signin/finish", {
+          flow_id: flowId,
+          credential: credential.toJSON(),
+        });
+        say("Signed in as " + done.subject);
+      }
+
+      // startAutofill leaves one conditional request pending: it resolves when the
+      // visitor picks a passkey from the username field. The controller exists before
+      // the first await so a modal ceremony can always cancel it.
+      async function startAutofill() {
+        abortAutofill();
+        const controller = new AbortController();
+        autofill = controller;
+        try {
+          const begun = await post("/signin/begin", { conditional: true });
+          const options = PublicKeyCredential.parseRequestOptionsFromJSON(
+            begun.options,
+          );
+          const credential = await navigator.credentials.get({
+            publicKey: options,
+            mediation: begun.mediation,
+            signal: controller.signal,
+          });
+          await finishSignIn(begun.flow_id, credential);
+        } catch (e) {
+          if (!isQuiet(e)) say(e.message, true);
+        }
+        // Re-arm unless the page cancelled this request itself (a modal ceremony
+        // is running and re-arms when it ends).
+        // The delay keeps a browser that rejects immediately (an unfocused
+        // page, say) from turning this into a tight loop.
+        if (!controller.signal.aborted && autofill === controller) {
+          setTimeout(() => {
+            if (autofill === controller) startAutofill();
+          }, 1000);
+        }
+      }
+
+      async function modalSignIn() {
+        // Only one ceremony can be pending: end the autofill request first.
+        abortAutofill();
+        setBusy(true);
+        try {
+          const begun = await post("/signin/begin", { conditional: false });
+          const options = PublicKeyCredential.parseRequestOptionsFromJSON(
+            begun.options,
+          );
+          const credential = await navigator.credentials.get({
+            publicKey: options,
+          });
+          await finishSignIn(begun.flow_id, credential);
+        } catch (e) {
+          if (!isQuiet(e)) say(e.message, true);
+        }
+        setBusy(false);
+        startAutofill();
+      }
+
+      async function register(event) {
+        event.preventDefault();
+        abortAutofill();
+        setBusy(true);
+        const name = document.getElementById("register-name").value;
+        try {
+          const begun = await post("/register/begin", { name });
+          const options = PublicKeyCredential.parseCreationOptionsFromJSON(
+            begun.options,
+          );
+          const credential = await navigator.credentials.create({
+            publicKey: options,
+          });
+          if (credential) {
+            const done = await post("/register/finish", {
+              flow_id: begun.flow_id,
+              name,
+              credential: credential.toJSON(),
+            });
+            say("Registered a passkey for " + done.subject + ". Now sign in.");
+          }
+        } catch (e) {
+          if (!isQuiet(e)) say(e.message, true);
+        }
+        setBusy(false);
+        startAutofill();
+      }
+
+      async function init() {
+        if (
+          !window.PublicKeyCredential ||
+          !PublicKeyCredential.parseRequestOptionsFromJSON ||
+          !PublicKeyCredential.parseCreationOptionsFromJSON ||
+          !PublicKeyCredential.isConditionalMediationAvailable
+        ) {
+          say(
+            "This browser does not support the passkey JSON helpers this example needs. Try a current Chrome, Safari or Firefox.",
+            true,
+          );
+          return;
+        }
+        document
+          .getElementById("signin")
+          .addEventListener("click", modalSignIn);
+        document
+          .getElementById("register-form")
+          .addEventListener("submit", register);
+        if (await PublicKeyCredential.isConditionalMediationAvailable()) {
+          startAutofill();
+        }
+      }
+
+      init();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,189 @@
+package authtest
+
+import (
+	"bytes"
+	"errors"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/meysam81/go-auth/v2/store"
+)
+
+// FlowStoreSuite returns a test that proves a [store.FlowStore]. Run it from
+// your own test against your database-backed store:
+//
+//	func TestFlowStore(t *testing.T) {
+//		authtest.FlowStoreSuite(func(t *testing.T) store.FlowStore { return newSQLFlowStore(t) })(t)
+//	}
+//
+// newStore is called once per subtest and must return a store no other
+// subtest has written to (a fresh table or schema is the usual way). Each
+// subtest is a rule from the storage contract; a failure names the rule.
+func FlowStoreSuite(newStore func(t *testing.T) store.FlowStore) func(t *testing.T) {
+	return func(t *testing.T) {
+		t.Helper()
+		ctx := t.Context()
+		// The subtests run in sequence: an application's newStore may reset a
+		// shared database, so independence is not assumed.
+		future := func() time.Time { return time.Now().Add(time.Hour).Truncate(time.Second).UTC() }
+
+		t.Run("PutThenTake", func(t *testing.T) {
+			s := newStore(t)
+			id := randID(t, "flow-")
+			want := store.Flow{Kind: "k", Payload: []byte("payload"), ExpiresAt: future()}
+			if err := s.Put(ctx, id, want); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			got, err := s.Take(ctx, id)
+			if err != nil {
+				t.Fatalf("Take: %v", err)
+			}
+			if got.Kind != want.Kind || !bytes.Equal(got.Payload, want.Payload) || !got.ExpiresAt.Equal(want.ExpiresAt) {
+				t.Fatalf("Take = %+v, want %+v", got, want)
+			}
+		})
+
+		t.Run("SecondTakeIsNotFound", func(t *testing.T) {
+			s := newStore(t)
+			id := randID(t, "flow-")
+			if err := s.Put(ctx, id, store.Flow{Kind: "k", Payload: []byte("p"), ExpiresAt: future()}); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			if _, err := s.Take(ctx, id); err != nil {
+				t.Fatalf("first Take: %v", err)
+			}
+			if _, err := s.Take(ctx, id); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("second Take error = %v, want store.ErrNotFound (a flow is single-use)", err)
+			}
+		})
+
+		t.Run("ExpiredIsNotFound", func(t *testing.T) {
+			s := newStore(t)
+			id := randID(t, "flow-")
+			// Expired an hour ago, written in a zone far ahead of UTC: a store that
+			// keeps the wall clock and drops the offset reads this as the future.
+			zone := time.FixedZone("+14", 14*3600)
+			expired := store.Flow{Kind: "k", Payload: []byte("p"), ExpiresAt: time.Now().Add(-time.Hour).In(zone)}
+			if err := s.Put(ctx, id, expired); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			if _, err := s.Take(ctx, id); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("Take of an expired flow error = %v, want store.ErrNotFound", err)
+			}
+		})
+
+		t.Run("UnknownIsNotFound", func(t *testing.T) {
+			s := newStore(t)
+			if _, err := s.Take(ctx, randID(t, "flow-")); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("Take of an unknown id error = %v, want store.ErrNotFound", err)
+			}
+		})
+
+		t.Run("PutExistingID_ErrDuplicate", func(t *testing.T) {
+			s := newStore(t)
+			id := randID(t, "flow-")
+			first := store.Flow{Kind: "first", Payload: []byte("one"), ExpiresAt: future()}
+			if err := s.Put(ctx, id, first); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			second := store.Flow{Kind: "second", Payload: []byte("two"), ExpiresAt: future()}
+			if err := s.Put(ctx, id, second); !errors.Is(err, store.ErrDuplicate) {
+				t.Fatalf("second Put error = %v, want store.ErrDuplicate (a flow id is never overwritten)", err)
+			}
+			got, err := s.Take(ctx, id)
+			if err != nil {
+				t.Fatalf("Take: %v", err)
+			}
+			if got.Kind != first.Kind || !bytes.Equal(got.Payload, first.Payload) {
+				t.Fatalf("Take = %+v, want the first flow %+v", got, first)
+			}
+		})
+
+		t.Run("TakeIsCaseSensitive", func(t *testing.T) {
+			s := newStore(t)
+			id := randID(t, "flow-")
+			if err := s.Put(ctx, id, store.Flow{Kind: "k", Payload: []byte("p"), ExpiresAt: future()}); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			if _, err := s.Take(ctx, strings.ToUpper(id)); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("Take of a case variant error = %v, want store.ErrNotFound (ids compare exactly, e.g. a binary collation)", err)
+			}
+			if _, err := s.Take(ctx, id); err != nil {
+				t.Fatalf("Take of the exact id after a refused variant: %v", err)
+			}
+		})
+
+		t.Run("ConcurrentTake_OneWinner", func(t *testing.T) {
+			s := newStore(t)
+			id := randID(t, "flow-")
+			if err := s.Put(ctx, id, store.Flow{Kind: "k", Payload: []byte("p"), ExpiresAt: future()}); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			const callers = 32
+			var wg sync.WaitGroup
+			var won, notFound, other atomic.Int32
+			start := make(chan struct{})
+			for range callers {
+				wg.Go(func() {
+					<-start
+					switch _, err := s.Take(ctx, id); {
+					case err == nil:
+						won.Add(1)
+					case errors.Is(err, store.ErrNotFound):
+						notFound.Add(1)
+					default:
+						other.Add(1)
+					}
+				})
+			}
+			close(start)
+			wg.Wait()
+			if won.Load() != 1 || notFound.Load() != callers-1 || other.Load() != 0 {
+				t.Fatalf("%d Takes: %d won, %d ErrNotFound, %d other errors; want exactly 1, %d, 0 (Take must be one atomic consume, not Get then Delete)",
+					callers, won.Load(), notFound.Load(), other.Load(), callers-1)
+			}
+		})
+
+		t.Run("LargePayloadRoundTrips", func(t *testing.T) {
+			s := newStore(t)
+			id := randID(t, "flow-")
+			// A ceremony's payload is several KiB once a subject holds many
+			// credentials: a column sized for a short payload truncates it.
+			want := store.Flow{Kind: "k", Payload: randBytes(t, 8<<10), ExpiresAt: future()}
+			if err := s.Put(ctx, id, want); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			got, err := s.Take(ctx, id)
+			if err != nil {
+				t.Fatalf("Take: %v", err)
+			}
+			if !bytes.Equal(got.Payload, want.Payload) {
+				t.Fatalf("Take returned a %d-byte payload that differs from the %d bytes Put stored", len(got.Payload), len(want.Payload))
+			}
+		})
+
+		t.Run("RoundTripsEveryField", func(t *testing.T) {
+			s := newStore(t)
+			id := randID(t, "flow-")
+			var want store.Flow
+			FillNonZero(t, &want)
+			want.Payload = []byte{0x00, 0x01, 0xff, 0x7f, 0x00, 0xfe, 0xff}
+			// FillNonZero's instant may be in the past; use a future one in a
+			// zone behind UTC so a store that drops the offset changes the instant.
+			want.ExpiresAt = future().In(time.FixedZone("-12", -12*3600))
+			if err := s.Put(ctx, id, want); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			got, err := s.Take(ctx, id)
+			if err != nil {
+				t.Fatalf("Take: %v", err)
+			}
+			if field := diffFields(got, want); field != "" {
+				t.Fatalf("field %s did not round-trip: got %+v, want %+v", field, got, want)
+			}
+		})
+	}
+}
