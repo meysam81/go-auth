@@ -46,9 +46,9 @@ column is the delivery order; only G1 packages exist before their phase ships.
   httpx/        outbound transport that refuses non-public addresses            G3
   jwtx/         JWT mint and verify                                             G3
   hash/         password hashing: pluggable, parameter-bounded; bcrypt first    G3
+  audit/        event vocabulary, a Logger interface, a log/slog adapter        G3
+  httpmw/       credential extraction middleware                                G3
   normalize/    PRECIS identifier normalisation                                 later
-  audit/        event vocabulary and a Logger interface. Nothing else.          later
-  httpmw/       credential extraction middleware                                later
   batteries/    optional wired-up flows; deferred                               -
   examples/     runnable demonstrations (passkeys); not production code         G1
 ```

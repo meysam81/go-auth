@@ -81,9 +81,9 @@ a `v1` branch (§11). The phase column is the delivery order.
   httpx/        outbound transport that refuses non-public addresses            G3
   jwtx/         JWT mint and verify                                             G3
   hash/         password hashing: pluggable, parameter-bounded; bcrypt first    G3
+  audit/        event vocabulary, a Logger interface, a log/slog adapter        G3
+  httpmw/       credential extraction middleware                                G3
   normalize/    PRECIS identifier normalisation                                 later
-  audit/        event vocabulary and a Logger interface. Nothing else.          later
-  httpmw/       credential extraction middleware                                later
   batteries/    optional wired-up flows; deferred (§7)                          —
 ```
 
@@ -679,11 +679,65 @@ closes the homoglyph and zero-width-joiner duplicate-account attack. Two modes:
 strict at registration, graceful at lookup — and the graceful path must **re-run
 the whole pipeline** after stripping forbidden runes.
 
-### 5.8 `audit` (later)
+### 5.8 `audit` (G3)
 
-The event vocabulary and a `Logger` interface. Events are emitted **from the
-primitives**: 652 lines of hand-mirrored decorators meant that any method added
-upstream was silently un-audited (F-22, F-34). No wrappers in v2.
+The event vocabulary, a `Logger` interface and a `log/slog` adapter that replaces
+v1's `StdLogger`. Events are emitted **from the primitives**: 652 lines of
+hand-mirrored decorators meant that any method added upstream was silently
+un-audited (F-22, F-34). No wrappers in v2.
+
+- **Who supplies what.** A primitive emits what only it knows (method, subject
+  ID, credential ID, outcome) with the caller's `ctx`. Request facts (IP address,
+  user agent, request ID) are put on `ctx` by the application's own middleware
+  and added by its `Logger`, so no primitive sees an `http.Request`; this is where F-22's "the
+  application decorates its own call sites" now lives.
+- **Personal data.** Events carry typed fields only, never a free-form map, and
+  no credential material. The subject is the pseudonymous subject ID; there is
+  no email, username or IP field in the vocabulary. The adapter wraps a
+  `*slog.Logger` the application builds, so `slog.HandlerOptions.ReplaceAttr` is
+  the redaction hook for whatever the application adds.
+- **Wiring.** G3 adds emission to the G1 and G2 packages, which shipped before
+  the vocabulary existed. The `Logger` arrives as a new configuration field or
+  per call beside the stores, never as a method added to a published interface
+  (§4.2 rule 5), and the change ships in a prerelease before `v2.0.0` freezes
+  the API.
+
+### 5.9 `httpmw` — credential extraction middleware (G3)
+
+Replaces v1's `middleware` package: read a credential the application issued
+from the request, verify it with `jwtx` or `session`, and put the verified fact
+on the request context. It serves no ceremony, so it is not one of the ceremony
+handlers §12 keeps out of the core.
+
+- **Reading.** An extractor interface with cookie and bearer-header extractors
+  and an ordered combination of them (v1's `SessionTokenExtractor`,
+  `CookieExtractor`, `HeaderExtractor`, `MultiExtractor`). The verified fact is
+  set and read through typed functions with an unexported context key (v1's
+  `GetClaims`, `GetSessionData`, `GetUserID`, `GetSessionID`, `WithUserID`,
+  `WithSessionID`), never a string key.
+- **Writing.** A session cookie writer for the sign-in and sign-out handlers
+  (v1's `SessionTokenWriter`, `CookieWriter`, `NewSecureCookieWriter` and
+  `session.SessionTokenLocation`): `Secure` and `HttpOnly` forced, the `__Host-`
+  prefix validated, and a clear that repeats every attribute so sign-out
+  removes the cookie it set.
+
+v1's fixes carry over as rules:
+
+- An access token only: verification asks `jwtx` for an access token, rather
+  than checking the type after the fact, so a refresh token is refused (F-02,
+  CWE-863).
+- Every extraction and verification failure is the same unauthorized error, so
+  a malformed header, a wrong scheme, a missing or empty cookie and a bad token
+  are indistinguishable. An empty cookie value is refused before it reaches a
+  store.
+- It authenticates an existing session and never creates or rotates one; the
+  sign-in handler rotates (F-14, CWE-384).
+- A missing verifier is a construction error, never a pass: one constructor
+  that returns an error, with no panicking variant (v1's
+  `ErrMissingDependency` and its `*WithError` constructors).
+- The application owns the error response. v1's `ErrorHandler`,
+  `DefaultErrorHandler` and `ErrForbidden` are not carried: the middleware
+  reports unauthorized, and authorization is the application's.
 
 ---
 
@@ -787,6 +841,10 @@ it chooses. The migration document must cover, at minimum:
 - Reset and verification token digests carry forward, but the HMAC keying is new,
   so live tokens are invalidated. TTLs are one and twenty-four hours; the window
   closes on its own.
+- `middleware` maps to `httpmw` (§5.9), and `session.SessionTokenLocation` to
+  its extractors and cookie writer; `audit.AuditLogger` and `StdLogger` map to `audit`'s
+  `Logger` and its `log/slog` adapter (G3). v1's configurable redaction becomes
+  a vocabulary without personal fields plus `slog`'s `ReplaceAttr` (§5.8).
 - `middleware.BasicAuthMiddleware`, the vendor provider constructors and the
   audit wrappers have no replacement. The migration guide names what to write
   instead.
@@ -849,17 +907,22 @@ never standalone programs in the tree, which rot and ship in the module zip.
 4. **Whether `hash` ships a HIBP breach check.** A network call from a library.
    Proposed: the k-anonymity client behind an explicit constructor, absent by
    default, fail-open-on-network-error left to the caller. Decide in G3's design.
+5. **Plain OAuth2 sign-in.** v1's `provider.NewOAuth2Provider` serves providers
+   without OIDC discovery or an ID token, such as GitHub. §3 removes the vendor
+   constructors, and `oidcrp` covers only OIDC. Either `oidcrp` gains a generic
+   OAuth2-plus-userinfo path in G3, or it is listed in §3 as removed. Decide
+   before G3's design.
 
 ---
 
 ## 11. Phases, versions and dependencies
 
-| Phase | Packages                                                                                                                                                            | Ships as         |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
-| G1    | `amr`, `webauthn`, `store` (FlowStore), `authtest` (flow + WebAuthn suites, virtual authenticator), `examples/passkeys`                                             | `v2.0.0-alpha.N` |
-| G2    | `challenge` (hand-off token, durable state, step-up), `attempt`, `totp` (durable replay guard), `recovery` (keyed digests with a key fingerprint, legacy verifiers) | `v2.0.0-beta.N`  |
-| G3    | `session` (refresh families, reuse detection, hashed tokens), `token`, `oidcrp`, `httpx`, `jwtx`, `hash` (bcrypt hash and verify, bounds, limiter)                  | `v2.0.0`         |
-| later | `hash` argon2id and other importers, `normalize`, `audit`, `httpmw`, an attestation policy, a reference SQL store, `batteries`                                      | `v2.x`           |
+| Phase | Packages                                                                                                                                                              | Ships as         |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| G1    | `amr`, `webauthn`, `store` (FlowStore), `authtest` (flow + WebAuthn suites, virtual authenticator), `examples/passkeys`                                               | `v2.0.0-alpha.N` |
+| G2    | `challenge` (hand-off token, durable state, step-up), `attempt`, `totp` (durable replay guard), `recovery` (keyed digests with a key fingerprint, legacy verifiers)   | `v2.0.0-beta.N`  |
+| G3    | `session` (refresh families, reuse detection, hashed tokens), `token`, `oidcrp`, `httpx`, `jwtx`, `hash` (bcrypt hash and verify, bounds, limiter), `audit`, `httpmw` | `v2.0.0`         |
+| later | `hash` argon2id and other importers, `normalize`, an attestation policy, a reference SQL store, `batteries`                                                           | `v2.x`           |
 
 - G1 exit: every check in §5.4 has a virtual-authenticator test that fails when
   the check is removed; the conformance suites pass against the example's store
@@ -871,6 +934,10 @@ never standalone programs in the tree, which rot and ship in the module zip.
   runs the full suite, and the checks in §5.4 stay in this package even where
   go-webauthn also performs them.
 - Go 1.26 is the floor because go-webauthn v0.18 requires it.
+- Parity: each G2 and G3 design pass starts from v1's exported API in its area
+  (`git show origin/v1:<package>`) and carries a symbol-by-symbol table mapping
+  each to its v2 home or to a removal in §3. G3 does not exit until the tables
+  cover every non-test file of `origin/v1`.
 - v2 is built on the `v2` branch, and its alpha and beta tags are cut there.
   `main` keeps v1, and v1 fixes keep landing there, until `v2.0.0`; v1 then
   continues on the `v1` branch for twelve months of security fixes.
@@ -918,5 +985,8 @@ never standalone programs in the tree, which rot and ship in the module zip.
 - **2026-10-18 — branch and scope.** v2 is built on a `v2` branch until
   `v2.0.0`, so `main` never offers less than v1 did. `hash` moves from later to
   G3 with bcrypt, so `v2.0.0` verifies every kind of credential v1 did (§2,
-  §5.1, §8, §11). v1's JWT and session middleware and its audit logger map to
-  `httpmw` and `audit`, still later.
+  §5.1, §8, §11).
+- **2026-10-18 — `httpmw` and `audit` move to G3**, so `v2.0.0` replaces v1
+  except the removals in §3 (§2, §5.8, §5.9, §8, §11). `httpmw` reads and
+  writes credentials around the application's handlers; the 2026-10-17 "no
+  HTTP handlers" decision is about ceremony endpoints, which stay out.
