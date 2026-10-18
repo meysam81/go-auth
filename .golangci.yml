@@ -75,16 +75,28 @@ linters:
           # cryptographic primitive we must not reimplement or a protocol
           # implementation. Anything else expands the attack surface of every
           # consumer, so the set is enforced by rule rather than by discipline.
+          #
+          # The list holds what the packages in this tree import today, not what
+          # a later phase may need: a package that needs a new module adds it
+          # here in the same change, where the review can see it.
           list-mode: strict
           allow:
             - $gostd
-            - github.com/meysam81/go-auth
-            - golang.org/x/crypto
-            - golang.org/x/oauth2
-            - github.com/golang-jwt/jwt/v5
-            - github.com/coreos/go-oidc/v3
+            - github.com/meysam81/go-auth/v2
             - github.com/go-webauthn/webauthn
-            - github.com/pquerna/otp
+        # amr is a vocabulary and store holds interfaces and sentinels; neither
+        # has a reason to import anything but the standard library, and every
+        # consumer that imports only them should compile nothing else. Their
+        # external tests may import the package under test, so tests are exempt
+        # here; .dependency-footprint catches anything reaching them indirectly.
+        stdlib-only:
+          files:
+            - "**/amr/*.go"
+            - "**/store/*.go"
+            - "!$test"
+          list-mode: strict
+          allow:
+            - $gostd
 
     forbidigo:
       # Needed so `pkg` below matches the resolved import path rather than the

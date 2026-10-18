@@ -26,7 +26,11 @@ CI enforces the per-package coverage floors in `.coverage-floor` against
 floor when tests land, never lower one in an unrelated change.
 
 The ruleset requires one check, `ci-gate`; a new job in `ci.yml` goes in its
-`needs` or the gate fails. CI layout and the nightly run: `docs/ci.md`.
+`needs` or the gate fails. A change to what the module imports, directly or
+through a dependency upgrade, regenerates the committed footprint with
+`.github/dependency-footprint.sh > .dependency-footprint`; an incompatible
+API change is declared with `!` in the pull request title. CI layout, the
+API check and the nightly run: `docs/ci.md`.
 
 ## Project Structure
 
