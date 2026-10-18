@@ -1,6 +1,6 @@
 module github.com/meysam81/go-auth/examples/complete
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/go-webauthn/webauthn v0.17.4
@@ -23,7 +23,7 @@ require (
 	github.com/pquerna/otp v1.5.0 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	golang.org/x/crypto v0.55.0 // indirect
+	golang.org/x/crypto v0.56.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 )
