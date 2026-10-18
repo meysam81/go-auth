@@ -1,5 +1,21 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["github>meysam81/.github"],
-  "baseBranchPatterns": ["main", "v2"]
+  "baseBranchPatterns": ["main", "v2"],
+  "postUpdateOptions": ["gomodTidy"],
+  "packageRules": [
+    {
+      "description": "A library's go directive is every consumer's minimum Go. Propose only versions that build on the one go.mod declares, so an upgrade never raises it as a side effect of go mod tidy.",
+      "matchManagers": ["gomod"],
+      "constraintsFiltering": "strict"
+    },
+    {
+      "description": "go-webauthn is pinned exactly and upgraded by hand after its changelog is read: an upgrade waits for approval on the dependency dashboard. A security fix still opens a pull request at once (vulnerabilityAlerts sets dependencyDashboardApproval to false).",
+      "matchPackageNames": ["github.com/go-webauthn/webauthn"],
+      "dependencyDashboardApproval": true
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "semanticCommitType": "fix"
+  }
 }
