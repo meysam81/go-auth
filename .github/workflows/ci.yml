@@ -1,12 +1,16 @@
 name: ci
 
+# `v1` carries v1 once `v2` replaces `main` at `v2.0.0` (docs/v2-design.md §11
+# on the `v2` branch); naming it now means it keeps CI and releases after that.
 on:
   pull_request:
     branches:
       - main
+      - v1
   push:
     branches:
       - main
+      - v1
   # Required by the merge queue. A queued pull request is tested on a temporary
   # `gh-readonly-queue/main/...` branch holding it plus everything ahead of it,
   # which is the whole point: it catches the pair of changes that each pass
@@ -321,7 +325,7 @@ jobs:
           fi
 
   release-please:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v1')
     runs-on: ubuntu-latest
     outputs:
       releases_created: ${{ steps.release-please.outputs.releases_created }}
@@ -337,3 +341,5 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          # The release PR and its tag belong to the branch that was pushed.
+          target-branch: ${{ github.ref_name }}

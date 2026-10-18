@@ -1,17 +1,19 @@
 # CI and the merge queue
 
 One workflow, `.github/workflows/ci.yml`, runs on three events: a pull request
-targeting `main`, a push to `main`, and a merge group.
+targeting `main` or `v1`, a push to `main` or `v1`, and a merge group. `v1`
+carries v1 once v2 replaces `main` at `v2.0.0`; until then v2 is built on the
+`v2` branch, which has its own copy of this workflow.
 
-| Job              | What it gates                                                                |
-| ---------------- | ---------------------------------------------------------------------------- |
-| `test`           | `go test ./... -race -covermode=atomic`, plus the per-package coverage floor |
-| `checks`         | `prettier --check`, `go vet`, `gofmt`, `golangci-lint`                       |
-| `build`          | `go build ./...`                                                             |
-| `build-examples` | the `examples/complete` module, which has its own `go.mod`                   |
-| `govulncheck`    | both modules, scanned with a current toolchain                               |
-| `fuzz`           | every `Fuzz*` target at a bounded budget                                     |
-| `release-please` | release automation; gated to `push` on `main`                                |
+| Job              | What it gates                                                                    |
+| ---------------- | -------------------------------------------------------------------------------- |
+| `test`           | `go test ./... -race -covermode=atomic`, plus the per-package coverage floor     |
+| `checks`         | `prettier --check`, `go vet`, `gofmt`, `golangci-lint`                           |
+| `build`          | `go build ./...`                                                                 |
+| `build-examples` | the `examples/complete` module, which has its own `go.mod`                       |
+| `govulncheck`    | both modules, scanned with a current toolchain                                   |
+| `fuzz`           | every `Fuzz*` target at a bounded budget                                         |
+| `release-please` | release automation; gated to `push` on `main` or `v1`, released from that branch |
 
 ## Why the merge queue exists
 
