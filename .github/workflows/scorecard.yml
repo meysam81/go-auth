@@ -12,7 +12,7 @@ name: scorecard
 # within the shape Scorecard verifies: no workflow-level env or defaults, write
 # permissions limited to security-events and id-token, and only the actions
 # used below.
-# The action supports `push` and `schedule` (its README); nothing else.
+# The triggers the action's README lists as supported: `push` and `schedule`.
 on:
   schedule:
     - cron: "29 5 * * 1"
