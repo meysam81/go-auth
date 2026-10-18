@@ -11,19 +11,35 @@ name: scheduled
 # `main`, which carries v1, so `main` holds a file at this same path that
 # dispatches this one on `v2` (see docs/ci.md). Once this file is on the
 # default branch its own schedule takes over.
+#
+# Two runs share this file: `nightly` every night and `mutation` every Monday.
+# A scheduled event names its run by its cron line; a dispatch names it with
+# the `run` input, which defaults to the nightly.
 on:
   schedule:
     - cron: "17 3 * * *"
+    - cron: "41 4 * * 1"
   workflow_dispatch:
+    inputs:
+      run:
+        description: Which scheduled run to start
+        type: choice
+        options:
+          - nightly
+          - mutation
+        default: nightly
 
 permissions: {}
 
+# One group per run, so a queued mutation run never waits behind, or is
+# replaced by, a nightly.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.run || github.event.schedule }}
   cancel-in-progress: false
 
 jobs:
   govulncheck:
+    if: (github.event_name == 'schedule' && github.event.schedule == '17 3 * * *') || inputs.run == 'nightly'
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -51,6 +67,7 @@ jobs:
   # timing or on the order tests run in. Three separate invocations, because
   # -shuffle draws one order per test binary: -count=3 would repeat one order.
   race:
+    if: (github.event_name == 'schedule' && github.event.schedule == '17 3 * * *') || inputs.run == 'nightly'
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -85,6 +102,7 @@ jobs:
   # the last one stopped instead of from the seeds. It is saved even when a
   # target fails, and a failing target does not stop the others.
   fuzz:
+    if: (github.event_name == 'schedule' && github.event.schedule == '17 3 * * *') || inputs.run == 'nightly'
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -153,16 +171,95 @@ jobs:
           path: "**/testdata/fuzz/**"
           retention-days: 30
 
+  # The PR gate audits the workflows offline, so it cannot go red on a network
+  # hiccup or on a change upstream. The online audits run here: an action
+  # pinned to a commit that is not in its repository (impostor-commit) and an
+  # action version with a published advisory (known-vulnerable-actions).
+  # .github/zizmor.yml disables ref-version-mismatch, which fires whenever an
+  # upstream moves a `vN` tag before Renovate has bumped the digest.
+  workflows:
+    if: (github.event_name == 'schedule' && github.event.schedule == '17 3 * * *') || inputs.run == 'nightly'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Audit the workflows with zizmor, online
+        env:
+          # renovate: pypi=zizmor
+          ZIZMOR_VERSION: 1.30.1
+          GH_TOKEN: ${{ github.token }}
+        run: pipx run "zizmor==${ZIZMOR_VERSION}" --format=github .github/workflows/
+
+  # Coverage says a line ran; mutation testing says a test would notice if it
+  # were wrong. gremlins flips one condition or operator at a time in amr and
+  # webauthn and reruns the tests; a mutant that survives is a behaviour no
+  # test pins. Report-only for now: the summary lists the efficacy and every
+  # surviving mutant, and the job fails only if gremlins itself cannot run.
+  mutation:
+    if: (github.event_name == 'schedule' && github.event.schedule == '41 4 * * 1') || inputs.run == 'mutation'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+      - name: Install gremlins
+        env:
+          # renovate: go=github.com/go-gremlins/gremlins
+          GREMLINS_VERSION: v0.6.0
+        run: go install "github.com/go-gremlins/gremlins/cmd/gremlins@${GREMLINS_VERSION}"
+      - name: Mutate amr and webauthn
+        run: |
+          set -euo pipefail
+          mkdir -p mutation
+          echo "## Mutation testing" >> "$GITHUB_STEP_SUMMARY"
+          for pkg in amr webauthn; do
+            gremlins unleash --workers=4 "./$pkg" | tee "mutation/$pkg.log"
+            {
+              echo
+              echo "### $pkg"
+              echo
+              grep -E '^(Killed|Test efficacy|Mutator coverage):' "mutation/$pkg.log" | sed 's/^/- /'
+              if grep -q ' LIVED ' "mutation/$pkg.log"; then
+                echo
+                echo "Surviving mutants:"
+                echo
+                grep ' LIVED ' "mutation/$pkg.log" | sed 's/^ */- /'
+              fi
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+      - name: Upload the reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: mutation-${{ github.run_id }}
+          path: mutation/
+          retention-days: 90
+
   # A red scheduled run notifies nobody by default: it is started by a bot, not
-  # by a person GitHub would email. One open issue per branch collects the
-  # failures: the first opens it, later ones comment on it, and closing it once
-  # the cause is fixed re-arms it. A job that hits its timeout ends `cancelled`,
+  # by a person GitHub would email. One open issue per run and branch collects
+  # the failures: the first opens it, later ones comment on it, and closing it
+  # once the cause is fixed re-arms it. A job that hits its timeout ends `cancelled`,
   # not `failure`, so that counts too; a run someone cancels by hand does not.
   report:
     needs:
       - govulncheck
       - race
       - fuzz
+      - workflows
+      - mutation
     if: ${{ !cancelled() && (failure() || contains(needs.*.result, 'cancelled')) }}
     permissions:
       issues: write
@@ -174,11 +271,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           BRANCH: ${{ github.ref_name }}
+          RUN: ${{ (github.event_name == 'schedule' && github.event.schedule == '41 4 * * 1' && 'mutation') || inputs.run || 'nightly' }}
           NEEDS: ${{ toJSON(needs) }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          title="nightly: failing on ${BRANCH}"
+          title="${RUN}: failing on ${BRANCH}"
           failed=$(jq -r '[to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | "\(.key)=\(.value.result)"] | join(", ")' <<<"$NEEDS")
           body="Failed: ${failed}. Run: ${RUN_URL}"
           number=$(gh issue list --state open --search "\"${title}\" in:title" --json number,title \

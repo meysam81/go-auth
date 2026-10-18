@@ -8,7 +8,9 @@ on:
       - main
       - v2
     # `edited` re-runs the checks when the title changes: the title is what
-    # pr-title and api-diff read.
+    # pr-title and api-diff read. It also fires on body edits, which costs a
+    # full run each time; skipping the other jobs on `edited` would let a run
+    # that tested nothing replace the last real result of ci-gate.
     types:
       - opened
       - synchronize
@@ -28,6 +30,11 @@ on:
 
 # No job inherits a token scope it did not ask for: each declares its own.
 permissions: {}
+
+env:
+  # The commit types release-please-config.json knows; pr-title and api-diff
+  # read the pull request title against this list.
+  CONVENTIONAL_TYPES: feat|fix|perf|revert|build|deps|chore|ci|docs|refactor|test|style
 
 # Each pull request and each ref gets its own concurrency group. A pull
 # request's superseded run is cancelled, since only its latest commit can merge;
@@ -174,7 +181,8 @@ jobs:
       # See .github/dependency-footprint.sh for why the indirect half matters.
       - name: The dependency footprint is unchanged
         run: |
-          if ! diff -u .dependency-footprint <(.github/dependency-footprint.sh); then
+          want=$(.github/dependency-footprint.sh)
+          if ! diff -u .dependency-footprint <(printf '%s\n' "$want"); then
             echo "::error::the packages this module compiles in changed; run \`.github/dependency-footprint.sh > .dependency-footprint\` and review the added lines"
             exit 1
           fi
@@ -326,19 +334,25 @@ jobs:
         env:
           TITLE: ${{ github.event.pull_request.title }}
         run: |
-          types='feat|fix|perf|revert|build|deps|chore|ci|docs|refactor|test|style'
-          if ! grep -qE "^(${types})(\([a-z0-9._/-]+\))?!?: [^ ]" <<<"$TITLE"; then
-            echo "::error::write the title as <type>(<scope>)!: <summary>, with a type from release-please-config.json: ${types//|/, }"
+          if ! grep -qE "^(${CONVENTIONAL_TYPES})(\([a-z0-9._/,-]+\))?!?: [^ ]" <<<"$TITLE"; then
+            echo "::error::write the title as <type>(<scope>)!: <summary>, with a type from release-please-config.json: ${CONVENTIONAL_TYPES//|/, } (GitHub's default 'Revert \"...\"' title needs rewriting as revert: ...)"
             exit 1
           fi
 
   # Every exported identifier is a promise to the code that imports it. This
   # compares the module's exported API with the pull request's base and puts
-  # the difference in the run summary. An incompatible change must be declared
-  # with `!` in the title. While .release-please-manifest.json holds a
-  # pre-release version an undeclared one is a warning: breaking changes are
-  # expected before v2.0.0. From the first stable release on it fails the job,
-  # because a declared break in a Go module means a new major module path.
+  # the difference in the run summary; examples/ is a demonstration, not API.
+  #
+  # The base is the first parent of the merge commit the job checks out, not
+  # the event's base.sha, which goes stale when the base moves after the last
+  # push (an `edited` run would blame the pull request for the base's changes).
+  # The mode comes from the base's .release-please-manifest.json, so a pull
+  # request cannot relax it:
+  #   pre-release: an incompatible change without `!` in the title is a warning.
+  #   stable:      an incompatible change fails unless the title declares it
+  #                with `!` AND the module path moves to its next major (/v3):
+  #                release-please would otherwise tag v3.0.0 on module /v2,
+  #                which Go refuses.
   api-diff:
     permissions:
       contents: read
@@ -365,20 +379,22 @@ jobs:
       - name: Compare the exported API with the base
         if: github.event_name == 'pull_request'
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
-          module=$(go list -m)
-          git worktree add --detach "$RUNNER_TEMP/base" "$BASE_SHA"
-          (cd "$RUNNER_TEMP/base" && apidiff -m -w "$RUNNER_TEMP/base.api" "$module")
-          apidiff -m -w "$RUNNER_TEMP/head.api" "$module"
-          report=$(apidiff -m "$RUNNER_TEMP/base.api" "$RUNNER_TEMP/head.api")
-          breaking=$(apidiff -m -incompatible "$RUNNER_TEMP/base.api" "$RUNNER_TEMP/head.api")
+          base_sha=$(git rev-parse HEAD^1)
+          git worktree add --detach "$RUNNER_TEMP/base" "$base_sha"
+          head_module=$(go list -m)
+          base_module=$(cd "$RUNNER_TEMP/base" && go list -m)
+          (cd "$RUNNER_TEMP/base" && apidiff -m -w "$RUNNER_TEMP/base.api" "$base_module")
+          apidiff -m -w "$RUNNER_TEMP/head.api" "$head_module"
+          not_api='^- (package [^ :]+/examples/|\./examples/)'
+          report=$(apidiff -m "$RUNNER_TEMP/base.api" "$RUNNER_TEMP/head.api" | { grep -vE "$not_api" || true; })
+          breaking=$(apidiff -m -incompatible "$RUNNER_TEMP/base.api" "$RUNNER_TEMP/head.api" | { grep -vE "$not_api" || true; })
           {
-            echo "## Exported API against the base"
+            echo "## Exported API against the base ($base_module at ${base_sha:0:12})"
             echo
-            if [ -n "$report" ]; then
+            if [ -n "$breaking$(grep -vE '^(Incompatible|Compatible) changes:$' <<<"$report")" ]; then
               fence='```'
               printf '%s\n%s\n%s\n' "$fence" "$report" "$fence"
             else
@@ -389,24 +405,37 @@ jobs:
             exit 0
           fi
           printf '%s\n' "$breaking"
-          if grep -qE '^[a-z]+(\([^)]*\))?!: ' <<<"$TITLE"; then
-            echo "the title declares the incompatible change"
-            exit 0
+          declared=false
+          if grep -qE "^(${CONVENTIONAL_TYPES})(\([a-z0-9._/,-]+\))?!: " <<<"$TITLE"; then
+            declared=true
           fi
-          version=$(jq -r '."."' .release-please-manifest.json)
+          version=$(jq -r '."."' "$RUNNER_TEMP/base/.release-please-manifest.json")
           case "$version" in
             *-*)
-              echo "::warning::incompatible API change not declared with '!' in the title; allowed while the module is at the pre-release $version"
+              if [ "$declared" = true ]; then
+                echo "the title declares the incompatible change"
+              else
+                echo "::warning::incompatible API change not declared with '!' in the title; allowed while the base is at the pre-release $version"
+              fi
               ;;
             *)
-              echo "::error::incompatible API change at the stable release $version; keep the old API, or declare the break with '!' and move the module to its next major path"
-              exit 1
+              if [ "$declared" = true ] && [ "$base_module" != "$head_module" ]; then
+                echo "declared, and the module moves from $base_module to $head_module"
+              elif [ "$declared" = true ]; then
+                echo "::error::the title declares a break, but the module path is still $head_module; a breaking release of a Go module needs its next major path"
+                exit 1
+              else
+                echo "::error::incompatible API change at the stable release $version; keep the old API, or move the module to its next major path and declare the break with '!'"
+                exit 1
+              fi
               ;;
           esac
 
   # actionlint (pre-commit) checks that a workflow is valid; zizmor checks that
   # it is safe: template injection, credentials left in a checkout, excessive
-  # token scopes, unpinned actions.
+  # token scopes, unpinned actions. Offline, so the gate cannot go red on a
+  # network failure or an upstream tag move; scheduled.yml runs the online
+  # audits nightly.
   workflows:
     permissions:
       contents: read
@@ -421,8 +450,7 @@ jobs:
         env:
           # renovate: pypi=zizmor
           ZIZMOR_VERSION: 1.30.1
-          GH_TOKEN: ${{ github.token }}
-        run: pipx run "zizmor==${ZIZMOR_VERSION}" --format=github .github/workflows/
+        run: pipx run "zizmor==${ZIZMOR_VERSION}" --offline --format=github .github/workflows/
 
   release-please:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v2')

@@ -82,7 +82,7 @@ linters:
           list-mode: strict
           allow:
             - $gostd
-            - github.com/meysam81/go-auth
+            - github.com/meysam81/go-auth/v2
             - github.com/go-webauthn/webauthn
         # amr is a vocabulary and store holds interfaces and sentinels; neither
         # has a reason to import anything but the standard library, and every

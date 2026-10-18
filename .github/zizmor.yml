@@ -1,0 +1,8 @@
+# zizmor configuration (read automatically from .github/zizmor.yml).
+rules:
+  # Renovate pins each action to a digest and keeps the `# vN` comment; when
+  # an upstream moves the `vN` tag, the digest lags until Renovate bumps it,
+  # which takes at least the 14-day release cooldown. The digest is what runs,
+  # so the mismatch is cosmetic, and it would otherwise fail the nightly.
+  ref-version-mismatch:
+    disable: true

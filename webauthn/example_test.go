@@ -23,7 +23,10 @@ type exampleEnv struct {
 	key   *authtest.Authenticator
 }
 
-func newExampleEnv() (*exampleEnv, error) {
+// newExampleEnv builds a relying party, in-memory stores and a virtual
+// authenticator. synced makes the authenticator a passkey provider whose
+// credentials are backed up (BE=1); a hardware security key is not.
+func newExampleEnv(synced bool) (*exampleEnv, error) {
 	rp, err := webauthn.New(webauthn.Config{
 		RPID:    "example.test",
 		RPName:  "Example",
@@ -35,7 +38,7 @@ func newExampleEnv() (*exampleEnv, error) {
 	key, err := authtest.NewAuthenticator(authtest.AuthenticatorConfig{
 		UserVerified:   true,
 		Discoverable:   true,
-		BackupEligible: true,
+		BackupEligible: synced,
 	})
 	if err != nil {
 		return nil, err
@@ -62,7 +65,7 @@ func (e *exampleEnv) register(ctx context.Context, kind webauthn.CredentialKind)
 
 func ExampleRP_BeginRegistration() {
 	ctx := context.Background()
-	env, err := newExampleEnv()
+	env, err := newExampleEnv(true)
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -104,7 +107,7 @@ func ExampleRP_BeginRegistration() {
 
 func ExampleRP_BeginPasskey() {
 	ctx := context.Background()
-	env, err := newExampleEnv()
+	env, err := newExampleEnv(true)
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -147,7 +150,9 @@ func ExampleRP_BeginPasskey() {
 
 func ExampleRP_BeginSecondFactor() {
 	ctx := context.Background()
-	env, err := newExampleEnv()
+	// A hardware security key: its credential is never backed up, which is
+	// what makes it a hardware-bound factor in the methods below.
+	env, err := newExampleEnv(false)
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -185,5 +190,5 @@ func ExampleRP_BeginSecondFactor() {
 	// Output:
 	// subject: user-1
 	// user verified: true
-	// methods: [swk mfa]
+	// methods: [hwk mfa]
 }
