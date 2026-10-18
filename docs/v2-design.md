@@ -688,12 +688,12 @@ un-audited (F-22, F-34). No wrappers in v2.
 
 - **Who supplies what.** A primitive emits what only it knows (method, subject
   ID, credential ID, outcome) with the caller's `ctx`. Request facts (IP address,
-  user agent, request ID) are added by the application's `Logger` from that
-  `ctx`, so no primitive sees an `http.Request`; this is where F-22's "the
+  user agent, request ID) are put on `ctx` by the application's own middleware
+  and added by its `Logger`, so no primitive sees an `http.Request`; this is where F-22's "the
   application decorates its own call sites" now lives.
 - **Personal data.** Events carry typed fields only, never a free-form map, and
-  no credential material. The subject is the opaque subject ID; there is no
-  email, username or IP field in the vocabulary. The adapter wraps a
+  no credential material. The subject is the pseudonymous subject ID; there is
+  no email, username or IP field in the vocabulary. The adapter wraps a
   `*slog.Logger` the application builds, so `slog.HandlerOptions.ReplaceAttr` is
   the redaction hook for whatever the application adds.
 - **Wiring.** G3 adds emission to the G1 and G2 packages, which shipped before
@@ -712,9 +712,9 @@ handlers §12 keeps out of the core.
 - **Reading.** An extractor interface with cookie and bearer-header extractors
   and an ordered combination of them (v1's `SessionTokenExtractor`,
   `CookieExtractor`, `HeaderExtractor`, `MultiExtractor`). The verified fact is
-  read back through typed accessors with an unexported context key (v1's
-  `GetClaims`, `GetSessionData`, `GetUserID`, `GetSessionID`), never a string
-  key.
+  set and read through typed functions with an unexported context key (v1's
+  `GetClaims`, `GetSessionData`, `GetUserID`, `GetSessionID`, `WithUserID`,
+  `WithSessionID`), never a string key.
 - **Writing.** A session cookie writer for the sign-in and sign-out handlers
   (v1's `SessionTokenWriter`, `CookieWriter`, `NewSecureCookieWriter` and
   `session.SessionTokenLocation`): `Secure` and `HttpOnly` forced, the `__Host-`
@@ -842,7 +842,7 @@ it chooses. The migration document must cover, at minimum:
   so live tokens are invalidated. TTLs are one and twenty-four hours; the window
   closes on its own.
 - `middleware` maps to `httpmw` (§5.9), and `session.SessionTokenLocation` to
-  its cookie writer; `audit.AuditLogger` and `StdLogger` map to `audit`'s
+  its extractors and cookie writer; `audit.AuditLogger` and `StdLogger` map to `audit`'s
   `Logger` and its `log/slog` adapter (G3). v1's configurable redaction becomes
   a vocabulary without personal fields plus `slog`'s `ReplaceAttr` (§5.8).
 - `middleware.BasicAuthMiddleware`, the vendor provider constructors and the
@@ -935,8 +935,9 @@ never standalone programs in the tree, which rot and ship in the module zip.
   go-webauthn also performs them.
 - Go 1.26 is the floor because go-webauthn v0.18 requires it.
 - Parity: each G2 and G3 design pass starts from v1's exported API in its area
-  (`git show v1:<package>`) and maps or removes every symbol, so `v2.0.0`
-  replaces v1 except what §3 removes.
+  (`git show origin/v1:<package>`) and carries a symbol-by-symbol table mapping
+  each to its v2 home or to a removal in §3. G3 does not exit until the tables
+  cover every non-test file of `origin/v1`.
 - v2 is built on the `v2` branch, and its alpha and beta tags are cut there.
   `main` keeps v1, and v1 fixes keep landing there, until `v2.0.0`; v1 then
   continues on the `v1` branch for twelve months of security fixes.
