@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0-alpha.1](https://github.com/meysam81/go-auth/compare/v1.1.3...v2.0.0-alpha.1) (2026-10-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* the module path is now github.com/meysam81/go-auth/v2 and none of the v1 packages (audit, auth, middleware, provider, session, storage) exist on main. Import github.com/meysam81/go-auth from the v1 branch to keep using v1.
+
+### Features
+
+* v2 G1 — passkeys and security keys (webauthn, amr, store, authtest) ([#61](https://github.com/meysam81/go-auth/issues/61)) ([951e4d2](https://github.com/meysam81/go-auth/commit/951e4d2b6c2b5eabdb06264caafbdbe49992ba31))
+
 ## [1.1.3](https://github.com/meysam81/go-auth/compare/v1.1.2...v1.1.3) (2026-08-25)
 
 
