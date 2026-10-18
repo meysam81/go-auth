@@ -2,6 +2,7 @@ package webauthn
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,7 +61,10 @@ func (rp *RP) BeginPasskey(ctx context.Context, flows store.FlowStore, opts Pass
 //
 // A user handle no subject holds, or a credential ID that subject does not
 // hold for this RP ID, is ErrUnknownCredential: the credential's holder may
-// tell its authenticator the credential is gone. A valid signature whose
+// tell its authenticator the credential is gone. Finish answers it only to a
+// response whose client data (type, challenge, origin, crossOrigin,
+// topOrigin) and authenticator data (RP ID hash, UP, UV) pass for this flow;
+// those checks run before either store is read. A valid signature whose
 // counter did not advance past a non-zero stored counter marks the credential
 // clone-suspected and is ErrCloneSuspected; a valid signature of a credential
 // already marked is ErrCloneSuspected too, with no new mark and no recorded
@@ -91,6 +95,9 @@ func (rp *RP) FinishPasskey(ctx context.Context, flows store.FlowStore, creds Cr
 	case n > userHandleSize:
 		return Verified{}, fail(ErrInvalidCredentials, fmt.Sprintf("user handle of %d bytes, longer than 64", n), nil)
 	}
+	if err = rp.verifyUnkeyed(&p.Session, parsed); err != nil {
+		return Verified{}, fail(ErrInvalidCredentials, "assertion refused before lookup", err)
+	}
 
 	// go-webauthn calls the handler before verifying the assertion and wraps
 	// its error in its own; the handler's outcome is carried out unchanged in
@@ -107,10 +114,11 @@ func (rp *RP) FinishPasskey(ctx context.Context, flows store.FlowStore, creds Cr
 		lc := assertionCredential(&stored, parsed.Response.AuthenticatorData.Flags)
 		return &user{handle: handle, creds: []gowebauthn.Credential{lc}}, nil
 	}
-	// go-webauthn checks the challenge, type, origin, crossOrigin and
-	// topOrigin, the RP ID hash, UP, UV (the session requires it), the
-	// signature (canonical DER for ECDSA), that the user handle is the
-	// handler's user's, BE against the credential's and BE=0 with BS=1.
+	// go-webauthn checks again what verifyUnkeyed checked (the challenge,
+	// type, origin, crossOrigin and topOrigin, the RP ID hash, UP, and UV,
+	// which the session requires), then the signature (canonical DER for
+	// ECDSA), that the user handle is the handler's user's, BE against the
+	// credential's and BE=0 with BS=1.
 	_, _, err = rp.wa.ValidatePasskeyLogin(handler, p.Session, parsed)
 	switch {
 	case lookupErr != nil:
@@ -119,6 +127,30 @@ func (rp *RP) FinishPasskey(ctx context.Context, flows store.FlowStore, creds Cr
 		return Verified{}, fail(ErrInvalidCredentials, "assertion refused", err)
 	}
 	return rp.settle(ctx, creds, stored, &parsed.Response.AuthenticatorData, rp.now())
+}
+
+// verifyUnkeyed runs, before either store is read, the checks that bind a
+// passkey assertion to this flow, origin and RP ID: the client data's type,
+// challenge, origin, crossOrigin and topOrigin, the RP ID hash, UP and UV. A
+// response failing one is ErrInvalidCredentials, never ErrUnknownCredential,
+// and neither the credential store nor the handle store sees it.
+// go-webauthn's validateLogin (v0.18.2; re-diff on upgrade) runs these again
+// with the same inputs. A discoverable session never carries the AppID
+// extension, so no AppID hash applies. go-webauthn checks the session's
+// expiry itself, before it calls the handler.
+//
+// This is defense in depth, not secrecy: none of these values is
+// authenticated until the signature verifies, which needs the stored key,
+// and BeginPasskey hands every caller a flow. Any caller who already holds a
+// user handle and a credential ID can still learn whether that pair is held.
+func (rp *RP) verifyUnkeyed(s *gowebauthn.SessionData, parsed *protocol.ParsedCredentialAssertionData) error {
+	c := rp.wa.Config
+	if err := parsed.Response.CollectedClientData.Verify(s.Challenge, protocol.AssertCeremony,
+		s.GetOrigins(c.RPOrigins), c.RPOpaqueOrigins, c.RPTopOrigins, c.RPTopOriginVerificationMode, c.RPAllowCrossOrigin); err != nil {
+		return err
+	}
+	hash := sha256.Sum256([]byte(s.GetRelyingPartyID(c.RPID)))
+	return parsed.Response.AuthenticatorData.Verify(hash[:], nil, s.UserVerification == protocol.VerificationRequired, true)
 }
 
 // discover resolves a discoverable assertion to the stored credential (check
