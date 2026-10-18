@@ -13,7 +13,18 @@ carries v1 once v2 replaces `main` at `v2.0.0`; until then v2 is built on the
 | `build-examples` | the `examples/complete` module, which has its own `go.mod`                       |
 | `govulncheck`    | both modules, scanned with a current toolchain                                   |
 | `fuzz`           | every `Fuzz*` target at a bounded budget                                         |
+| `ci-gate`        | every job above succeeded; the only check the ruleset requires                   |
 | `release-please` | release automation; gated to `push` on `main` or `v1`, released from that branch |
+
+`ci-gate` passes only when every job it needs succeeded: a skipped or cancelled
+job fails it. It also fails when a job in `ci.yml` is missing from its `needs`,
+so adding a job means adding it there, and a job cannot land ungated.
+
+The `main` ruleset (id `9982355`) covers `main`, `v1` and `v2`, and requires
+`ci-gate` from the GitHub Actions app (`integration_id` 15368), so a status
+named `ci-gate` posted by another app or token does not count. Every branch it
+covers must therefore carry the job in its own `ci.yml`; a branch without it
+gets pull requests that wait for a check that never reports.
 
 ## Why the merge queue exists
 
@@ -96,12 +107,7 @@ gh api --method PUT repos/meysam81/go-auth/rulesets/9982355 \
         "strict_required_status_checks_policy": false,
         "do_not_enforce_on_create": false,
         "required_status_checks": [
-          { "context": "test" },
-          { "context": "checks" },
-          { "context": "build" },
-          { "context": "build-examples" },
-          { "context": "govulncheck" },
-          { "context": "fuzz" }
+          { "context": "ci-gate", "integration_id": 15368 }
         ]
       }
     },
