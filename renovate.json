@@ -19,7 +19,7 @@
       "constraintsFiltering": "strict"
     },
     {
-      "description": "go-webauthn is pinned exactly and upgraded by hand after its changelog is read: an upgrade waits for approval on the dependency dashboard. A security fix still opens a pull request at once: vulnerabilityAlerts sets dependencyDashboardApproval to false, and osvVulnerabilityAlerts finds advisories even with GitHub's alerts off.",
+      "description": "go-webauthn is pinned exactly and upgraded by hand after its changelog is read: an upgrade waits for approval on the dependency dashboard. A security fix still opens a pull request at once: vulnerabilityAlerts sets dependencyDashboardApproval to false.",
       "matchPackageNames": ["github.com/go-webauthn/webauthn"],
       "dependencyDashboardApproval": true
     },
