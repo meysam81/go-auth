@@ -16,11 +16,14 @@ on:
   # which is the whole point: it catches the pair of changes that each pass
   # alone and break together. A required check that does not trigger here never
   # reports on that branch, and GitHub fails the merge rather than merging
-  # unverified -- so every check named in the ruleset's required list must be a
-  # job in this file. See the note in the merge-queue section of docs/ci.md.
+  # unverified. The ruleset therefore requires one check, `ci-gate`, which is a
+  # job in this file and waits for every other one. See docs/ci.md.
   merge_group:
     types:
       - checks_requested
+
+# No job inherits a token scope it did not ask for: each declares its own.
+permissions: {}
 
 # A merge group and its pull request are independent units of work, so they get
 # independent concurrency groups. Superseded pull-request runs are cancelled to
@@ -36,22 +39,16 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
-      - name: Cache Go modules
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum', '**/go.mod') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
       - name: Install dependencies
         run: go mod download
       - name: Run tests
@@ -135,22 +132,16 @@ jobs:
       contents: read
       pull-requests: read
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
-      - name: Cache Go modules
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum', '**/go.mod') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
       # Formatting is enforced here rather than on pre-commit.ci, whose sandbox
       # has no bun to run it with. Pinned so a prettier release cannot turn a
       # green branch red on its own; bump it alongside the pre-commit hook.
@@ -178,22 +169,16 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
-      - name: Cache Go modules
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum', '**/go.mod') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
       - name: Build library
         run: go build -v ./...
 
@@ -203,9 +188,12 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       # Deliberately NOT go.mod. The standard-library half of the report is only
       # meaningful against a current toolchain: scanning with an old Go reports
       # every stdlib advisory fixed since, which is noise about the scanner
@@ -214,17 +202,14 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: stable
-      - name: Cache Go modules
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-govulncheck-${{ hashFiles('**/go.sum', '**/go.mod') }}
-          restore-keys: |
-            ${{ runner.os }}-govulncheck-
+      # Pinned: `@latest` let an upstream release change what this gate runs
+      # without a commit here. Renovate bumps the pin (the comment is its
+      # marker); scheduled.yml carries the same pin and is bumped with it.
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        env:
+          # renovate: go=golang.org/x/vuln
+          GOVULNCHECK_VERSION: v1.8.0
+        run: go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
       - name: Run govulncheck
         run: govulncheck ./...
 
@@ -237,22 +222,16 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
-      - name: Cache Go modules
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum', '**/go.mod') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
       - name: Fuzz every target for a bounded budget
         run: |
           set -euo pipefail
@@ -287,9 +266,12 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
@@ -302,6 +284,7 @@ jobs:
   release-please:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v2')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       releases_created: ${{ steps.release-please.outputs.releases_created }}
       tag_name: ${{ steps.release-please.outputs.tag_name }}
@@ -318,3 +301,50 @@ jobs:
           manifest-file: .release-please-manifest.json
           # The release PR and its tag belong to the branch that was pushed.
           target-branch: ${{ github.ref_name }}
+
+  # The one check the branch ruleset requires. Requiring each job by name meant
+  # every new job was an edit to the ruleset as well as to this file, and a job
+  # missing from the ruleset gated nothing while looking like it did. This job
+  # passes only when every job it needs succeeded -- a skipped or cancelled job
+  # is a failure here, not a pass -- and it refuses to pass when a job in this
+  # file is missing from `needs`, so a new job cannot ship ungated.
+  ci-gate:
+    if: always()
+    needs:
+      - test
+      - checks
+      - build
+      - govulncheck
+      - fuzz
+      - build-examples
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Every job in this workflow is gated
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          # release-please runs only after a merge, and this job is the gate.
+          missing=$(comm -23 \
+            <(yq -r '.jobs | keys | .[]' .github/workflows/ci.yml | grep -vxE 'ci-gate|release-please' | sort) \
+            <(jq -r 'keys[]' <<<"$NEEDS" | sort))
+          if [ -n "$missing" ]; then
+            echo "::error::ci-gate: add these jobs to ci-gate's needs: ${missing//$'\n'/ }"
+            exit 1
+          fi
+      - name: Every needed job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key)=\(.value.result)"' <<<"$NEEDS"
+          bad=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"' <<<"$NEEDS")
+          if [ -n "$bad" ]; then
+            echo "::error::ci-gate: ${bad//$'\n'/ }"
+            exit 1
+          fi

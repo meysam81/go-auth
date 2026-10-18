@@ -1,0 +1,162 @@
+name: scheduled
+
+# The pull-request gate sees the code only when someone opens a pull request.
+# Three things change without a commit: an advisory is published against a
+# dependency, a fuzz target finds an input that 30 seconds did not reach, and a
+# new Go release changes what the toolchain accepts. The nightly run looks for
+# all three and opens an issue when it finds one.
+#
+# GitHub fires `schedule` only on the default branch, and dispatches only a
+# workflow whose file also exists there. Until `v2.0.0` the default branch is
+# `main`, which carries v1, so `main` holds a file at this same path that
+# dispatches this one on `v2` (see docs/ci.md). Once this file is on the
+# default branch its own schedule takes over.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  govulncheck:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # A current toolchain, for the reason given in ci.yml's govulncheck job.
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: stable
+      - name: Install govulncheck
+        env:
+          # renovate: go=golang.org/x/vuln
+          GOVULNCHECK_VERSION: v1.8.0
+        run: go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+      - name: Run govulncheck
+        run: govulncheck ./...
+
+  # Repeated, shuffled runs under the race detector, on the oldest Go that
+  # go.mod admits and on the newest release. A test that passes once in the
+  # gate can still depend on timing or on the order tests run in.
+  race:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        go: [go.mod, stable]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ matrix.go == 'stable' && 'stable' || '' }}
+          go-version-file: ${{ matrix.go == 'go.mod' && 'go.mod' || '' }}
+      - name: Run tests
+        run: go test -race -count=3 -shuffle=on ./...
+
+  # The gate fuzzes each target for 30 s; this gives each ten minutes. The
+  # generated corpus lives in the build cache's fuzz directory and is carried
+  # from night to night, so each run starts where the last one stopped instead
+  # of from the seeds.
+  fuzz:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+      - name: Locate the fuzz corpus
+        id: corpus
+        run: echo "dir=$(go env GOCACHE)/fuzz" >> "$GITHUB_OUTPUT"
+      - name: Carry the fuzz corpus between runs
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ steps.corpus.outputs.dir }}
+          key: fuzz-corpus-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-${{ github.ref_name }}-
+      - name: Fuzz every target for ten minutes
+        run: |
+          set -euo pipefail
+          found=0
+          for pkg in $(go list ./...); do
+            targets="$(go test -list='^Fuzz' "$pkg" | { grep '^Fuzz' || true; })"
+            for target in $targets; do
+              found=$((found + 1))
+              echo "::group::fuzz $pkg $target"
+              go test -run='^$' -fuzz="^${target}$" -fuzztime=10m "$pkg"
+              echo "::endgroup::"
+            done
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no fuzz targets were found; the fuzz run certified nothing"
+            exit 1
+          fi
+          echo "fuzzed $found target(s)"
+      # A failing input is written under the package's testdata/fuzz. Committing
+      # that file turns it into a regression test that the gate runs.
+      - name: Upload failing inputs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: fuzz-failures-${{ github.run_id }}
+          path: "**/testdata/fuzz/**"
+          retention-days: 30
+
+  # A red scheduled run notifies nobody by default. One open issue per branch
+  # collects the failures: the first opens it, later ones comment on it, and
+  # closing it once the cause is fixed re-arms it.
+  report:
+    needs:
+      - govulncheck
+      - race
+      - fuzz
+    if: failure()
+    permissions:
+      issues: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Open or update the failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+          NEEDS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="nightly: failing on ${BRANCH}"
+          failed=$(jq -r '[to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"] | join(", ")' <<<"$NEEDS")
+          body="Failed: ${failed}. Run: ${RUN_URL}"
+          number=$(gh issue list --state open --search "\"${title}\" in:title" --json number,title \
+            | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

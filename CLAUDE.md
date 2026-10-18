@@ -25,6 +25,9 @@ CI enforces the per-package coverage floors in `.coverage-floor` against
 `go test -race -covermode=atomic -coverprofile=coverage.txt ./...`; raise a
 floor when tests land, never lower one in an unrelated change.
 
+The ruleset requires one check, `ci-gate`; a new job in `ci.yml` goes in its
+`needs` or the gate fails. CI layout and the nightly run: `docs/ci.md`.
+
 ## Project Structure
 
 One module, `github.com/meysam81/go-auth/v2`, at the repository root. The phase

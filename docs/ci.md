@@ -12,7 +12,30 @@ carries the v2 module until `v2.0.0` (`docs/v2-design.md` §11).
 | `build-examples` | `go build` and `go vet` of `examples/passkeys`                                   |
 | `govulncheck`    | the module, scanned with a current toolchain                                     |
 | `fuzz`           | every `Fuzz*` target at a bounded budget                                         |
+| `ci-gate`        | every job above succeeded; the only check the ruleset requires                   |
 | `release-please` | release automation; gated to `push` on `main` or `v2`, released from that branch |
+
+`ci-gate` passes only when every job it needs succeeded: a skipped or cancelled
+job fails it. It also fails when a job in `ci.yml` is missing from its `needs`,
+so adding a job means adding it there, and a job cannot land ungated.
+
+## The nightly run
+
+`.github/workflows/scheduled.yml` covers what changes without a commit: every
+night it runs govulncheck against a current toolchain, the race detector three
+times over shuffled tests on the oldest Go that `go.mod` admits and on the
+newest release, and every fuzz target for ten minutes from a corpus carried
+between nights. A failure opens one issue per branch,
+`nightly: failing on <branch>`, and later failures comment on it; close it once
+the cause is fixed.
+
+GitHub fires `schedule` only on the default branch, and `workflow_dispatch`
+runs a workflow only if a file at the same path exists there. Until `v2.0.0`
+the default branch is `main`, which carries v1, so `main` holds its own
+`.github/workflows/scheduled.yml` whose only job is
+`gh workflow run scheduled.yml --ref v2`; the dispatched run executes the `v2`
+copy. When `main` moves to v2, the `v2` copy replaces it and its own schedule
+takes over.
 
 ## Why the merge queue exists
 
@@ -29,9 +52,9 @@ If a later entry fails, it is ejected and the entries ahead of it still merge.
 
 ## The rule that makes or breaks it
 
-**Every check named in the ruleset's required list must be a job in
-`ci.yml`.** A required check that does not trigger on `merge_group` never
-reports on the temporary branch, and GitHub fails the merge rather than merging
+**Every check named in the ruleset's required list must report on a merge
+group.** A required check that does not trigger on `merge_group` never reports
+on the temporary branch, and GitHub fails the merge rather than merging
 something unverified. That is why `ci.yml` declares:
 
 ```yaml
@@ -40,6 +63,8 @@ on:
     types:
       - checks_requested
 ```
+
+and why the required list holds one check, `ci-gate`, rather than one per job.
 
 This repository also receives checks from third-party apps — `codecov/patch`,
 `codecov/project`, `pre-commit.ci`, `Socket Security`, `GitGuardian`. **None of
@@ -50,27 +75,40 @@ they are useful; they simply do not gate the queue.
 
 ## Enabling it
 
-The queue is configured on the `main` ruleset, not on legacy branch protection.
-Two rules are involved: `merge_queue` turns the queue on, and
+The queue is configured on a ruleset, not on legacy branch protection. Two
+rules are involved: `merge_queue` turns the queue on, and
 `required_status_checks` gives it something to wait for. Without the second,
 the queue merges without verifying anything.
 
-Order matters. `ci.yml` must already be on `main` with the `merge_group`
-trigger **before** the queue is switched on — otherwise the first queued pull
-request waits for checks that will never run.
+Order matters. `ci.yml` must already be on the branch with the `ci-gate` job
+and the `merge_group` trigger **before** the queue is switched on — otherwise
+the first queued pull request waits for a check that will never run.
+
+Until `v2.0.0` the ruleset that gates v2 work targets `v2` alone. The `main`
+ruleset (id `9982355`) still guards v1, whose workflow has no `ci-gate` job, so
+it must not require one yet; at the swap the `v2` ruleset's target becomes the
+default branch.
+
+There is one maintainer, so a required approval can never be given: every
+merge would need the bypass, and the bypass skips the required check as well.
+The ruleset below therefore requires no approval, and the bypass stays for
+emergencies only.
 
 ```sh
-# 1. Confirm the trigger is live on main.
-gh api repos/meysam81/go-auth/contents/.github/workflows/ci.yml \
-  --jq '.content' | base64 -d | grep -A2 merge_group
+# 1. Confirm ci-gate and the trigger are live on v2.
+gh api 'repos/meysam81/go-auth/contents/.github/workflows/ci.yml?ref=v2' \
+  --jq '.content' | base64 -d | grep -E '^  ci-gate:|merge_group'
 
-# 2. Read the current ruleset, so the merge here is against what is really there.
-gh api repos/meysam81/go-auth/rulesets/9982355 > ruleset.json
-
-# 3. Add both rules, keeping the existing ones.
-gh api --method PUT repos/meysam81/go-auth/rulesets/9982355 \
-  --input - <<'JSON'
+# 2. Create the v2 ruleset.
+gh api --method POST repos/meysam81/go-auth/rulesets --input - <<'JSON'
 {
+  "name": "v2",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": { "ref_name": { "include": ["refs/heads/v2"], "exclude": [] } },
+  "bypass_actors": [
+    { "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" }
+  ],
   "rules": [
     { "type": "deletion" },
     { "type": "non_fast_forward" },
@@ -79,13 +117,12 @@ gh api --method PUT repos/meysam81/go-auth/rulesets/9982355 \
     {
       "type": "pull_request",
       "parameters": {
-        "required_approving_review_count": 1,
+        "required_approving_review_count": 0,
         "dismiss_stale_reviews_on_push": true,
         "required_reviewers": [],
         "require_code_owner_review": false,
-        "require_last_push_approval": true,
+        "require_last_push_approval": false,
         "required_review_thread_resolution": false,
-        "require_extra_approval_for_unattributed_changes": true,
         "allowed_merge_methods": ["squash"]
       }
     },
@@ -94,14 +131,7 @@ gh api --method PUT repos/meysam81/go-auth/rulesets/9982355 \
       "parameters": {
         "strict_required_status_checks_policy": false,
         "do_not_enforce_on_create": false,
-        "required_status_checks": [
-          { "context": "test" },
-          { "context": "checks" },
-          { "context": "build" },
-          { "context": "build-examples" },
-          { "context": "govulncheck" },
-          { "context": "fuzz" }
-        ]
+        "required_status_checks": [{ "context": "ci-gate" }]
       }
     },
     {
@@ -119,6 +149,10 @@ gh api --method PUT repos/meysam81/go-auth/rulesets/9982355 \
   ]
 }
 JSON
+
+# 3. A workflow must not be able to approve a pull request.
+gh api --method PUT repos/meysam81/go-auth/actions/permissions/workflow \
+  -f default_workflow_permissions=read -F can_approve_pull_request_reviews=false
 ```
 
 `merge_method` is `SQUASH` because the ruleset already enforces
@@ -126,12 +160,20 @@ JSON
 squash; a queue configured to produce merge commits would contradict both.
 
 `strict_required_status_checks_policy` is `false` on purpose. It forces a branch
-to be up to date with `main` before merging, which is the manual chore the queue
-exists to replace — leaving it on makes every merge rebase-and-wait again.
+to be up to date with its base before merging, which is the manual chore the
+queue exists to replace — leaving it on makes every merge rebase-and-wait again.
 
 `grouping_strategy: ALLGREEN` stops a batch at the first failing entry rather
 than merging the entries ahead of it anyway. `HEADGREEN` is the faster,
 looser alternative.
+
+At the swap, point the ruleset at the default branch:
+
+```sh
+id=$(gh api repos/meysam81/go-auth/rulesets --jq '.[] | select(.name == "v2") | .id')
+gh api --method PUT "repos/meysam81/go-auth/rulesets/$id" \
+  --input - <<<'{"conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}}}'
+```
 
 ## After enabling, verify on the first queued pull request
 
@@ -141,10 +183,11 @@ expensive to discover later:
 - **`required_signatures` is on.** Merge-queue commits are created and signed by
   GitHub, so this is expected to hold, but confirm the first queued merge is not
   rejected for an unsigned commit.
-- **Check names must match exactly.** A required context that never matches a
-  job name looks identical to a check that is merely slow — the queue waits, and
-  then times out at `check_response_timeout_minutes`. If a queued pull request
-  hangs, compare the required contexts against the job names in `ci.yml` first.
+- **The check name must match exactly.** A required context that never matches
+  a job name looks identical to a check that is merely slow — the queue waits,
+  and then times out at `check_response_timeout_minutes`. If a queued pull
+  request hangs, compare the required context against `ci-gate` in `ci.yml`
+  first.
 
 ## Disabling it
 
