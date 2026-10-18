@@ -22,11 +22,11 @@ on:
 # No job inherits a token scope it did not ask for: each declares its own.
 permissions: {}
 
-# A merge group and its pull request are independent units of work, so they get
-# independent concurrency groups. Superseded pull-request runs are cancelled to
-# keep the queue's throughput usable; merge-group and push runs are never
-# cancelled, because cancelling the former reports a failed check back to the
-# queue and cancelling the latter can abort a release-please run mid-flight.
+# Each pull request and each ref gets its own concurrency group. A pull
+# request's superseded run is cancelled, since only its latest commit can merge;
+# push runs are never cancelled, because that can abort a release-please run
+# mid-flight, and neither are merge-group runs, should a queue ever exist,
+# because a cancelled one reports a failed check back to the queue.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

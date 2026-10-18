@@ -24,7 +24,8 @@ so adding a job means adding it there, and a job cannot land ungated.
 `.github/workflows/scheduled.yml` covers what changes without a commit: every
 night it runs govulncheck against a current toolchain, the race detector three
 times over shuffled tests on the Go version `go.mod` declares and on the newest
-release, and every fuzz target for ten minutes from a corpus carried
+release, and every fuzz target for up to ten minutes (40 minutes shared across
+all targets) from a corpus carried
 between nights. A failure opens one issue per branch,
 `nightly: failing on <branch>`, and later failures comment on it; close it once
 the cause is fixed.
