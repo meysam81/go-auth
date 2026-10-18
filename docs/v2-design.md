@@ -81,9 +81,9 @@ a `v1` branch (§11). The phase column is the delivery order.
   httpx/        outbound transport that refuses non-public addresses            G3
   jwtx/         JWT mint and verify                                             G3
   hash/         password hashing: pluggable, parameter-bounded; bcrypt first    G3
+  audit/        event vocabulary, a Logger interface, a log/slog adapter        G3
+  httpmw/       credential extraction middleware                                G3
   normalize/    PRECIS identifier normalisation                                 later
-  audit/        event vocabulary and a Logger interface. Nothing else.          later
-  httpmw/       credential extraction middleware                                later
   batteries/    optional wired-up flows; deferred (§7)                          —
 ```
 
@@ -679,11 +679,31 @@ closes the homoglyph and zero-width-joiner duplicate-account attack. Two modes:
 strict at registration, graceful at lookup — and the graceful path must **re-run
 the whole pipeline** after stripping forbidden runes.
 
-### 5.8 `audit` (later)
+### 5.8 `audit` (G3)
 
-The event vocabulary and a `Logger` interface. Events are emitted **from the
-primitives**: 652 lines of hand-mirrored decorators meant that any method added
-upstream was silently un-audited (F-22, F-34). No wrappers in v2.
+The event vocabulary, a `Logger` interface and a `log/slog` adapter that replaces
+v1's `StdLogger`. Events are emitted **from the primitives**: 652 lines of
+hand-mirrored decorators meant that any method added upstream was silently
+un-audited (F-22, F-34). No wrappers in v2. G3 also wires emission into the G1
+and G2 packages, which shipped before the vocabulary existed; how a primitive
+receives its `Logger` is decided in G3's design. An event carries no secret, so
+redaction is by construction rather than v1's configurable redaction.
+
+### 5.9 `httpmw` — credential extraction middleware (G3)
+
+Replaces v1's `JWTMiddleware`, `SessionMiddleware` and the cookie and header
+extractors: read a credential the application issued from the request, verify
+it with `jwtx` or `session`, and put the verified fact on the request context.
+It serves no ceremony, so it is not one of the HTTP handlers §12 keeps out of
+the core. v1's fixes carry over as rules:
+
+- An access token only; a refresh token is refused (F-02, CWE-863).
+- Every extraction failure is the same unauthorized error, so a malformed
+  header, a wrong scheme and a missing cookie are indistinguishable.
+- It authenticates an existing session and never creates or rotates one; the
+  sign-in handler rotates (CWE-384).
+- A missing verifier is a construction error, never a pass (F-35's rule).
+- The application owns the error response.
 
 ---
 
@@ -787,6 +807,9 @@ it chooses. The migration document must cover, at minimum:
 - Reset and verification token digests carry forward, but the HMAC keying is new,
   so live tokens are invalidated. TTLs are one and twenty-four hours; the window
   closes on its own.
+- `middleware.JWTMiddleware`, `SessionMiddleware` and the extractors map to
+  `httpmw`; `audit.AuditLogger` and `StdLogger` map to `audit`'s `Logger` and
+  its `log/slog` adapter (G3).
 - `middleware.BasicAuthMiddleware`, the vendor provider constructors and the
   audit wrappers have no replacement. The migration guide names what to write
   instead.
@@ -854,12 +877,12 @@ never standalone programs in the tree, which rot and ship in the module zip.
 
 ## 11. Phases, versions and dependencies
 
-| Phase | Packages                                                                                                                                                            | Ships as         |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
-| G1    | `amr`, `webauthn`, `store` (FlowStore), `authtest` (flow + WebAuthn suites, virtual authenticator), `examples/passkeys`                                             | `v2.0.0-alpha.N` |
-| G2    | `challenge` (hand-off token, durable state, step-up), `attempt`, `totp` (durable replay guard), `recovery` (keyed digests with a key fingerprint, legacy verifiers) | `v2.0.0-beta.N`  |
-| G3    | `session` (refresh families, reuse detection, hashed tokens), `token`, `oidcrp`, `httpx`, `jwtx`, `hash` (bcrypt hash and verify, bounds, limiter)                  | `v2.0.0`         |
-| later | `hash` argon2id and other importers, `normalize`, `audit`, `httpmw`, an attestation policy, a reference SQL store, `batteries`                                      | `v2.x`           |
+| Phase | Packages                                                                                                                                                              | Ships as         |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| G1    | `amr`, `webauthn`, `store` (FlowStore), `authtest` (flow + WebAuthn suites, virtual authenticator), `examples/passkeys`                                               | `v2.0.0-alpha.N` |
+| G2    | `challenge` (hand-off token, durable state, step-up), `attempt`, `totp` (durable replay guard), `recovery` (keyed digests with a key fingerprint, legacy verifiers)   | `v2.0.0-beta.N`  |
+| G3    | `session` (refresh families, reuse detection, hashed tokens), `token`, `oidcrp`, `httpx`, `jwtx`, `hash` (bcrypt hash and verify, bounds, limiter), `audit`, `httpmw` | `v2.0.0`         |
+| later | `hash` argon2id and other importers, `normalize`, an attestation policy, a reference SQL store, `batteries`                                                           | `v2.x`           |
 
 - G1 exit: every check in §5.4 has a virtual-authenticator test that fails when
   the check is removed; the conformance suites pass against the example's store
@@ -918,5 +941,6 @@ never standalone programs in the tree, which rot and ship in the module zip.
 - **2026-10-18 — branch and scope.** v2 is built on a `v2` branch until
   `v2.0.0`, so `main` never offers less than v1 did. `hash` moves from later to
   G3 with bcrypt, so `v2.0.0` verifies every kind of credential v1 did (§2,
-  §5.1, §8, §11). v1's JWT and session middleware and its audit logger map to
-  `httpmw` and `audit`, still later.
+  §5.1, §8, §11).
+- **2026-10-18 — `httpmw` and `audit` move to G3**, so `v2.0.0` replaces v1
+  except the removals in §3 (§2, §5.8, §5.9, §8, §11).
