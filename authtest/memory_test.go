@@ -152,7 +152,7 @@ func TestFillNonZero_SetsEveryFieldDistinct(t *testing.T) {
 	var p fillProbe
 	authtest.FillNonZero(t, &p)
 	if p.S == "" || len(p.B) == 0 || p.N == 0 || p.U == 0 || !p.F || p.A == [16]byte{} ||
-		len(p.TS) == 0 || p.P == nil || !*p.P || p.T.IsZero() || p.T.Location() != time.UTC || p.T.Nanosecond() != 0 {
+		len(p.TS) == 0 || p.P == nil || !*p.P || p.T.IsZero() || p.T.Location() != time.UTC || p.T.Nanosecond()%1000 == 0 {
 		t.Fatalf("a field was left zero: %+v", p)
 	}
 	if p.N == int(p.U) {

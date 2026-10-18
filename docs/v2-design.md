@@ -219,6 +219,12 @@ rest it must trust.
    struct may gain fields (rule 4 catches stores that drop them).
 6. **Not-found is a store concern.** Stores return `store.ErrNotFound`; the
    authentication functions never surface it (§6).
+7. **Times are instants kept to the microsecond.** The finest precision
+   PostgreSQL and MySQL keep; a store may truncate or round below it and return
+   any location, and the suites write instants with a sub-microsecond remainder.
+   A flow is usable until its `ExpiresAt`, not at it (`expires_at > now`); the
+   suites cannot test that instant without a clock the `FlowStore` interface
+   lacks, so the rule stands on the contract text.
 
 ### 4.3 Why typed, not opaque records (decision, 2026-10-17)
 
@@ -924,14 +930,6 @@ never standalone programs in the tree, which rot and ship in the module zip.
    constructors, and `oidcrp` covers only OIDC. Either `oidcrp` gains a generic
    OAuth2-plus-userinfo path in G3, or it is listed in §3 as removed. Decide
    before G3's design.
-6. **Time precision a store keeps.** The suites write whole-second instants, so a
-   store that keeps seconds passes; the library needs no finer precision. Decide
-   whether the contract states a floor (seconds, or microseconds, the finest
-   PostgreSQL and MySQL keep) and whether a store may round as well as truncate.
-7. **The expiry boundary.** `Take` refuses a flow at its `ExpiresAt` (the SQL
-   shape is `expires_at > now`), but the suites cannot test the instant without
-   a clock the `FlowStore` interface lacks. Decide whether the suites take an
-   optional clock.
 
 ---
 

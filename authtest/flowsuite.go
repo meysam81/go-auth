@@ -36,7 +36,9 @@ func FlowStoreSuite(newStore func(t *testing.T) store.FlowStore) func(t *testing
 		ctx := t.Context()
 		// The subtests run in sequence: an application's newStore may reset a
 		// shared database, so independence is not assumed.
-		future := func() time.Time { return time.Now().Add(time.Hour).Truncate(time.Second).UTC() }
+		// A wall-clock instant keeps its nanoseconds: a store must keep at least
+		// the microsecond.
+		future := func() time.Time { return time.Now().Add(time.Hour).UTC() }
 
 		t.Run("PutThenTake", func(t *testing.T) {
 			s := newStore(t)
@@ -49,7 +51,7 @@ func FlowStoreSuite(newStore func(t *testing.T) store.FlowStore) func(t *testing
 			if err != nil {
 				t.Fatalf("Take: %v", err)
 			}
-			if got.Kind != want.Kind || !bytes.Equal(got.Payload, want.Payload) || !got.ExpiresAt.Equal(want.ExpiresAt) {
+			if got.Kind != want.Kind || !bytes.Equal(got.Payload, want.Payload) || !sameInstant(got.ExpiresAt, want.ExpiresAt) {
 				t.Fatalf("Take = %+v, want %+v", got, want)
 			}
 		})

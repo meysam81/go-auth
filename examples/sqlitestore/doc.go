@@ -23,9 +23,10 @@
 // # Porting it to another database
 //
 // Keep these decisions. The conformance suites check the behaviour they
-// produce wherever the interfaces can see it; the time precision, and which
-// conflicts with an application's own indexes are [store.ErrDuplicate], are
-// pinned by this package's own tests, so port those tests with the code:
+// produce wherever the interfaces can see it; which conflicts with an
+// application's own indexes are [store.ErrDuplicate], and that times come
+// back truncated (never rounded) and in UTC, are pinned by this package's own
+// tests, so port those tests with the code:
 //
 //   - Every state change is one conditional statement, judged by its
 //     affected-row count or its RETURNING row: Take is UPDATE ... WHERE

@@ -40,7 +40,7 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 		t.Helper()
 		ctx := t.Context()
 		const rpID = "example.test"
-		t0 := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+		t0 := time.Date(2026, 1, 2, 3, 4, 5, 123_456_789, time.UTC) // below the microsecond too
 		t1 := t0.Add(48 * time.Hour)
 
 		// newCred is a credential with every field non-zero, then pinned to
@@ -651,6 +651,6 @@ func asRegistered(t *testing.T, subject, rpID string) webauthn.Credential {
 		RPID:      rpID,
 		PublicKey: randBytes(t, 77),
 		Algorithm: -7,
-		CreatedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+		CreatedAt: time.Date(2026, 1, 2, 3, 4, 5, 987_654_321, time.UTC),
 	}
 }
