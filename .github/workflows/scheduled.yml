@@ -3,16 +3,26 @@ name: scheduled
 # GitHub fires `schedule` only on the default branch, and `workflow_dispatch`
 # runs a workflow only if a file at the same path exists there. Until `v2.0.0`
 # the v2 module lives on the `v2` branch, whose `.github/workflows/scheduled.yml`
-# holds the nightly run (govulncheck, repeated race runs, long fuzzing). This
-# copy exists so that file can run: on schedule it dispatches it on `v2`, and
-# the dispatched run executes the `v2` copy, not this one.
+# holds the nightly run (govulncheck, repeated race runs, long fuzzing) and the
+# weekly mutation run. This copy exists so that file can run: on each schedule
+# it dispatches it on `v2`, and the dispatched run executes the `v2` copy, not
+# this one. The cron lines match the `v2` copy's.
 #
 # At `v2.0.0` `main` takes the v2 tree, the `v2` copy replaces this file, and
-# its own schedule takes over.
+# its own schedules take over.
 on:
   schedule:
     - cron: "17 3 * * *"
+    - cron: "41 4 * * 1"
   workflow_dispatch:
+    inputs:
+      run:
+        description: Which scheduled run to start on v2
+        type: choice
+        options:
+          - nightly
+          - mutation
+        default: nightly
 
 permissions: {}
 
@@ -23,8 +33,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Run the nightly on v2
+      # The nightly is dispatched without an input, so it still starts if the
+      # `v2` copy predates the `run` input.
+      - name: Run it on v2
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh workflow run scheduled.yml --ref v2
+          RUN: ${{ (github.event_name == 'schedule' && github.event.schedule == '41 4 * * 1' && 'mutation') || inputs.run || 'nightly' }}
+        run: |
+          if [ "$RUN" = nightly ]; then
+            gh workflow run scheduled.yml --ref v2
+          else
+            gh workflow run scheduled.yml --ref v2 -f run="$RUN"
+          fi

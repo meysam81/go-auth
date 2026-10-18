@@ -1,5 +1,38 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["github>meysam81/.github"],
-  "baseBranchPatterns": ["main", "v2"]
+  "baseBranchPatterns": ["main", "v2"],
+  "ignorePaths": [
+    "**/node_modules/**",
+    "**/bower_components/**",
+    "**/vendor/**",
+    "**/__tests__/**",
+    "**/test/**",
+    "**/tests/**",
+    "**/__fixtures__/**"
+  ],
+  "postUpdateOptions": ["gomodTidyAll"],
+  "packageRules": [
+    {
+      "description": "A library's go directive is every consumer's minimum Go. Propose only versions that build on the one go.mod declares, so an upgrade never raises it as a side effect of go mod tidy. A security fix is exempt (vulnerabilityAlerts below): one that needs a newer Go is proposed rather than dropped, and the raise is reviewed with it.",
+      "matchManagers": ["gomod"],
+      "constraintsFiltering": "strict"
+    },
+    {
+      "description": "go-webauthn is pinned exactly and upgraded by hand after its changelog is read: an upgrade waits for approval on the dependency dashboard. A security fix still opens a pull request at once: vulnerabilityAlerts sets dependencyDashboardApproval to false.",
+      "matchPackageNames": ["github.com/go-webauthn/webauthn"],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "examples/sqlitestore requires this module and replaces it with the tree it sits in; the version in its require line is never used, so it is not updated.",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["github.com/meysam81/go-auth/v2"],
+      "enabled": false
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "semanticCommitType": "fix",
+    "constraintsFiltering": "none"
+  },
+  "osvVulnerabilityAlerts": true
 }
