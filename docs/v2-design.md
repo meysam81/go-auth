@@ -874,17 +874,28 @@ never standalone programs in the tree, which rot and ship in the module zip.
 - v2 is built on the `v2` branch, and its alpha and beta tags are cut there.
   `main` keeps v1, and v1 fixes keep landing there, until `v2.0.0`; v1 then
   continues on the `v1` branch for twelve months of security fixes.
-- Versions are pinned with release-please's `release-as` at each change of phase:
-  `2.0.0-alpha.1`, `2.0.0-beta.1`, `2.0.0`. Prerelease versioning never leaves
-  its current type on its own, and without it a `feat!` bumps to `3.0.0`. The
-  commit right after each pinned release removes the pin; any other commit first
-  opens a duplicate release PR.
-- The swap, at `v2.0.0`: merge `main` into `v2` with a merge commit (v1-only
-  changes resolve as deleted), so `v2` contains `main`; fast-forward `v1` to
-  `main`'s tip; then fast-forward `main` to `v2`. Both merges need an admin bypass
-  of the squash-only and pull-request rules. A squash instead would leave `v2`'s
-  release commits outside `main`'s history, and release-please would rescan all
-  of `main` and propose `3.0.0`; the fallback then is a commit setting
+- Versions: release-please's `release-as` pins `2.0.0-alpha.1` and
+  `2.0.0-beta.1`, because prerelease versioning never changes type on its own.
+  A pin is removed by the first commit after its release PR merges: removing it
+  while that PR is open rewrites it to `2.0.0-alpha` with no number, and any
+  other commit first opens a duplicate release PR. `v2.0.0` comes from setting
+  `"prerelease": false`, which drops the suffix; `versioning` and
+  `prerelease-type` are removed after it. Removing the prerelease keys without
+  that step turns a `feat!` into `3.0.0`, and leaving `"prerelease": true`
+  makes the next fix `2.0.1-beta`.
+- The swap, at `v2.0.0`, in this order. Freeze `main`. Before the `2.0.0`
+  release PR merges, merge `main` into `v2` with a signed merge commit, so `v2`
+  contains `main`: v1-only changes resolve as deleted, `ci.yml` keeps `v2`'s
+  jobs with the branches `main` and `v1`, and `renovate.json` lists `main` and
+  `v1`. Edit v1's entries out of the release PR's notes, then merge it.
+  Fast-forward `v1` to `main`'s tip and `main` to `v2`, then delete `v2` and
+  any release PR left on it. The merge commit and the fast-forward need an
+  admin bypass of the pull-request, squash-only, linear-history and
+  signed-commit rules. Merging `main` in after `2.0.0` is tagged would make its
+  newer v1 commits releasable again and open a duplicate `2.0.1` on both
+  branches. A squash instead of the fast-forward would leave `v2`'s release
+  commits outside `main`'s history, and release-please would rescan all of
+  `main` and propose `3.0.0`; the fallback then is a commit setting
   `last-release-sha` to the squash commit, removed after the next release. A
   v1.x release after `v2.0.0` becomes GitHub's "latest" release (release-please
   sends no `make_latest`), so the release page is corrected by hand.
