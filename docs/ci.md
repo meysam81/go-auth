@@ -15,6 +15,8 @@ carries the v2 module until `v2.0.0` (`docs/v2-design.md` §11).
 | `pr-title`       | the pull request's title is a conventional commit release-please can read                      |
 | `api-diff`       | the exported API against the base; at a stable release, an undeclared or path-less break fails |
 | `workflows`      | zizmor's offline security audit of `.github/workflows`                                         |
+| `browser`        | `examples/passkeys` driven in Chrome with a virtual authenticator (`examples/passkeys/e2e`)    |
+| `sql-store`      | the authtest conformance suites against the reference SQLite store (`examples/sqlitestore`)    |
 | `ci-gate`        | every job above succeeded; the only check the ruleset requires                                 |
 | `release-please` | release automation; gated to `push` on `main` or `v2`, released from that branch               |
 
@@ -51,6 +53,32 @@ so adding a job means adding it there, and a job cannot land ungated.
 - **The release.** Squash merges take the pull request's title and leave the
   body out (the settings below), so the commit release-please reads is exactly
   the title `pr-title` checked.
+
+## The separate modules
+
+Two test suites live in Go modules of their own, so their drivers never enter
+the library's dependency graph, its `go.sum`, or `.dependency-footprint`. Both
+test the code beside them: `examples/sqlitestore` replaces
+`github.com/meysam81/go-auth/v2` with this tree, and the browser test builds
+`examples/passkeys` from it. The root `go test ./...` does not reach them; their
+jobs run `go vet`, `go mod tidy -diff` and the tests. A change to the root
+`go.mod` changes `examples/sqlitestore/go.mod` too: run `go mod tidy` there
+(Renovate does it with `gomodTidyAll`).
+
+- `examples/passkeys/e2e` (chromedp) builds and starts the passkeys example and
+  drives it in headless Chrome with a CDP virtual authenticator, for a
+  device-bound key and a synced passkey: registration, the autofill sign-in the
+  page arms afterwards, and the sign-in button. Only a browser shows that what
+  `PublicKeyCredential.toJSON` sends is what the library accepts. It refuses to
+  run when something already listens on `localhost:8080`, the address the
+  example is bound to. Locally: `cd examples/passkeys/e2e && go test ./...`
+  (set `CHROME_PATH` if Chrome is not on `PATH`; without a browser it skips,
+  unless `CI` is true).
+- `examples/sqlitestore` (modernc.org/sqlite) is a reference implementation of
+  `store.FlowStore`, `webauthn.CredentialStore` and `webauthn.HandleStore`,
+  proven by `authtest.FlowStoreSuite` and `authtest.WebAuthnStoreSuite` plus
+  the SQL-specific cases the suites cannot see. It is an example to copy, not a
+  supported package.
 
 ## The nightly run
 

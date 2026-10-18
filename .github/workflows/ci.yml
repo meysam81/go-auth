@@ -319,6 +319,77 @@ jobs:
           go build -v ./examples/passkeys
           go vet ./examples/passkeys
 
+  # examples/passkeys in a real Chrome with a virtual authenticator, for both a
+  # device-bound key and a synced passkey: registration, autofill sign-in and
+  # the sign-in button. The library's own tests build ceremonies with authtest's
+  # authenticator; only a browser shows that what PublicKeyCredential.toJSON
+  # sends is what the library accepts. The driver (chromedp) lives in the
+  # test's own module and never enters the library's dependency graph.
+  browser:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: examples/passkeys/e2e/go.mod
+          cache-dependency-path: |
+            go.sum
+            examples/passkeys/e2e/go.sum
+      # Google Chrome, not the image's /usr/bin/chromium: Ubuntu 24.04 lets only
+      # a browser with an AppArmor profile use unprivileged user namespaces, and
+      # Ubuntu's apparmor package has one for Chrome's install path
+      # (/opt/google/chrome/chrome) but none for the image's Chromium snapshot,
+      # which dies with "No usable sandbox!". The sandbox stays on. Without a browser under CI the test
+      # fails rather than skips.
+      - name: Drive the example in Chrome
+        working-directory: examples/passkeys/e2e
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: |
+          go vet ./...
+          go mod tidy -diff || { echo "::error::run go mod tidy in examples/passkeys/e2e"; exit 1; }
+          go test -count=1 -v ./...
+
+  # The authtest conformance suites against a real database: the reference
+  # SQLite store in examples/sqlitestore runs FlowStoreSuite and
+  # WebAuthnStoreSuite, plus the SQL-specific cases the suites cannot see
+  # (time precision and zone, BLOB columns, the conditional updates under
+  # concurrent callers). It is its own module, so the driver never enters the
+  # library's dependency graph.
+  sql-store:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: examples/sqlitestore/go.mod
+          cache-dependency-path: |
+            go.sum
+            examples/sqlitestore/go.sum
+      - name: Run the conformance suites on SQLite
+        working-directory: examples/sqlitestore
+        run: |
+          # The module replaces the library with this tree, so a dependency
+          # change at the root changes its go.mod too (Renovate tidies both:
+          # gomodTidyAll in renovate.json on main).
+          go mod tidy -diff || { echo "::error::run go mod tidy in examples/sqlitestore after changing the root go.mod"; exit 1; }
+          go vet ./...
+          go test -race -count=1 ./...
+
   # The squash commit takes the pull request's title (the repository setting
   # in docs/ci.md), and release-please reads that commit to choose the next
   # version and write the changelog. A title it cannot parse is a change the
@@ -491,6 +562,8 @@ jobs:
       - pr-title
       - api-diff
       - workflows
+      - browser
+      - sql-store
     permissions:
       contents: read
     runs-on: ubuntu-latest
