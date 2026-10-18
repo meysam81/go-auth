@@ -73,8 +73,8 @@ runs a workflow only if a file at the same path exists there. Until `v2.0.0`
 the default branch is `main`, which carries v1, so `main` holds its own
 `.github/workflows/scheduled.yml` with the same two schedules, whose only job
 is `gh workflow run scheduled.yml --ref v2` (with `-f run=mutation` on
-Mondays); the dispatched run executes the `v2` copy. When `main` moves to v2, the `v2` copy replaces it and its own schedule
-takes over.
+Mondays); the dispatched run executes the `v2` copy. When `main` moves to v2,
+the `v2` copy replaces it and its own schedule takes over.
 
 ## Branch protection
 
