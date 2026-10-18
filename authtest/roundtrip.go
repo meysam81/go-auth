@@ -92,7 +92,8 @@ func fillValue(t *testing.T, f reflect.Value, name string, n int) {
 
 // diffFields returns the name of the first exported field of a and b (structs
 // of the same type) that differs, comparing [time.Time] with Equal so a store
-// that returns another location is not blamed. It returns "" when they match.
+// that returns another location is not blamed, and a nil slice as equal to an
+// empty one, which a store may return for it. It returns "" when they match.
 func diffFields(a, b any) string {
 	av, bv := reflect.ValueOf(a), reflect.ValueOf(b)
 	for i := range av.NumField() {
@@ -107,6 +108,9 @@ func diffFields(a, b any) string {
 			if !xok || !yok || !xt.Equal(yt) {
 				return name
 			}
+			continue
+		}
+		if x.Kind() == reflect.Slice && x.Len() == 0 && y.Len() == 0 {
 			continue
 		}
 		if !reflect.DeepEqual(x.Interface(), y.Interface()) {

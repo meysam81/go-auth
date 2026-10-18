@@ -22,6 +22,14 @@ import (
 // newStore is called once per subtest and must return a store no other
 // subtest has written to (a fresh table or schema is the usual way). Each
 // subtest is a rule from the storage contract; a failure names the rule.
+//
+// ConcurrentTake_OneWinner proves Take atomic only when its 32 callers reach
+// the database on separate connections at the same moment. A database/sql
+// pool keeps two idle connections by default, so each caller may open a fresh
+// one, which takes longer than a Take: the callers then run one after another,
+// and a Take that reads, then writes, can pass. Give each store newStore
+// returns a pool that already holds 32 open connections, as newDB in
+// examples/sqlitestore does.
 func FlowStoreSuite(newStore func(t *testing.T) store.FlowStore) func(t *testing.T) {
 	return func(t *testing.T) {
 		t.Helper()
