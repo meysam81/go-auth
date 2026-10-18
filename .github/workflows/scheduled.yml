@@ -46,9 +46,10 @@ jobs:
       - name: Run govulncheck
         run: govulncheck ./...
 
-  # Repeated, shuffled runs under the race detector, on the oldest Go that
-  # go.mod admits and on the newest release. A test that passes once in the
-  # gate can still depend on timing or on the order tests run in.
+  # Repeated, shuffled runs under the race detector, on go.mod's Go and on the
+  # newest release. A test that passes once in the gate can still depend on
+  # timing or on the order tests run in. Three separate invocations, because
+  # -shuffle draws one order per test binary: -count=3 would repeat one order.
   race:
     permissions:
       contents: read
@@ -69,12 +70,20 @@ jobs:
           go-version: ${{ matrix.go == 'stable' && 'stable' || '' }}
           go-version-file: ${{ matrix.go == 'go.mod' && 'go.mod' || '' }}
       - name: Run tests
-        run: go test -race -count=3 -shuffle=on ./...
+        run: |
+          set -euo pipefail
+          for run in 1 2 3; do
+            echo "::group::run $run"
+            go test -race -count=1 -shuffle=on ./...
+            echo "::endgroup::"
+          done
 
-  # The gate fuzzes each target for 30 s; this gives each ten minutes. The
-  # generated corpus lives in the build cache's fuzz directory and is carried
-  # from night to night, so each run starts where the last one stopped instead
-  # of from the seeds.
+  # The gate fuzzes each target for 30 s; this gives each up to ten minutes,
+  # inside a 40-minute budget shared by all targets so a new target cannot push
+  # the job past its timeout. The generated corpus lives in the build cache's
+  # fuzz directory and is carried from night to night, so each run starts where
+  # the last one stopped instead of from the seeds. It is saved even when a
+  # target fails, and a failing target does not stop the others.
   fuzz:
     permissions:
       contents: read
@@ -92,31 +101,48 @@ jobs:
       - name: Locate the fuzz corpus
         id: corpus
         run: echo "dir=$(go env GOCACHE)/fuzz" >> "$GITHUB_OUTPUT"
-      - name: Carry the fuzz corpus between runs
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      - name: Restore the fuzz corpus
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ steps.corpus.outputs.dir }}
           key: fuzz-corpus-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
             fuzz-corpus-${{ github.ref_name }}-
-      - name: Fuzz every target for ten minutes
+      - name: Fuzz every target
         run: |
           set -euo pipefail
-          found=0
+          pairs=()
           for pkg in $(go list ./...); do
-            targets="$(go test -list='^Fuzz' "$pkg" | { grep '^Fuzz' || true; })"
-            for target in $targets; do
-              found=$((found + 1))
-              echo "::group::fuzz $pkg $target"
-              go test -run='^$' -fuzz="^${target}$" -fuzztime=10m "$pkg"
-              echo "::endgroup::"
+            for target in $(go test -list='^Fuzz' "$pkg" | { grep '^Fuzz' || true; }); do
+              pairs+=("$pkg $target")
             done
           done
-          if [ "$found" -eq 0 ]; then
+          if [ "${#pairs[@]}" -eq 0 ]; then
             echo "::error::no fuzz targets were found; the fuzz run certified nothing"
             exit 1
           fi
-          echo "fuzzed $found target(s)"
+          per=$(( 2400 / ${#pairs[@]} ))
+          if [ "$per" -gt 600 ]; then per=600; fi
+          failed=()
+          for pair in "${pairs[@]}"; do
+            read -r pkg target <<<"$pair"
+            echo "::group::fuzz $pkg $target for ${per}s"
+            if ! go test -run='^$' -fuzz="^${target}$" -fuzztime="${per}s" "$pkg"; then
+              failed+=("$target")
+            fi
+            echo "::endgroup::"
+          done
+          echo "fuzzed ${#pairs[@]} target(s) for ${per}s each"
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::fuzz targets failed: ${failed[*]}"
+            exit 1
+          fi
+      - name: Save the fuzz corpus
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ steps.corpus.outputs.dir }}
+          key: fuzz-corpus-${{ github.ref_name }}-${{ github.run_id }}
       # A failing input is written under the package's testdata/fuzz. Committing
       # that file turns it into a regression test that the gate runs.
       - name: Upload failing inputs
@@ -127,15 +153,17 @@ jobs:
           path: "**/testdata/fuzz/**"
           retention-days: 30
 
-  # A red scheduled run notifies nobody by default. One open issue per branch
-  # collects the failures: the first opens it, later ones comment on it, and
-  # closing it once the cause is fixed re-arms it.
+  # A red scheduled run notifies nobody by default: it is started by a bot, not
+  # by a person GitHub would email. One open issue per branch collects the
+  # failures: the first opens it, later ones comment on it, and closing it once
+  # the cause is fixed re-arms it. A job that hits its timeout ends `cancelled`,
+  # not `failure`, so that counts too; a run someone cancels by hand does not.
   report:
     needs:
       - govulncheck
       - race
       - fuzz
-    if: failure()
+    if: ${{ !cancelled() && (failure() || contains(needs.*.result, 'cancelled')) }}
     permissions:
       issues: write
     runs-on: ubuntu-latest
@@ -151,7 +179,7 @@ jobs:
         run: |
           set -euo pipefail
           title="nightly: failing on ${BRANCH}"
-          failed=$(jq -r '[to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"] | join(", ")' <<<"$NEEDS")
+          failed=$(jq -r '[to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | "\(.key)=\(.value.result)"] | join(", ")' <<<"$NEEDS")
           body="Failed: ${failed}. Run: ${RUN_URL}"
           number=$(gh issue list --state open --search "\"${title}\" in:title" --json number,title \
             | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')

@@ -11,13 +11,10 @@ on:
     branches:
       - main
       - v2
-  # Required by the merge queue. A queued pull request is tested on a temporary
-  # `gh-readonly-queue/main/...` branch holding it plus everything ahead of it,
-  # which is the whole point: it catches the pair of changes that each pass
-  # alone and break together. A required check that does not trigger here never
-  # reports on that branch, and GitHub fails the merge rather than merging
-  # unverified. The ruleset therefore requires one check, `ci-gate`, which is a
-  # job in this file and waits for every other one. See docs/ci.md.
+  # Dormant: GitHub offers merge queues only to organization-owned public
+  # repositories, and this one is owned by a user (docs/ci.md). The trigger
+  # stays so a queue works the day the repository can have one; a required
+  # check must report on `merge_group` or a queued pull request never merges.
   merge_group:
     types:
       - checks_requested
@@ -204,7 +201,8 @@ jobs:
           go-version: stable
       # Pinned: `@latest` let an upstream release change what this gate runs
       # without a commit here. Renovate bumps the pin (the comment is its
-      # marker); scheduled.yml carries the same pin and is bumped with it.
+      # marker) once a release is 14 days old, the repository-wide cooldown;
+      # scheduled.yml carries the same pin and is bumped with it.
       - name: Install govulncheck
         env:
           # renovate: go=golang.org/x/vuln
@@ -330,9 +328,17 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
+          set -euo pipefail
+          # Read first, so a yq that fails or reads nothing fails this step
+          # instead of yielding an empty list that gates nothing.
+          jobs=$(yq -r '.jobs | keys | .[]' .github/workflows/ci.yml)
+          if [ -z "$jobs" ]; then
+            echo "::error::ci-gate: could not read the job list of ci.yml"
+            exit 1
+          fi
           # release-please runs only after a merge, and this job is the gate.
           missing=$(comm -23 \
-            <(yq -r '.jobs | keys | .[]' .github/workflows/ci.yml | grep -vxE 'ci-gate|release-please' | sort) \
+            <(grep -vxE 'ci-gate|release-please' <<<"$jobs" | sort) \
             <(jq -r 'keys[]' <<<"$NEEDS" | sort))
           if [ -n "$missing" ]; then
             echo "::error::ci-gate: add these jobs to ci-gate's needs: ${missing//$'\n'/ }"
@@ -342,6 +348,7 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
+          set -euo pipefail
           jq -r 'to_entries[] | "\(.key)=\(.value.result)"' <<<"$NEEDS"
           bad=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"' <<<"$NEEDS")
           if [ -n "$bad" ]; then
