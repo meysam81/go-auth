@@ -591,7 +591,10 @@ package adds, in order, and each is a test named for the attack:
 5. Discoverable assertion: the user handle is present (a response without one
    is malformed, `ErrInvalidCredentials`) and resolves to a subject; the
    credential ID is among that subject's credentials for this RP ID. Either miss
-   is `ErrUnknownCredential`.
+   is `ErrUnknownCredential`. The lookup runs only after the client data's
+   type, challenge, origin, crossOrigin and topOrigin, and the RP ID hash, UP
+   and UV pass: a response failing one is `ErrInvalidCredentials` and reads
+   neither the credential store nor the handle store.
 6. Second-factor assertion: the credential was listed in `allowCredentials` and
    is among the flow subject's credentials for this RP ID when `Finish` runs. A
    miss is `ErrInvalidCredentials`, never `ErrUnknownCredential`: the caller
@@ -756,7 +759,11 @@ authentication functions never surface it.
 `BeginPasskey` takes no identifier and answers everyone identically, and
 `BeginSecondFactor` runs only for a subject the caller has already
 authenticated. Nothing a stranger can submit reveals whether an account exists or
-which credentials it holds.
+which credentials it holds, short of one residual a discoverable sign-in cannot
+avoid: the lookup precedes the signature check, which needs the stored key, so a
+stranger who already holds a user handle and a credential ID can confirm that the
+pair is held (`ErrInvalidCredentials` rather than `ErrUnknownCredential`). Random
+64-byte handles make that useless without prior knowledge.
 
 That holds for the random 64-byte user handles the library creates. A subject
 imported from v1 keeps its v1 user ID as its handle (§8), which may be guessable:

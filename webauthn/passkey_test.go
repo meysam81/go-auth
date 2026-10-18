@@ -290,6 +290,19 @@ func TestPasskey_SyncedPasskey(t *testing.T) {
 	}
 }
 
+// Conditional mediation (autofill) gets the same assertion as a modal
+// sign-in, and Finish verifies it the same way.
+func TestPasskey_ConditionalMediation(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil)
+	a := passkeyAuthenticator(t)
+	h.enroll(t, a, alice)
+	b := h.beginPasskey(t, webauthn.PasskeyOptions{Purpose: signInPurpose, Conditional: true})
+	if v, err := h.finishPasskey(t, signInExpect(b), assertion(t, a, b)); err != nil || v.Subject != alice.ID {
+		t.Fatalf("FinishPasskey = (%+v, %v), want a sign-in as %s", v, err, alice.ID)
+	}
+}
+
 func TestPasskey_DeviceBound(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, nil)
@@ -745,6 +758,78 @@ func TestPasskey_UnknownHandle(t *testing.T) {
 	h.enroll(t, a, alice)
 	_, err := h.signIn(t, a, func(c *authtest.Ceremony) { c.UserHandle = bytes.Repeat([]byte{0x5a}, 64) })
 	h.requireSignInRefused(t, err, webauthn.ErrUnknownCredential, alice)
+}
+
+// untouchable is a CredentialStore and a HandleStore whose every method
+// fails the test: a Finish handed it must refuse before reading either.
+type untouchable struct{ t *testing.T }
+
+func (u untouchable) called(method string) {
+	u.t.Helper()
+	u.t.Errorf("%s called before the unkeyed checks", method)
+}
+
+func (u untouchable) Insert(context.Context, webauthn.Credential) error {
+	u.called("Insert")
+	return nil
+}
+
+func (u untouchable) List(context.Context, string, string) ([]webauthn.Credential, error) {
+	u.called("List")
+	return nil, nil
+}
+
+func (u untouchable) RecordAssertion(context.Context, webauthn.AssertionUpdate) (bool, error) {
+	u.called("RecordAssertion")
+	return false, nil
+}
+
+func (u untouchable) MarkCloneSuspected(context.Context, string, []byte, time.Time) error {
+	u.called("MarkCloneSuspected")
+	return nil
+}
+
+func (u untouchable) Ensure(context.Context, string, []byte) ([]byte, error) {
+	u.called("Ensure")
+	return nil, nil
+}
+
+func (u untouchable) Subject(context.Context, []byte) (string, error) {
+	u.called("Subject")
+	return "", store.ErrNotFound
+}
+
+// Check 5 runs only for a response that passes the checks binding it to this
+// flow, origin and RP ID: one that fails them is ErrInvalidCredentials, even
+// with a user handle no subject holds, and reads neither store.
+func TestPasskey_UnkeyedChecksPrecedeLookup(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		tamper authtest.Tamper
+	}{
+		{"ceremony type", func(c *authtest.Ceremony) { c.Type = "webauthn.create" }},
+		{"challenge", func(c *authtest.Ceremony) { c.Challenge = base64.RawURLEncoding.EncodeToString(make([]byte, 32)) }},
+		{"origin", func(c *authtest.Ceremony) { c.Origin = "https://evil.example.test" }},
+		{"cross origin", func(c *authtest.Ceremony) { c.CrossOrigin, c.TopOrigin = true, "https://evil.example" }},
+		{"top origin", func(c *authtest.Ceremony) { c.TopOrigin = "https://evil.example" }},
+		{"RP ID", func(c *authtest.Ceremony) { c.RPID = "evil.example.test" }},
+		{"user presence", clearUserPresence},
+		{"user verification", clearFlag(protocol.FlagUserVerified)},
+	}
+	unknown := func(c *authtest.Ceremony) { c.UserHandle = bytes.Repeat([]byte{0x5a}, 64) }
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t, nil)
+			a := passkeyAuthenticator(t)
+			h.enroll(t, a, alice)
+			b := h.beginPasskey(t, signIn)
+			stores := untouchable{t}
+			_, err := h.rp.FinishPasskey(t.Context(), h.flows, stores, stores, signInExpect(b), assertion(t, a, b, unknown, tc.tamper))
+			requireOnly(t, err, webauthn.ErrInvalidCredentials)
+		})
+	}
 }
 
 // Check 5: the application deleted the credential; its holder still offers
