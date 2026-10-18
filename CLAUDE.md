@@ -32,6 +32,10 @@ through a dependency upgrade, regenerates the committed footprint with
 API change is declared with `!` in the pull request title. CI layout, the
 API check and the nightly run: `docs/ci.md`.
 
+Two suites are separate modules and are not reached by the root `go test ./...`:
+`cd examples/passkeys/e2e && go test ./...` (needs Chrome; `CHROME_PATH`) and
+`cd examples/sqlitestore && go test -race ./...`.
+
 ## Project Structure
 
 One module, `github.com/meysam81/go-auth/v2`, at the repository root. The phase
