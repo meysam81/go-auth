@@ -1,0 +1,30 @@
+name: scheduled
+
+# GitHub fires `schedule` only on the default branch, and `workflow_dispatch`
+# runs a workflow only if a file at the same path exists there. Until `v2.0.0`
+# the v2 module lives on the `v2` branch, whose `.github/workflows/scheduled.yml`
+# holds the nightly run (govulncheck, repeated race runs, long fuzzing). This
+# copy exists so that file can run: on schedule it dispatches it on `v2`, and
+# the dispatched run executes the `v2` copy, not this one.
+#
+# At `v2.0.0` `main` takes the v2 tree, the `v2` copy replaces this file, and
+# its own schedule takes over.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  dispatch:
+    permissions:
+      actions: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run the nightly on v2
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh workflow run scheduled.yml --ref v2
