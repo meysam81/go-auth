@@ -2,8 +2,7 @@
 
 One workflow, `.github/workflows/ci.yml`, runs on three events: a pull request
 targeting `main` or `v2`, a push to `main` or `v2`, and a merge group. `v2`
-carries the v2 module until `v2.0.0` (`docs/v2-design.md` §11); the merge queue
-below is configured for `main` only.
+carries the v2 module until `v2.0.0` (`docs/v2-design.md` §11).
 
 | Job              | What it gates                                                                    |
 | ---------------- | -------------------------------------------------------------------------------- |

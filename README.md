@@ -146,7 +146,8 @@ registrations and assertions so your handlers are tested end to end.
 
 ## v1
 
-v1 lives on the `v1` branch. Its import path is unchanged:
+v1 is on `main` until `v2.0.0`, then on the `v1` branch. Its import path is
+unchanged:
 
 ```go
 import "github.com/meysam81/go-auth"

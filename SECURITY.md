@@ -43,4 +43,4 @@ responsibility, and the library cannot enforce them on your behalf:
   tenant they belong to, and whether they may be provisioned on first sight are
   application decisions.
 
-Security notes for v1 are on the `v1` branch.
+Security notes for v1 are on `main` until `v2.0.0`, then on the `v1` branch.

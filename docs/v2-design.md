@@ -280,7 +280,7 @@ Decisions:
 
 - **bcrypt in G3; argon2id, the eventual default, later.** G3 ships `Verify`,
   the bounds, the limiter and a bcrypt `Hasher`, so `v2.0.0` hashes and verifies
-  what v1 did. argon2id generation and the other importers get a design pass of
+  what v1 did up to bcrypt cost 15 (§8). argon2id generation and the other importers get a design pass of
   their own; until then `NeedsRehash` compares a bcrypt digest's cost with
   policy. Every encoding carries its algorithm and parameters (bcrypt's
   `$2b$<cost>$`, PHC for the rest), so the application's column is `TEXT` and
@@ -295,18 +295,19 @@ Decisions:
   who proved their password.
 - **Parameter bounds are mandatory.** Cost parameters live _inside the stored
   string_, so a hostile or corrupted row is an OOM primitive: `m=16777216` is 16
-  GiB per verification. Port Kratos's `hash_limits.go` bounds wholesale
-  (argon2 memory ≤ 1 GiB, iterations ≤ 10, parallelism ≤ 16; bcrypt cost ≤ 15;
-  scrypt N ≤ 2^17, r ≤ 8, p ≤ 10; pbkdf2 iterations ≤ 10^7) and export
-  `ValidateImported(encoded string) error` for bulk-import paths, so a bad hash is
-  refused before it is persisted rather than crashing every later sign-in.
+  GiB per verification. Port Kratos's `hash_limits.go` bounds (argon2 memory ≤ 1
+  GiB, iterations ≤ 10, parallelism ≤ 16; bcrypt cost ≤ 15; scrypt N ≤ 2^17, r ≤
+  8, p ≤ 10; pbkdf2 iterations ≤ 10^7), each algorithm's with its importer (G3:
+  bcrypt), and export `ValidateImported(encoded string) error` for bulk-import
+  paths, so a bad hash is refused before it is persisted rather than crashing
+  every later sign-in. `Verify` applies the same bounds.
 - **A concurrency limiter, which Kratos does not have.** A buffered channel of
   size N inside the verifier, acquired with a `select` on `ctx.Done()`. Default
   N = `GOMAXPROCS`, configurable.
 - **`ctx.Err()` checked immediately before the KDF call**, so a client that hung
-  up while queued does not cost 128 MiB.
-- **`p` is a fixed constant, not `runtime.NumCPU()`**, so hashes do not differ
-  across a fleet.
+  up while queued does not cost a KDF run (128 MiB for argon2id).
+- **argon2id's `p` is a fixed constant, not `runtime.NumCPU()`**, so hashes do
+  not differ across a fleet.
 - **72-byte handling.** The bcrypt hasher refuses over-length input with a named
   error rather than truncating (v1's F-10). argon2id has no such limit; the policy
   is per-hasher, not global.
@@ -777,7 +778,10 @@ it chooses. The migration document must cover, at minimum:
   only for subjects whose handle the library created.
 - Password digests carry forward unchanged: the G3 verifier understands bcrypt
   and reports `NeedsRehash` when a digest's cost is below policy; once argon2id
-  lands, the same signal moves a deployment to it on next sign-in.
+  lands, the same signal moves a deployment to it on next sign-in. One break: v1
+  accepted bcrypt cost up to 31 (`bcrypt.MaxCost`), and v2 refuses a digest above
+  15 (§5.1), because a stored cost is a CPU-exhaustion lever. A deployment that
+  hashed above 15 rehashes at 15 or lower before it moves.
 - TOTP `$gat1$` secrets and `$gab1$`/`$gab2$` recovery digests stay verifiable
   in G2, with golden vectors.
 - Reset and verification token digests carry forward, but the HMAC keying is new,
@@ -844,7 +848,7 @@ never standalone programs in the tree, which rot and ship in the module zip.
    library takes a provider the operator configures and never bundles the blob.
 4. **Whether `hash` ships a HIBP breach check.** A network call from a library.
    Proposed: the k-anonymity client behind an explicit constructor, absent by
-   default, fail-open-on-network-error left to the caller.
+   default, fail-open-on-network-error left to the caller. Decide in G3's design.
 
 ---
 
@@ -868,9 +872,22 @@ never standalone programs in the tree, which rot and ship in the module zip.
   go-webauthn also performs them.
 - Go 1.26 is the floor because go-webauthn v0.18 requires it.
 - v2 is built on the `v2` branch, and its alpha and beta tags are cut there.
-  `main` keeps v1, and v1 fixes keep landing there, until `v2.0.0`. Then the `v1`
-  branch is fast-forwarded to `main`'s tip, `v2` merges into `main`, and v1
-  continues on `v1` for twelve months of security fixes.
+  `main` keeps v1, and v1 fixes keep landing there, until `v2.0.0`; v1 then
+  continues on the `v1` branch for twelve months of security fixes.
+- Versions are pinned with release-please's `release-as` at each change of phase:
+  `2.0.0-alpha.1`, `2.0.0-beta.1`, `2.0.0`. Prerelease versioning never leaves
+  its current type on its own, and without it a `feat!` bumps to `3.0.0`. The
+  commit right after each pinned release removes the pin; any other commit first
+  opens a duplicate release PR.
+- The swap, at `v2.0.0`: merge `main` into `v2` with a merge commit (v1-only
+  changes resolve as deleted), so `v2` contains `main`; fast-forward `v1` to
+  `main`'s tip; then fast-forward `main` to `v2`. Both merges need an admin bypass
+  of the squash-only and pull-request rules. A squash instead would leave `v2`'s
+  release commits outside `main`'s history, and release-please would rescan all
+  of `main` and propose `3.0.0`; the fallback then is a commit setting
+  `last-release-sha` to the squash commit, removed after the next release. A
+  v1.x release after `v2.0.0` becomes GitHub's "latest" release (release-please
+  sends no `make_latest`), so the release page is corrected by hand.
 
 ---
 
@@ -886,5 +903,6 @@ never standalone programs in the tree, which rot and ship in the module zip.
 - **2026-10-17 — dependency.** go-webauthn, pinned exactly; Go 1.26 floor (§11).
 - **2026-10-18 — branch and scope.** v2 is built on a `v2` branch until
   `v2.0.0`, so `main` never offers less than v1 did. `hash` moves from later to
-  G3 with bcrypt, so `v2.0.0` covers v1 except the removals in §3 (§2, §5.1,
-  §11).
+  G3 with bcrypt, so `v2.0.0` verifies every kind of credential v1 did (§2,
+  §5.1, §8, §11). v1's JWT and session middleware and its audit logger map to
+  `httpmw` and `audit`, still later.

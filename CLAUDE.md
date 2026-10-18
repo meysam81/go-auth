@@ -6,8 +6,10 @@ This file provides guidance for AI assistants working on the go-auth project.
 
 go-auth v2 is a set of authentication primitives for Go: each package verifies
 one kind of credential and returns a verified fact. There is no user store and
-no identity decision in the library. The design is `docs/v2-design.md`; v1
-lives on the `v1` branch.
+no identity decision in the library. The design is `docs/v2-design.md`.
+
+v2 is built on the `v2` branch until `v2.0.0`: branch from `v2` and open pull
+requests against it. `main` carries v1 until then, and the `v1` branch after.
 
 ## Build & Test Commands
 
