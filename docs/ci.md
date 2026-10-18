@@ -168,15 +168,6 @@ gh api --method PUT repos/meysam81/go-auth/actions/permissions/workflow \
 #    sees. A breaking change is declared with `!` in the title instead.
 gh api --method PATCH repos/meysam81/go-auth \
   -f squash_merge_commit_title=PR_TITLE -f squash_merge_commit_message=BLANK
-
-# 6. CodeQL code scanning, GitHub-managed (free on a public repository).
-gh api --method PATCH repos/meysam81/go-auth/code-scanning/default-setup \
-  -f state=configured -f query_suite=extended
-
-# 7. Dependabot alerts: Renovate's security updates come from GitHub's
-#    advisory data and its own OSV lookup (renovate.json on main); the alerts
-#    also list known vulnerabilities in the Security tab.
-gh api --method PUT repos/meysam81/go-auth/vulnerability-alerts
 ```
 
 `required_signatures` holds for squash merges made in the web UI: GitHub signs
