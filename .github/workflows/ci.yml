@@ -343,3 +343,60 @@ jobs:
           manifest-file: .release-please-manifest.json
           # The release PR and its tag belong to the branch that was pushed.
           target-branch: ${{ github.ref_name }}
+
+  # The one check the branch ruleset requires. Requiring each job by name meant
+  # every new job was an edit to the ruleset as well as to this file, and a job
+  # missing from the ruleset gated nothing while looking like it did. This job
+  # passes only when every job it needs succeeded -- a skipped or cancelled job
+  # is a failure here, not a pass -- and it refuses to pass when a job in this
+  # file is missing from `needs`, so a new job cannot ship ungated. The ruleset
+  # also covers `v2`, whose own copy of this file carries the same job.
+  ci-gate:
+    if: always()
+    needs:
+      - test
+      - checks
+      - build
+      - govulncheck
+      - fuzz
+      - build-examples
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Every job in this workflow is gated
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          # Read first, so a yq that fails or reads nothing fails this step
+          # instead of yielding an empty list that gates nothing.
+          jobs=$(yq -r '.jobs | keys | .[]' .github/workflows/ci.yml)
+          if [ -z "$jobs" ]; then
+            echo "::error::ci-gate: could not read the job list of ci.yml"
+            exit 1
+          fi
+          # release-please runs only after a merge, and this job is the gate.
+          missing=$(comm -23 \
+            <(grep -vxE 'ci-gate|release-please' <<<"$jobs" | sort) \
+            <(jq -r 'keys[]' <<<"$NEEDS" | sort))
+          if [ -n "$missing" ]; then
+            echo "::error::ci-gate: add these jobs to ci-gate's needs: ${missing//$'\n'/ }"
+            exit 1
+          fi
+      - name: Every needed job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          jq -r 'to_entries[] | "\(.key)=\(.value.result)"' <<<"$NEEDS"
+          bad=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"' <<<"$NEEDS")
+          if [ -n "$bad" ]; then
+            echo "::error::ci-gate: ${bad//$'\n'/ }"
+            exit 1
+          fi
