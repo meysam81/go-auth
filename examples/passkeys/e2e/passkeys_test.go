@@ -160,14 +160,15 @@ func startExample(t *testing.T, bin string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, bin)
 	dieWithParent(cmd)
-	var logs strings.Builder
-	cmd.Stdout, cmd.Stderr = &logs, &logs
+	logs := &lockedBuffer{}
+	cmd.Stdout, cmd.Stderr = logs, logs
 	if err := cmd.Start(); err != nil {
 		cancel()
 		t.Fatalf("start the example: %v", err)
 	}
 	exited := make(chan struct{})
 	var waitErr error
+	exitReported := false
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		waitErr = cmd.Wait()
@@ -176,7 +177,9 @@ func startExample(t *testing.T, bin string) {
 	t.Cleanup(func() {
 		select {
 		case <-exited:
-			t.Errorf("the example exited during the test: %v", waitErr)
+			if !exitReported {
+				t.Errorf("the example exited during the test: %v", waitErr)
+			}
 		default:
 		}
 		cancel()
@@ -191,6 +194,7 @@ func startExample(t *testing.T, bin string) {
 	for {
 		select {
 		case <-exited:
+			exitReported = true
 			t.Fatalf("the example exited before serving: %v\n%s", waitErr, logs.String())
 		default:
 		}
@@ -212,6 +216,25 @@ func startExample(t *testing.T, bin string) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// lockedBuffer collects the example's output; the process writes it while the
+// test may read it.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 // newBrowser starts a headless browser for one subtest.

@@ -343,9 +343,10 @@ jobs:
             go.sum
             examples/passkeys/e2e/go.sum
       # Google Chrome, not the image's /usr/bin/chromium: Ubuntu 24.04 lets only
-      # a browser with an AppArmor profile use unprivileged user namespaces,
-      # and only Chrome's install ships one, so Chromium dies with "No usable
-      # sandbox!". The sandbox stays on. Without a browser under CI the test
+      # a browser with an AppArmor profile use unprivileged user namespaces, and
+      # Ubuntu's apparmor package has one for Chrome's install path
+      # (/opt/google/chrome/chrome) but none for the image's Chromium snapshot,
+      # which dies with "No usable sandbox!". The sandbox stays on. Without a browser under CI the test
       # fails rather than skips.
       - name: Drive the example in Chrome
         working-directory: examples/passkeys/e2e
@@ -383,7 +384,8 @@ jobs:
         working-directory: examples/sqlitestore
         run: |
           # The module replaces the library with this tree, so a dependency
-          # change at the root changes its go.mod too (Renovate tidies both).
+          # change at the root changes its go.mod too (Renovate tidies both:
+          # gomodTidyAll in renovate.json on main).
           go mod tidy -diff || { echo "::error::run go mod tidy in examples/sqlitestore after changing the root go.mod"; exit 1; }
           go vet ./...
           go test -race -count=1 ./...
