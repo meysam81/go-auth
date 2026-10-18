@@ -106,19 +106,28 @@ the `v2` copy replaces it and its own schedule takes over.
 
 ## Branch protection
 
-A ruleset on `v2` makes `ci-gate` required. GitHub offers merge queues only to
-public repositories owned by an organization ("Pull request merge queues are
-available in any public repository owned by an organization", GitHub Docs,
-_Managing a merge queue_), and this repository is owned by a user, so there is
-no queue. `ci.yml` keeps its `merge_group` trigger so a queue works the day the
-repository can have one; until then the trigger never fires.
+One ruleset, `main` (id `9982355`), covers the default branch and every `v*`
+branch (`~DEFAULT_BRANCH` and `refs/heads/v*`), so today `main`, `v1` and `v2`,
+and makes `ci-gate` required on all of them. Every branch it covers therefore
+carries the job in its own `ci.yml`: a branch without it gets pull requests
+that wait for a check that never reports. `main` and `v2` have it; `v1` is
+still the v1.1.3 snapshot and gets it when the swap fast-forwards it to `main`
+(below), so until then a pull request into `v1` cannot merge.
+
+GitHub offers merge queues only to public repositories owned by an
+organization ("Pull request merge queues are available in any public
+repository owned by an organization", GitHub Docs, _Managing a merge queue_),
+and this repository is owned by a user, so there is no queue. `ci.yml` keeps
+its `merge_group` trigger so a queue works the day the repository can have
+one; until then the trigger never fires.
 
 Without a queue, a pull request is tested against the base it branched from,
 not the base it lands on: two changes that each pass alone can still break
-together. `strict_required_status_checks_policy: true` closes that gap the
-manual way. A pull request whose branch is behind `v2` must be updated ("Update
-branch") and pass `ci-gate` again before it can merge. With one maintainer that
-update is rare, and it is the queue's guarantee without the queue.
+together. The ruleset leaves `strict_required_status_checks_policy` off, so
+that gap is open. Turning it on closes it the manual way: a pull request whose
+branch is behind its base must be updated ("Update branch") and pass `ci-gate`
+again before it can merge. With one maintainer that update is rare, and it is
+the queue's guarantee without the queue.
 
 The required check is pinned to the GitHub Actions app (`integration_id` 15368),
 so only a job in this repository's workflows can satisfy it: a status named
@@ -126,72 +135,34 @@ so only a job in this repository's workflows can satisfy it: a status named
 
 There is one maintainer, so a required approval can never be given: every
 merge would need the bypass, and the bypass skips the required check as well.
-The ruleset below therefore requires no approval, and the bypass stays for
+The ruleset therefore requires no approval, and the bypass stays for
 emergencies only.
 
-The `main` ruleset (id `9982355`) still guards v1 on the default branch, whose
-workflow has no `ci-gate` job, so it must not require one. Its second include
-pattern, `refs/heads/refs/heads/v*`, matches no branch; step 3 replaces it with
-`refs/heads/v1`, which protects the v1 branch the swap will move v1 onto.
-
 ```sh
-# 1. Confirm ci-gate is live on v2.
-gh api 'repos/meysam81/go-auth/contents/.github/workflows/ci.yml?ref=v2' \
-  --jq '.content' | base64 -d | grep -E '^  ci-gate:'
+# 1. Confirm ci-gate is live on each branch the ruleset covers; v1 prints 0
+#    until the swap.
+for ref in main v1 v2; do
+  printf '%s: ' "$ref"
+  gh api "repos/meysam81/go-auth/contents/.github/workflows/ci.yml?ref=$ref" \
+    --jq '.content' | base64 -d | grep -cE '^  ci-gate:'
+done
 
-# 2. Create the v2 ruleset.
-gh api --method POST repos/meysam81/go-auth/rulesets --input - <<'JSON'
-{
-  "name": "v2",
-  "target": "branch",
-  "enforcement": "active",
-  "conditions": { "ref_name": { "include": ["refs/heads/v2"], "exclude": [] } },
-  "bypass_actors": [
-    { "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" }
-  ],
-  "rules": [
-    { "type": "deletion" },
-    { "type": "non_fast_forward" },
-    { "type": "required_linear_history" },
-    { "type": "required_signatures" },
-    {
-      "type": "pull_request",
-      "parameters": {
-        "required_approving_review_count": 0,
-        "dismiss_stale_reviews_on_push": true,
-        "required_reviewers": [],
-        "require_code_owner_review": false,
-        "require_last_push_approval": false,
-        "required_review_thread_resolution": false,
-        "allowed_merge_methods": ["squash"]
-      }
-    },
-    {
-      "type": "required_status_checks",
-      "parameters": {
-        "strict_required_status_checks_policy": true,
-        "do_not_enforce_on_create": false,
-        "required_status_checks": [
-          { "context": "ci-gate", "integration_id": 15368 }
-        ]
-      }
-    }
-  ]
-}
-JSON
-
-# 3. Point the main ruleset at the default branch and the v1 branch. The PUT
-#    sends the ruleset back whole, changed only in its include list.
+# 2. Require ci-gate on the default branch and every v* branch. The PUT sends
+#    the ruleset back whole, changed only in its include list and its required
+#    checks.
 gh api repos/meysam81/go-auth/rulesets/9982355 \
-  | jq '{name, target, enforcement, bypass_actors, rules,
-         conditions: {ref_name: {include: ["~DEFAULT_BRANCH", "refs/heads/v1"], exclude: []}}}' \
+  | jq '{name, target, enforcement, bypass_actors,
+         conditions: {ref_name: {include: ["~DEFAULT_BRANCH", "refs/heads/v*"], exclude: []}},
+         rules: [.rules[] | if .type == "required_status_checks"
+                   then .parameters.required_status_checks = [{context: "ci-gate", integration_id: 15368}]
+                   else . end]}' \
   | gh api --method PUT repos/meysam81/go-auth/rulesets/9982355 --input -
 
-# 4. A workflow must not be able to approve a pull request.
+# 3. A workflow must not be able to approve a pull request.
 gh api --method PUT repos/meysam81/go-auth/actions/permissions/workflow \
   -f default_workflow_permissions=read -F can_approve_pull_request_reviews=false
 
-# 5. A squash commit is the pull request's title and nothing else: release-please
+# 4. A squash commit is the pull request's title and nothing else: release-please
 #    also reads the body (extra entries, BREAKING CHANGE footers), which no check
 #    sees. A breaking change is declared with `!` in the title instead.
 gh api --method PATCH repos/meysam81/go-auth \
@@ -220,20 +191,7 @@ gh run list --workflow scheduled.yml --branch v2 --limit 1
 
 ## At the swap
 
-When `main` takes the v2 tree, move each ruleset with it: the `v2` ruleset to
-the default branch, the `main` ruleset to `v1` alone. Both rulesets requiring an
-approval on the same branch would bring back the bypass-on-every-merge problem
-above, so the order is: `main` first, then `v2`.
-
-```sh
-gh api repos/meysam81/go-auth/rulesets/9982355 \
-  | jq '{name, target, enforcement, bypass_actors, rules,
-         conditions: {ref_name: {include: ["refs/heads/v1"], exclude: []}}}' \
-  | gh api --method PUT repos/meysam81/go-auth/rulesets/9982355 --input -
-
-id=$(gh api repos/meysam81/go-auth/rulesets --jq '.[] | select(.name == "v2") | .id')
-gh api "repos/meysam81/go-auth/rulesets/$id" \
-  | jq '{name, target, enforcement, bypass_actors, rules,
-         conditions: {ref_name: {include: ["~DEFAULT_BRANCH"], exclude: []}}}' \
-  | gh api --method PUT "repos/meysam81/go-auth/rulesets/$id" --input -
-```
+The ruleset needs no change. It already covers the default branch and `v1`,
+and after the swap both carry `ci-gate`: `main` takes `v2`'s `ci.yml`, and
+`v1` is fast-forwarded to `main`'s last v1 commit, which has its own copy.
+Once `v2` is deleted, `refs/heads/v*` matches `v1` alone.
