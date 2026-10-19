@@ -1,5 +1,36 @@
 # Changelog
 
+## [2.0.0-alpha.2](https://github.com/meysam81/go-auth/compare/v2.0.0-alpha.1...v2.0.0-alpha.2) (2026-10-19)
+
+
+### Bug Fixes
+
+* **webauthn:** bind a passkey assertion to its flow before the lookup ([#76](https://github.com/meysam81/go-auth/issues/76)) ([96b9b4f](https://github.com/meysam81/go-auth/commit/96b9b4f96647f4413ccbeef5c37ca772bd102cd8))
+
+
+### Chores
+
+* **release:** drop the 2.0.0-alpha.1 pin ([#64](https://github.com/meysam81/go-auth/issues/64)) ([c7b92c0](https://github.com/meysam81/go-auth/commit/c7b92c05ff0e30e8b8b83476ad47335a927ed3d0))
+
+
+### CI
+
+* gate merges on one ci-gate check and run a nightly on v2 ([#68](https://github.com/meysam81/go-auth/issues/68)) ([bb68218](https://github.com/meysam81/go-auth/commit/bb682184c7b9b904744c997e13a97c9cef035d14))
+* guard the exported API, the dependency footprint and the Go floor; mutation and zizmor ([#72](https://github.com/meysam81/go-auth/issues/72)) ([4d126e4](https://github.com/meysam81/go-auth/commit/4d126e4009edf025b5e5ca058964a50ea8c9f0e7))
+
+
+### Documentation
+
+* **ci:** describe the one ruleset that requires ci-gate on every branch ([#77](https://github.com/meysam81/go-auth/issues/77)) ([56e2b0b](https://github.com/meysam81/go-auth/commit/56e2b0b7302fee968d7ad8ab4efaff082ff3e261))
+* cut CLAUDE.md to its essence and keep one doc per topic ([#83](https://github.com/meysam81/go-auth/issues/83)) ([eaf8322](https://github.com/meysam81/go-auth/commit/eaf83229125d3dd438d3d7efe0acc7414bfc13d6))
+* **v2:** httpmw and audit move to G3 ([#67](https://github.com/meysam81/go-auth/issues/67)) ([13a56c0](https://github.com/meysam81/go-auth/commit/13a56c0145228a06ee21649774925a7da924ef30))
+
+
+### Tests
+
+* **authtest:** hold stores to the contract the library relies on ([#78](https://github.com/meysam81/go-auth/issues/78)) ([615b10b](https://github.com/meysam81/go-auth/commit/615b10b3bc49b7f6f094a4305456120e4d653a9e))
+* **examples:** drive the passkeys example in Chrome; prove the conformance suites on SQLite ([#71](https://github.com/meysam81/go-auth/issues/71)) ([9e92131](https://github.com/meysam81/go-auth/commit/9e921317d2ef4e04a367f456a03c0fb9c4dc45bf))
+
 ## [2.0.0-alpha.1](https://github.com/meysam81/go-auth/compare/v1.1.3...v2.0.0-alpha.1) (2026-10-18)
 
 
