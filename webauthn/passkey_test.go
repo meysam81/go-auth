@@ -562,7 +562,7 @@ func TestPasskey_BackupStateWithoutEligibility(t *testing.T) {
 	}
 }
 
-// Design §8: a credential imported from v1 never recorded its backup flags.
+// A credential imported from v1 never recorded its backup flags.
 // Its first assertion records them and moves it to the current version; a
 // current-version credential asserting the same flags is refused.
 func TestPasskey_Version1Credential_AdoptsFlags(t *testing.T) {
@@ -643,8 +643,8 @@ func TestPasskey_RecordAssertionNotApplied(t *testing.T) {
 	}
 }
 
-// Design §4.2 rule 3 on the sign-in path: a listed credential the store
-// answers with a zero value the library needs fails closed.
+// On the sign-in path, a listed credential the store answers with a zero
+// value the library needs fails closed.
 func TestPasskey_StoreFault_EmptyPublicKey(t *testing.T) {
 	t.Parallel()
 	requirePasskeyStoreFault(t, func(c *webauthn.Credential) { c.PublicKey = nil })

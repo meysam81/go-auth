@@ -23,8 +23,8 @@ Expect breaking changes between alpha releases until `v2.0.0`.
 ### What the first phase (G1) contains
 
 - `webauthn`: registration, passkey sign-in and second-factor ceremonies over
-  [go-webauthn](https://github.com/go-webauthn/webauthn), with the checks the
-  design lists in §5.4.
+  [go-webauthn](https://github.com/go-webauthn/webauthn), with the checks
+  [`docs/design.md`](docs/design.md) lists.
 - `amr`: authentication methods (RFC 8176), factor classes and policy.
 - `store`: the single-use `FlowStore` for short-lived ceremony state, and the
   shared `ErrNotFound` / `ErrDuplicate` sentinels.
@@ -35,7 +35,7 @@ Expect breaking changes between alpha releases until `v2.0.0`.
 
 More packages land phase by phase; this list names only what the repository
 contains today. The full design, including the planned package layout, is in
-[`docs/v2-design.md`](docs/v2-design.md).
+[`docs/design.md`](docs/design.md).
 
 ### Quickstart: WebAuthn
 

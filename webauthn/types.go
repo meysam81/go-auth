@@ -31,7 +31,7 @@ const (
 const (
 	// ImportedVersion marks a credential imported from v1, whose backup flags
 	// were never recorded: its first assertion records them and moves it to
-	// CurrentVersion (design §8).
+	// CurrentVersion.
 	ImportedVersion uint16 = 1
 	// CurrentVersion is the credential schema version the library writes.
 	CurrentVersion uint16 = 2

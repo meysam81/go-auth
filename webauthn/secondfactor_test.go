@@ -104,7 +104,7 @@ func (h *harness) secondFactor(t *testing.T, a *authtest.Authenticator, opts web
 // requireStepUpRefused fails unless err is ErrInvalidCredentials and no other
 // sentinel, and no credential of subs recorded a use or a clone suspicion. A
 // second-factor failure is never ErrUnknownCredential: the caller already
-// identified the subject (design §6).
+// identified the subject.
 func (h *harness) requireStepUpRefused(t *testing.T, err error, subs ...webauthn.Subject) {
 	t.Helper()
 	if errors.Is(err, webauthn.ErrUnknownCredential) {
@@ -582,7 +582,7 @@ func TestSecondFactor_BackupStateWithoutEligibility(t *testing.T) {
 	h.requireStepUpRefused(t, err, alice)
 }
 
-// Design §8: a credential imported from v1 carries over as a second factor.
+// A credential imported from v1 carries over as a second factor.
 // Its first assertion records its backup flags and moves it to the current
 // version; a current-version credential asserting the same flags is refused.
 func TestSecondFactor_Version1Credential_AdoptsFlags(t *testing.T) {
@@ -801,7 +801,7 @@ func TestSecondFactor_OversizedResponse(t *testing.T) {
 	}
 }
 
-// Design §4.2 rule 3 at Finish: a listed credential the store answers with a
+// At Finish, a listed credential the store answers with a
 // zero value the library needs, or with a version it never writes, fails
 // closed.
 func TestSecondFactor_StoreFault(t *testing.T) {
@@ -902,7 +902,7 @@ func TestBeginSecondFactor_UserHandleFault(t *testing.T) {
 	}
 }
 
-// Design §4.2 rule 3 at Begin: a store fault is an infrastructure failure,
+// At Begin, a store fault is an infrastructure failure,
 // never ErrInvalidCredentials, which here also means "no credential": a
 // caller that reads that as "not enrolled" and skips the factor must not be
 // handed a broken store's answer.
