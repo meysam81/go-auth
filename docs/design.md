@@ -5,8 +5,8 @@ is the canonical design: what exists and what is decided, each with its reason.
 Each package's doc comment is its API contract; this document is why it has that
 shape. Open questions are tracked outside this document.
 
-Module `github.com/meysam81/go-auth/v2`, Go 1.26 or newer. G1 has shipped; G2
-and G3 each get a design pass, folded in here, before their code.
+Module `github.com/meysam81/go-auth/v2`, Go 1.26 or newer. G2 and G3 each get
+a design pass, folded in here, before their code.
 
 ---
 
@@ -81,27 +81,27 @@ toolchain, and side channels below a network-observable timing difference.
 
 One module at the repository root. The phase is the delivery order.
 
-| Package     | Owns                                                                      | Phase |
-| ----------- | ------------------------------------------------------------------------- | ----- |
-| `amr`       | authentication methods (RFC 8176), factor classes, policy                 | G1    |
-| `webauthn`  | registration, second-factor and passkey ceremonies                        | G1    |
-| `store`     | the single-use `FlowStore` and the shared error sentinels                 | G1    |
-| `authtest`  | conformance suites, in-memory stores, a virtual authenticator             | G1    |
-| `challenge` | typed hand-off token, durable challenge state, step-up                    | G2    |
-| `attempt`   | failed-attempt budgets                                                    | G2    |
-| `totp`      | RFC 6238 enrolment and validation, durable replay guard                   | G2    |
-| `recovery`  | recovery codes: generation, keyed digests, legacy verifiers               | G2    |
-| `token`     | opaque secret mint, digest and verify (reset, verification, invitations)  | G3    |
-| `session`   | session identifiers, rotation, refresh families with reuse detection      | G3    |
-| `oidcrp`    | OIDC relying party: handshake in, verified claims out                     | G3    |
-| `httpx`     | outbound transport that refuses non-public addresses                      | G3    |
-| `jwtx`      | JWT mint and verify                                                       | G3    |
-| `hash`      | password hashing: pluggable, parameter-bounded; bcrypt first              | G3    |
-| `audit`     | event vocabulary, a `Logger` interface, a `log/slog` adapter              | G3    |
-| `httpmw`    | credential extraction middleware and the session cookie writer            | G3    |
-| `normalize` | PRECIS identifier normalisation                                           | later |
-| `batteries` | optional wired-up flows (§7)                                              | later |
-| `examples/` | runnable demonstrations and a reference SQLite store; not production code | G1    |
+| Package     | Owns                                                                                                                   | Phase |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------- | ----- |
+| `amr`       | authentication methods (RFC 8176), factor classes, policy                                                              | G1    |
+| `webauthn`  | registration, second-factor and passkey ceremonies                                                                     | G1    |
+| `store`     | the single-use `FlowStore` and the shared error sentinels                                                              | G1    |
+| `authtest`  | conformance suites, in-memory stores, a virtual authenticator                                                          | G1    |
+| `challenge` | typed hand-off token, durable challenge state, step-up                                                                 | G2    |
+| `attempt`   | failed-attempt budgets                                                                                                 | G2    |
+| `totp`      | RFC 6238 enrolment and validation, durable replay guard                                                                | G2    |
+| `recovery`  | recovery codes: generation, keyed digests with a key fingerprint, legacy verifiers                                     | G2    |
+| `token`     | opaque secret mint, digest and verify (reset, verification, invitations)                                               | G3    |
+| `session`   | session identifiers, rotation, revoke every session of a subject, refresh families with reuse detection, hashed tokens | G3    |
+| `oidcrp`    | OIDC relying party: handshake in, verified claims out                                                                  | G3    |
+| `httpx`     | outbound transport that refuses non-public addresses                                                                   | G3    |
+| `jwtx`      | JWT mint and verify                                                                                                    | G3    |
+| `hash`      | password hashing: pluggable, parameter-bounded; bcrypt first                                                           | G3    |
+| `audit`     | event vocabulary, a `Logger` interface, a `log/slog` adapter                                                           | G3    |
+| `httpmw`    | credential extraction middleware and the session cookie writer                                                         | G3    |
+| `normalize` | PRECIS identifier normalisation                                                                                        | later |
+| `batteries` | optional wired-up flows (§7)                                                                                           | later |
+| `examples/` | runnable demonstrations and a reference SQLite store; not production code                                              | G1    |
 
 | Phase | Ships as         | Exit                                                                                                                        |
 | ----- | ---------------- | --------------------------------------------------------------------------------------------------------------------------- |
@@ -116,7 +116,8 @@ tree imports today (`go-webauthn/webauthn`); `amr` and `store` are standard
 library only. A later phase adds `pquerna/otp`, `golang-jwt/jwt/v5`,
 `coreos/go-oidc/v3`, `golang.org/x/crypto` or `golang.org/x/oauth2` in the change
 that first imports it; any other module needs a decision here first. When
-`batteries/` exists, a rule forbids every core package from importing it.
+`batteries/` exists, a rule forbids every core package from importing it, and
+lets `batteries/` import nothing the core does not already depend on.
 `.dependency-footprint` lists what each package compiles in, so a dependency
 upgrade that pulls in a new package shows up in review.
 
@@ -225,8 +226,9 @@ with no credential of that kind, and a wrong proof alike, and all three cost the
 same work. A verification failure matches exactly one sentinel; an
 infrastructure failure (a store outage, a store answering against its contract)
 matches none, and the application answers it as a server error, never as a
-failed sign-in. `store.ErrNotFound` from a method whose contract allows it is
-translated; from one whose contract does not (a `List`) it passes through
+failed sign-in. `store.ErrNotFound` from a method whose contract allows it
+(`Take`, `Subject`, `RecordAssertion`, `MarkCloneSuspected`) is translated; from
+one whose contract does not (a `List`) it passes through
 wrapped, as an infrastructure failure.
 
 **v2 exports no distinguishable not-found on any path that takes an
@@ -336,7 +338,8 @@ instead of comparing them and moves it to the current version. The adoption has
 one race: two concurrent assertions of a synced Version 1 credential (counter
 0), both read before either writes, carrying valid signatures with different BE.
 Both match the conditional update (`sign_count = 0` still holds), so the last
-write's flags stand. Two valid signatures with different flags need the
+write's flags stand; an assertion that reads the credential after the first
+write sees the current version and is refused on BE. Two valid signatures with different flags need the
 credential's private key, so this is not an outside attack; closing it would add
 a version condition to `RecordAssertion` and change the store contract.
 
@@ -482,8 +485,10 @@ type Verified struct {
 }
 ```
 
-- **Mandatory, not opt-in:** PKCE S256; a nonce compared in constant time; `azp`
-  on multi-audience tokens; `sub` required; `email_verified: false` refused; an
+- **Mandatory, not opt-in:** PKCE S256; a nonce compared in constant time;
+  `azp` equal to the client ID whenever it is present, at any audience count, and
+  required on a multi-audience token (a `null`, non-string or empty `azp` counts
+  as missing, so it cannot disarm the rule); `sub` required; `email_verified: false` refused; an
   outbound client from `httpx`.
 - **`ProviderResolver`** replaces v1's boot-time static map:
   `Resolve(ctx, id) (Provider, error)`, answered from a config file or a
@@ -509,7 +514,7 @@ type Counter interface {
 ```
 
 The count is incremented before validating, in its own transaction, so a
-rollback cannot undo it. The policy (how many, how long, which key) stays with
+rollback cannot undo it. The policy (how many, how long) stays with
 the application; the library supplies the mechanism and the uniform-response
 discipline.
 
@@ -561,7 +566,8 @@ serves no ceremony.
 - A missing verifier is a construction error, never a pass: one constructor that
   returns an error, no panicking variant.
 - The application owns the error response and authorization; the middleware
-  reports unauthorized.
+  reports unauthorized. v1's `ErrorHandler`, `DefaultErrorHandler` and
+  `ErrForbidden` are not carried.
 
 ---
 
@@ -590,7 +596,8 @@ come when a second application needs the same flow, and must clear four bars:
 ## 8. Testing
 
 Every fix ships with a test that fails when the fix is reverted; tests are named
-for the attack and cite the RFC or CVE class; a weekly mutation run reports how
+for the attack and cite the RFC or CVE class; adversarial suites per package
+mirror the defect classes; a weekly mutation run reports how
 hard the suite bites; fuzz targets cover every parser reachable with
 attacker-controlled bytes. Vulnerability reproductions are tests in the package,
 never standalone programs, which rot and ship in the module zip.
@@ -688,7 +695,8 @@ tables cover every non-test file of v1.
    is effectively single-maintainer, so every bump reads its changelog and runs
    the full suite, and the §6.2 checks stay in this package even where
    go-webauthn also performs them. Go 1.26 is the floor because go-webauthn
-   v0.18 requires it.
+   v0.18 requires it. JSON goes through the standard library's `encoding/json`,
+   because go-webauthn's options rely on its `omitzero`.
 9. **v2 is built on a `v2` branch until `v2.0.0`**, so `main` never offers less
    than v1 did; branches and releases are in `docs/ci.md`.
 10. **`hash` ships bcrypt in G3**, so `v2.0.0` verifies every kind of credential
@@ -699,7 +707,8 @@ tables cover every non-test file of v1.
     provider issues tokens about users, which is identity on the other side of
     the line, and building one is the highest-risk option: an extra-large
     effort with its own certification, CVE stream and maintenance burden, where
-    certified Go implementations (zitadel/oidc, Ory Hydra) exist. If demand
+    Ory Hydra (an OpenID Certified provider) and zitadel/oidc (a certified
+    relying party with provider support) exist. If demand
     appears, it is a separate, opt-in module over zitadel/oidc, never the core.
 13. **Prereleases may change the API; `v2.0.0` freezes it** under §4.2 rule 5.
     A break is declared with `!` in the pull request title.
@@ -761,31 +770,31 @@ after release. Each now maps to a v2 rule that makes it inexpressible or catches
 it in CI. The full register, with each finding's proof, fix and consumer notes,
 is [on the `v1` branch](https://github.com/meysam81/go-auth/blob/v1/docs/security-hardening.md).
 
-| Finding                | What went wrong in v1                                                                                | The v2 rule                                                                                                        |
-| ---------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| F-01                   | OIDC identity assigned from an unverified email claim (the CVE-2023-28131 class)                     | `oidcrp` returns verified claims and never looks up, links or creates a user; `email_verified: false` refused      |
-| F-02                   | a refresh token authenticated as an access token                                                     | verification asks for one token type; `httpmw` accepts access tokens only                                          |
-| F-03, F-04             | issuer and audience minted but never verified; RS256 and ES256 documented but unusable               | `jwtx` pins algorithm, issuer, audience and type on every verify; a documented algorithm has a test                |
-| F-05, F-06             | reset and verification tokens, TOTP secrets and backup codes stored in replayable form               | only keyed digests reach a store (`token`, `recovery`); TOTP secrets are sealed                                    |
-| F-07                   | TOTP enrolment armed before the user proved possession                                               | enrolment is read from the store and confirmed before it counts                                                    |
-| F-08, F-31             | a TOTP code replayed inside its window, including by adding a space                                  | a durable replay guard keyed on exactly the value the validator compares                                           |
-| F-09, F-29             | account existence leaked by sign-in timing and by `BeginLogin`                                       | one sentinel and the same work on every path; passkey sign-in is discoverable only (§5)                            |
-| F-10                   | passwords over 72 bytes silently truncated                                                           | the bcrypt hasher refuses over-length input                                                                        |
-| F-11, F-12, F-26       | a swallowed rollback failure, a reset token left live, a counter write failure printed and swallowed | `errcheck` with `check-blank`; a failed write is never a pass; atomic named store methods                          |
-| F-13, F-14             | credential changes revoked nothing; session identifiers never rotated                                | stores per call so revocation commits with the change; `session` rotates and keeps refresh families                |
-| F-15                   | HTTP Basic middleware ran bcrypt on every request with no path to a second factor                    | removed (§3)                                                                                                       |
-| F-16, F-17, F-18, F-19 | OIDC state unbound to the browser; no PKCE; no nonce; `azp` unchecked on multi-audience tokens       | all mandatory in `oidcrp`, none opt-in; sealed, single-use flow state                                              |
-| F-20                   | discovery and token exchange on an unbounded default client                                          | `httpx`: bounded, and refuses non-public addresses                                                                 |
-| F-21                   | identity provider claims copied into the application's own JWT                                       | claims are allow-listed; an upstream `amr` never enters the method set                                             |
-| F-22, F-34             | hand-mirrored audit decorators missed new methods, then recorded every token event anonymously       | primitives emit their own events; no wrappers                                                                      |
-| F-23                   | untested code in the paths that mattered; the linter ran on defaults                                 | `.golangci.yml`; coverage floors that only rise and refuse an unlisted package; fuzz targets; revert-the-fix tests |
-| F-24                   | a 300-nanosecond challenge TTL: an untyped `300` passed as a `time.Duration`                         | durations are typed constants, tested at the real expiry boundary                                                  |
-| F-25, F-28             | a cloned authenticator was undetectable; Level 3 backup flags were not persisted                     | typed credential fields, a conditional counter update and a clone mark (§6.2)                                      |
-| F-27                   | WebAuthn ceremonies and OIDC flows shared one state namespace                                        | `Flow.Kind`, purpose and subject are checked on every `Take`                                                       |
-| F-30                   | `NewMicrosoftProvider` disabled ID token issuer verification                                         | no vendor constructors; discovery from an issuer URL (§3)                                                          |
-| F-32                   | a store that dropped a new control field was read as "no such control" and the flow proceeded        | a missing field fails closed (§4.2 rule 3); `authtest` round-trips every exported field                            |
-| F-33                   | the TOTP payload tag sat outside everything that authenticated it                                    | whatever selects a security branch sits inside the authenticated payload                                           |
-| F-35                   | a half-wired `Authenticator` let the password alone pass MFA                                         | no security answer from optional wiring; enrolment is read from the store (§1)                                     |
+| Finding                | What went wrong in v1                                                                                     | The v2 rule                                                                                                                              |
+| ---------------------- | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| F-01                   | OIDC identity assigned from an unverified email claim (the CVE-2023-28131 class)                          | `oidcrp` returns verified claims and never looks up, links or creates a user; `email_verified: false` refused                            |
+| F-02                   | a refresh token authenticated as an access token                                                          | verification asks for one token type; `httpmw` accepts access tokens only                                                                |
+| F-03, F-04             | issuer and audience minted but never verified; RS256 and ES256 documented but unusable                    | `jwtx` pins algorithm, issuer, audience and type on every verify; a documented algorithm has a test                                      |
+| F-05, F-06             | reset and verification tokens, TOTP secrets and backup codes stored in replayable form                    | only keyed digests reach a store (`token`, `recovery`); TOTP secrets are sealed                                                          |
+| F-07                   | TOTP enrolment armed before the user proved possession                                                    | enrolment is read from the store and confirmed before it counts                                                                          |
+| F-08, F-31             | a TOTP code replayed inside its window, including by adding a space                                       | a durable replay guard keyed on exactly the value the validator compares                                                                 |
+| F-09, F-29             | account existence leaked by sign-in timing and by `BeginLogin`                                            | one sentinel and the same work on every path; passkey sign-in is discoverable only (§5)                                                  |
+| F-10                   | passwords over 72 bytes silently truncated                                                                | the bcrypt hasher refuses over-length input                                                                                              |
+| F-11, F-12, F-26       | a swallowed rollback failure, a reset token left live, a counter write failure printed and swallowed      | `errcheck` with `check-blank`; a failed write is never a pass; atomic named store methods                                                |
+| F-13, F-14             | credential changes revoked nothing; session identifiers never rotated                                     | stores per call, so revocation commits with the change; `session` rotates, revokes every session of a subject and keeps refresh families |
+| F-15                   | HTTP Basic middleware ran bcrypt on every request with no path to a second factor                         | removed (§3)                                                                                                                             |
+| F-16, F-17, F-18, F-19 | OIDC state unbound to the browser; no PKCE; no nonce; `azp` unchecked on multi-audience tokens            | all mandatory in `oidcrp`, none opt-in; sealed, single-use flow state                                                                    |
+| F-20                   | discovery and token exchange on an unbounded default client                                               | `httpx`: bounded, and refuses non-public addresses                                                                                       |
+| F-21                   | identity provider claims copied into the application's own JWT                                            | claims are allow-listed; an upstream `amr` never enters the method set                                                                   |
+| F-22, F-34             | hand-mirrored audit decorators missed new methods, then recorded every refresh and revocation anonymously | primitives emit their own events; no wrappers                                                                                            |
+| F-23                   | untested code in the paths that mattered; the linter ran on defaults                                      | `.golangci.yml`; coverage floors that only rise and refuse an unlisted package; fuzz targets; revert-the-fix tests                       |
+| F-24                   | a 300-nanosecond challenge TTL: an untyped `300` passed as a `time.Duration`                              | durations are typed constants, tested at the real expiry boundary                                                                        |
+| F-25, F-28             | a cloned authenticator was undetectable; Level 3 backup flags were not persisted                          | typed credential fields, a conditional counter update and a clone mark (§6.2)                                                            |
+| F-27                   | WebAuthn ceremonies and OIDC flows shared one state namespace                                             | `Flow.Kind`, purpose and subject are checked on every `Take`                                                                             |
+| F-30                   | `NewMicrosoftProvider` disabled ID token issuer verification                                              | no vendor constructors; discovery from an issuer URL (§3)                                                                                |
+| F-32                   | a store that dropped a new control field was read as "no such control" and the flow proceeded             | a missing field fails closed (§4.2 rule 3); `authtest` round-trips every exported field                                                  |
+| F-33                   | the TOTP payload tag sat outside everything that authenticated it                                         | G2 `totp` keeps v1's fix: a sealed secret carries its state tag and a digest of its subject inside the ciphertext                        |
+| F-35                   | a half-wired `Authenticator` let the password alone pass MFA                                              | no security answer from optional wiring; enrolment is read from the store (§1)                                                           |
 
 Three of the fix-work defects share one shape: a control whose input can go
 missing must refuse, not proceed. A mutation gate proves a fix is load-bearing,
