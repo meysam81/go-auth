@@ -1,7 +1,7 @@
 name: ci
 
 # `v2` carries the v2 module until `v2.0.0`, when it merges into `main`
-# (docs/v2-design.md §11); its pull requests, pushes and releases run here too.
+# (docs/ci.md); its pull requests, pushes and releases run here too.
 on:
   pull_request:
     branches:
@@ -251,7 +251,7 @@ jobs:
       - name: Run govulncheck
         run: govulncheck ./...
 
-  # docs/security-hardening.md §6: the fuzz targets cover the WebAuthn ceremony
+  # The fuzz targets cover the WebAuthn ceremony
   # decoders, which are the parsers reachable with attacker-controlled bytes
   # before any credential is verified. Each target gets a bounded 30 s
   # discovery run from its seed corpus; the seeds themselves (added with f.Add)
@@ -289,9 +289,9 @@ jobs:
           done
           # Without this the job passes when there is nothing to fuzz, so
           # deleting every target -- or a refactor that renames the file they
-          # live in -- would read as a green fuzz gate. docs/security-hardening.md
-          # §6 requires a target on every parser that reads untrusted input, and
-          # zero is never the right answer for this repository.
+          # live in -- would read as a green fuzz gate. Every parser that
+          # reads untrusted input has a fuzz target, and zero is never the
+          # right answer for this repository.
           if [ "$found" -eq 0 ]; then
             echo "::error::no fuzz targets were found; the fuzz gate certified nothing"
             exit 1

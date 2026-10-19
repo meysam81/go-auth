@@ -1,125 +1,54 @@
-# CLAUDE.md
+# go-auth
 
-This file provides guidance for AI assistants working on the go-auth project.
+Public, open-source authentication primitives for Go: each package verifies one
+kind of credential and returns a verified fact. Design and decisions:
+`docs/design.md`; CI, branches and releases: `docs/ci.md`; each package's doc
+comment is its contract.
 
-## Project Overview
+## Hard rules
 
-go-auth v2 is a set of authentication primitives for Go: each package verifies
-one kind of credential and returns a verified fact. There is no user store and
-no identity decision in the library. The design is `docs/v2-design.md`.
+- The library never creates, mutates or owns identity: no user store, lookup,
+  provisioning, account linking or ceremony HTTP handler. It returns facts; the
+  application decides.
+- Never name a consuming product, or a `goauth-` bead ID, in code, docs, commits
+  or pull requests.
+- Fail closed. A security question whose wrong answer is a bypass is never
+  answered from optional wiring, a zero value or a missing field; unknown is
+  never a pass. A missing dependency is a constructor error, never a
+  nil-tolerant field.
+- A verification failure matches exactly one sentinel, built with the package's
+  `fail()`, never by wrapping a sentinel with `%w`; an infrastructure failure
+  matches none. No path that takes an identifier exports a distinguishable
+  not-found. Error text is for logs, never for a client.
+- Stores: each package declares the narrow typed interface it calls, beside the
+  caller; stores are passed per call, never held. Every invariant that needs
+  atomicity is one named store method whose doc states its SQL shape, and an
+  `authtest` suite races it. Ceremony state lives only in `store.FlowStore`.
+- A published interface never gains a method (a new capability is a new
+  interface found by type assertion); a struct may gain fields. An incompatible
+  change carries `!` in the pull request title: the squash commit is the title
+  and release-please reads nothing else.
+- Keep every check in this module even where go-webauthn also performs it.
 
-v2 is built on the `v2` branch until `v2.0.0`: branch from `v2` and open pull
-requests against it. `main` carries v1 until then, and the `v1` branch after.
+## Tests
 
-## Build & Test Commands
+- Every fix ships a test that fails when the fix is reverted, named for the
+  attack and citing its RFC or CVE class; a vulnerability reproduction is such a
+  test, never a standalone program.
+- Every parser reachable with attacker-controlled bytes has a fuzz target.
+- `.coverage-floor` only rises; lowering a floor is its own reviewed change.
+- The root `go test -race ./...` skips two modules: `examples/sqlitestore`
+  (store changes) and `examples/passkeys/e2e` (Chrome, `CHROME_PATH`).
+- Mutation shows a fix is load-bearing, not correct: a security change also gets
+  an adversarial review that attacks the fix itself.
 
-```bash
-go build ./... && go vet ./...
-go test -race ./...
-golangci-lint run
-govulncheck ./...
-go test -run='^$' -fuzz='^FuzzFinishPasskey$' -fuzztime=30s ./webauthn/   # also FuzzFinishRegistration, FuzzFinishSecondFactor
-```
+## Process
 
-CI enforces the per-package coverage floors in `.coverage-floor` against
-`go test -race -covermode=atomic -coverprofile=coverage.txt ./...`; raise a
-floor when tests land, never lower one in an unrelated change.
-
-The ruleset requires one check, `ci-gate`; a new job in `ci.yml` goes in its
-`needs` or the gate fails. A change to what the module imports, directly or
-through a dependency upgrade, regenerates the committed footprint with
-`.github/dependency-footprint.sh > .dependency-footprint`; an incompatible
-API change is declared with `!` in the pull request title. CI layout, the
-API check and the nightly run: `docs/ci.md`.
-
-Two suites are separate modules and are not reached by the root `go test ./...`:
-`cd examples/passkeys/e2e && go test ./...` (needs Chrome; `CHROME_PATH`) and
-`cd examples/sqlitestore && go test -race ./...`.
-
-## Project Structure
-
-One module, `github.com/meysam81/go-auth/v2`, at the repository root. The phase
-column is the delivery order; only G1 packages exist before their phase ships.
-
-```
-(repository root)
-  amr/          authentication methods (RFC 8176), factor classes, policy        G1
-  webauthn/     registration, second-factor and passkey ceremonies              G1
-  store/        the single-use FlowStore and the shared error sentinels         G1
-  authtest/     conformance suites and a virtual authenticator                  G1
-  challenge/    typed hand-off token, durable challenge state, step-up          G2
-  attempt/      failed-attempt budgets                                          G2
-  totp/         RFC 6238 enrolment and validation, durable replay guard         G2
-  recovery/     recovery codes: generation, keyed digests, legacy verifiers     G2
-  token/        opaque secret mint / digest / verify (reset, verification)      G3
-  session/      session identifiers, rotation, refresh families                 G3
-  oidcrp/       OIDC relying party: handshake in, verified claims out           G3
-  httpx/        outbound transport that refuses non-public addresses            G3
-  jwtx/         JWT mint and verify                                             G3
-  hash/         password hashing: pluggable, parameter-bounded; bcrypt first    G3
-  audit/        event vocabulary, a Logger interface, a log/slog adapter        G3
-  httpmw/       credential extraction middleware                                G3
-  normalize/    PRECIS identifier normalisation                                 later
-  batteries/    optional wired-up flows; deferred                               -
-  examples/     runnable demonstrations (passkeys); not production code         G1
-```
-
-## Code Style Guidelines
-
-### General
-
-- Follow the Google Go Style Guide
-- Minimal dependencies - prefer stdlib where possible
-- Interface-based design for testability
-- All public APIs must be documented
-
-### Error Handling
-
-- A verification failure matches exactly one sentinel: build it with the
-  package's `fail()` (in `webauthn`, a clone is a `*CloneSuspectedError`),
-  never by wrapping a sentinel with `%w`
-- An infrastructure failure (a store outage, a store fault at `Begin`) matches
-  no sentinel; wrap a store's error with context using
-  `fmt.Errorf("webauthn: context: %w", err)`
-- Stores return `store.ErrNotFound` and `store.ErrDuplicate`. The ceremony
-  functions translate `store.ErrNotFound` where a store contract allows it
-  (`Take`, `Subject`, `RecordAssertion`, `MarkCloneSuspected`); from a store
-  that breaks its contract (e.g. returns it from `List`) it passes through
-  wrapped, as an infrastructure failure
-
-### Naming Conventions
-
-- Packages: lowercase, single-word (e.g., `audit`, `totp`)
-- Interfaces: small, named for what they hold or do (e.g., `CredentialStore`, `FlowStore`)
-- Constructors: `NewXxx(config Config) (*Xxx, error)`
-- Config structs: named `Config` within each package
-
-### Configuration Pattern
-
-```go
-type Config struct {
-    RequiredField SomeType
-    OptionalField int // defaults in constructor
-}
-
-func NewManager(cfg Config) (*Manager, error) {
-    if cfg.RequiredField == nil {
-        return nil, errors.New("required field is required")
-    }
-    if cfg.OptionalField == 0 {
-        cfg.OptionalField = DefaultValue
-    }
-    // ...
-}
-```
-
-## Storage
-
-Durable credentials are typed: each package declares the narrow store interface
-it calls. Short-lived ceremony state is opaque and lives in `store.FlowStore`.
-Check for `store.ErrNotFound` and `store.ErrDuplicate`.
-
-## Dependencies
-
-The direct-dependency allow-list is enforced by `depguard` in `.golangci.yml`.
-`github.com/go-webauthn/webauthn` is pinned exactly at `v0.18.2`.
+- Until `v2.0.0`, branch from `v2` and open pull requests against it; `main` is
+  v1, security fixes only.
+- One canonical doc per topic: extend `docs/design.md`, `docs/ci.md` or a
+  package doc comment, never a sibling file. Specs and plans stay in untracked
+  `.claude/plans/`; fold their decisions into the design before the pull request
+  opens. Comments state the rule, never a doc section number.
+- Tracker: beads (`bd`, prefix `goauth-`), local only, never pushed. A bead
+  links its pull request with `--external-ref gh-<n>`.

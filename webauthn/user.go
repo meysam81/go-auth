@@ -72,11 +72,12 @@ func libraryCredential(c *Credential) gowebauthn.Credential {
 	}
 }
 
-// storeFaultError is a record the store answered against its contract
-// (design §4.2 rule 3). A Begin returns it as is: an infrastructure failure
-// matching no sentinel, so a caller that branches on ErrInvalidCredentials
-// never reads a broken store as "no credential". A Finish refuses the
-// ceremony with it as ErrInvalidCredentials (refuseStoreFault).
+// storeFaultError is a record the store answered against its contract, such
+// as a field the library needs left at its zero value. A Begin returns it as
+// is: an infrastructure failure matching no sentinel, so a caller that
+// branches on ErrInvalidCredentials never reads a broken store as "no
+// credential". A Finish refuses the ceremony with it as ErrInvalidCredentials
+// (refuseStoreFault).
 type storeFaultError struct{ reason string }
 
 func (e *storeFaultError) Error() string { return "webauthn: store fault: " + e.reason }
@@ -90,8 +91,8 @@ func refuseStoreFault(err error) error {
 	return err
 }
 
-// credentials loads the subject's credentials for this relying party. Design
-// §4.2 rule 3: a credential the store answers with a zero value the library
+// credentials loads the subject's credentials for this relying party. A
+// credential the store answers with a zero value the library
 // needs, a version the library never writes, or that belongs to another
 // subject or RP ID, is a *storeFaultError. A store error is returned wrapped.
 // Neither is a sentinel.

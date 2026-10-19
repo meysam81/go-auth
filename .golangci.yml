@@ -1,15 +1,15 @@
 # golangci-lint configuration for go-auth.
 #
-# F-23 (docs/security-hardening.md §5): before this file existed the linter ran
+# F-23 (the v1 audit, docs/design.md): before this file existed the linter ran
 # on defaults, so nothing checked for weak randomness, blank-identifier error
 # suppression, leaked response bodies or context-less requests -- the exact
 # classes that produced findings F-11, F-12 and F-20. The rules below are the
-# enforcement half of that finding; the test programme in §6 is the other half.
+# enforcement half of that finding; revert-the-fix tests are the other half.
 version: "2"
 
 run:
   timeout: 5m
-  # Tests exercise the adversarial suites in §6 and are held to the same bar as
+  # Tests carry the adversarial suites and are held to the same bar as
   # the library, except where a rule is meaningless there (see exclusions).
   tests: true
 
@@ -37,12 +37,11 @@ linters:
     - revive
     - unconvert
     - wastedassign
-    # docs/security-hardening.md §5 also names testifylint. It is deliberately
-    # absent: nothing in this module imports stretchr/testify -- the go.sum
-    # entry is a transitive test dependency of another module, not an import of
-    # ours -- so the linter would have nothing to inspect. Enabling a rule that
-    # cannot fire is the defect the closing comment of this file describes, so
-    # the claim in the docs is what needs correcting, not the config.
+    # testifylint is deliberately absent: nothing in this module imports
+    # stretchr/testify -- the go.sum entry is a transitive test dependency of
+    # another module, not an import of ours -- so the linter would have nothing
+    # to inspect. Enabling a rule that cannot fire is the defect the closing
+    # comment of this file describes.
 
   settings:
     errcheck:
@@ -71,7 +70,7 @@ linters:
       rules:
         main:
           # A minimal dependency set is a stated design value of this library
-          # (docs/security-hardening.md §5): every module here is either a
+          # (docs/design.md): every module here is either a
           # cryptographic primitive we must not reimplement or a protocol
           # implementation. Anything else expands the attack surface of every
           # consumer, so the set is enforced by rule rather than by discipline.

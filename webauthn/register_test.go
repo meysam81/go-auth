@@ -793,7 +793,7 @@ func TestBeginRegistration_RefusesBadInput(t *testing.T) {
 	}
 }
 
-// Design §4.2 rule 3: a credential the store answers with a zero value where
+// A credential the store answers with a zero value where
 // the library needs one, a version the library never writes, or of another
 // subject or RP ID, is a store fault. At Begin it is an infrastructure failure
 // that matches no sentinel.

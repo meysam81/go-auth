@@ -1,28 +1,14 @@
 # CI and branch protection
 
 `.github/workflows/ci.yml` is the gate. It runs on a pull request targeting
-`main` or `v2`, a push to `main` or `v2`, and a merge group. `v2`
-carries the v2 module until `v2.0.0` (`docs/v2-design.md` §11).
+`main` or `v2`, a push to `main` or `v2`, and a merge group. `v2` carries the v2
+module until `v2.0.0` (see "Branches and releases" below).
 
-| Job              | What it gates                                                                                  |
-| ---------------- | ---------------------------------------------------------------------------------------------- |
-| `test`           | `go test ./... -race -shuffle=on`, on go.mod's Go and the newest release; the coverage floor   |
-| `checks`         | `prettier --check`, `go vet`, `gofmt`, `go mod tidy -diff`, the dependency footprint, lint     |
-| `build`          | `go build ./...`                                                                               |
-| `build-examples` | `go build` and `go vet` of `examples/passkeys`                                                 |
-| `govulncheck`    | the module, scanned with a current toolchain                                                   |
-| `fuzz`           | every `Fuzz*` target at a bounded budget                                                       |
-| `pr-title`       | the pull request's title is a conventional commit release-please can read                      |
-| `api-diff`       | the exported API against the base; at a stable release, an undeclared or path-less break fails |
-| `workflows`      | zizmor's offline security audit of `.github/workflows`                                         |
-| `browser`        | `examples/passkeys` driven in Chrome with a virtual authenticator (`examples/passkeys/e2e`)    |
-| `sql-store`      | the authtest conformance suites against the reference SQLite store (`examples/sqlitestore`)    |
-| `ci-gate`        | every job above succeeded; the only check the ruleset requires                                 |
-| `release-please` | release automation; gated to `push` on `main` or `v2`, released from that branch               |
-
-`ci-gate` passes only when every job it needs succeeded: a skipped or cancelled
-job fails it. It also fails when a job in `ci.yml` is missing from its `needs`,
-so adding a job means adding it there, and a job cannot land ungated.
+`ci-gate` is the only check the ruleset requires. It passes only when every job
+it needs succeeded: a skipped or cancelled job fails it. It also fails when a
+job in `ci.yml` is missing from its `needs`, so adding a job means adding it
+there, and a job cannot land ungated. `release-please` runs only on a push to
+`main` or `v2` and releases from that branch.
 
 ## What the gate guards beyond the tests
 
@@ -189,9 +175,48 @@ gh workflow run scheduled.yml --ref main
 gh run list --workflow scheduled.yml --branch v2 --limit 1
 ```
 
-## At the swap
+## Branches and releases
 
-The ruleset needs no change. It already covers the default branch and `v1`,
-and after the swap both carry `ci-gate`: `main` takes `v2`'s `ci.yml`, and
-`v1` is fast-forwarded to `main`'s last v1 commit, which has its own copy.
+v2 is built on the `v2` branch, and its alpha and beta tags are cut there.
+`main` keeps v1, and v1 fixes keep landing there, until `v2.0.0`; v1 then
+continues on the `v1` branch for twelve months of security fixes.
+
+**Versions.** release-please's `release-as` pins `2.0.0-alpha.1` and
+`2.0.0-beta.1`, because prerelease versioning never changes type on its own. A
+pin is removed by the first commit after its release PR merges: removing it
+while that PR is open rewrites it to `2.0.0-alpha` with no number, and any other
+commit first opens a duplicate release PR. `v2.0.0` comes from setting
+`"prerelease": false`, which drops the suffix; `versioning` and
+`prerelease-type` are removed after it. Removing the prerelease keys without
+that step turns a `feat!` into `3.0.0`, and leaving `"prerelease": true` makes
+the next fix `2.0.1-beta`.
+
+**The swap**, at `v2.0.0`, in this order:
+
+1. Freeze `main`.
+2. Before the `2.0.0` release PR merges, merge `main` into `v2` with a signed
+   merge commit, so `v2` contains `main`: v1-only changes resolve as deleted,
+   `ci.yml` keeps `v2`'s jobs with the branches `main`, `v1` and `v2` (a push
+   runs the workflow in the pushed commit, so dropping `v2` here would leave the
+   release PR's merge untagged), and `renovate.json` lists `main` and `v1`.
+3. Edit v1's entries out of the release PR's notes and its `CHANGELOG.md`, with
+   no other push to `v2` in between, then merge it.
+4. Fast-forward `v1` to `main`'s tip and `main` to `v2`, then delete `v2` and
+   any release PR left on it, and drop `v2` from `ci.yml` in a later commit on
+   `main`.
+
+The merge commit and the fast-forwards need an admin bypass of the
+pull-request, squash-only, linear-history and signed-commit rules. Merging
+`main` in after `2.0.0` is tagged would make its newer v1 commits releasable
+again and open a duplicate `2.0.1` on both branches. A squash instead of the
+fast-forward would leave `v2`'s release commits outside `main`'s history, and
+release-please would rescan all of `main` and propose `3.0.0`; the fallback then
+is a commit setting `last-release-sha` to the squash commit, removed after the
+next release. A v1.x release after `v2.0.0` becomes GitHub's "latest" release
+(release-please sends no `make_latest`), so the release page is corrected by
+hand.
+
+The ruleset needs no change at the swap. It already covers the default branch
+and `v1`, and after the swap both carry `ci-gate`: `main` takes `v2`'s `ci.yml`,
+and `v1` is fast-forwarded to `main`'s last v1 commit, which has its own copy.
 Once `v2` is deleted, `refs/heads/v*` matches `v1` alone.
