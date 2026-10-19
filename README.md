@@ -121,6 +121,9 @@ The library never deletes a flow: `Take` only refuses consumed and expired
 ones, so purge them on a schedule. `BeginPasskey` is unauthenticated and
 writes a flow per call: rate-limit it.
 
+Keep every time as an instant to at least the microsecond (`TIMESTAMPTZ`,
+`DATETIME(6)` or integer microseconds), never whole seconds.
+
 Then run the conformance suites in your tests; they exercise the contract a
 database can get wrong, such as a single-use `Take` under concurrency and a
 conditional `RecordAssertion`.

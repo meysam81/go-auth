@@ -22,13 +22,26 @@ import (
 // newStore is called once per subtest and must return a store no other
 // subtest has written to (a fresh table or schema is the usual way). Each
 // subtest is a rule from the storage contract; a failure names the rule.
+//
+// ConcurrentTake_OneWinner proves Take atomic only when its 32 callers reach
+// the database on separate connections at the same moment. A database/sql
+// pool keeps two idle connections by default, so each caller may open a fresh
+// one, which takes longer than a Take: the callers then run one after another,
+// and a Take that reads, then writes, can pass. Give each store newStore
+// returns a pool that already holds 32 open connections, as newDB in
+// examples/sqlitestore does.
 func FlowStoreSuite(newStore func(t *testing.T) store.FlowStore) func(t *testing.T) {
 	return func(t *testing.T) {
 		t.Helper()
 		ctx := t.Context()
 		// The subtests run in sequence: an application's newStore may reset a
 		// shared database, so independence is not assumed.
-		future := func() time.Time { return time.Now().Add(time.Hour).Truncate(time.Second).UTC() }
+		// An hour ahead, at a fixed sub-second part below the microsecond and at
+		// an odd microsecond count, so every run writes the same remainder
+		// whatever the platform clock's resolution.
+		future := func() time.Time {
+			return time.Now().Add(time.Hour).Truncate(time.Second).Add(345_679_901 * time.Nanosecond).UTC()
+		}
 
 		t.Run("PutThenTake", func(t *testing.T) {
 			s := newStore(t)
@@ -41,7 +54,7 @@ func FlowStoreSuite(newStore func(t *testing.T) store.FlowStore) func(t *testing
 			if err != nil {
 				t.Fatalf("Take: %v", err)
 			}
-			if got.Kind != want.Kind || !bytes.Equal(got.Payload, want.Payload) || !got.ExpiresAt.Equal(want.ExpiresAt) {
+			if got.Kind != want.Kind || !bytes.Equal(got.Payload, want.Payload) || !sameInstant(got.ExpiresAt, want.ExpiresAt) {
 				t.Fatalf("Take = %+v, want %+v", got, want)
 			}
 		})

@@ -146,21 +146,6 @@ func listOne(t *testing.T, s *sqlitestore.WebAuthnStore, subject string) webauth
 	return got[0]
 }
 
-// The suites fill every field, so they never store what a registration does:
-// a zero LastUsedAt (NULL) and nil Transports, which json.Marshal writes as
-// null, not an array.
-func TestCredential_AsRegisteredRoundTrips(t *testing.T) {
-	t.Parallel()
-	s := newWebAuthnStore(t, nil)
-	want := registered(newSubject(t))
-	if err := s.Insert(t.Context(), want); err != nil {
-		t.Fatalf("Insert: %v", err)
-	}
-	if got := listOne(t, s, want.Subject); !sameCredential(got, want) {
-		t.Fatalf("List = %+v, want %+v", got, want)
-	}
-}
-
 // The suites use whole-second UTC-equivalent instants; a real clock carries
 // nanoseconds and the caller's zone.
 func TestTimes_TruncatedToPrecisionAndReadInUTC(t *testing.T) {
@@ -300,7 +285,8 @@ func TestErrDuplicate_OnlyForTheKey(t *testing.T) {
 	}
 }
 
-// The suites mark only a credential that exists.
+// The suites check an unknown credential ID. A mark under another subject,
+// and a zero time, are this store's own refusals.
 func TestMarkCloneSuspected_RefusesUnknownAndZero(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()

@@ -32,7 +32,8 @@ type FlowStore interface {
 
 	// Take fetches and consumes atomically. It MUST NOT be a Get followed by a
 	// Delete: on a READ COMMITTED database two concurrent callers would both
-	// observe the flow unused and both succeed. The SQL shape is
+	// observe the flow unused and both succeed. A flow is usable until its
+	// ExpiresAt, not at it. The SQL shape is
 	//   UPDATE flows SET used_at = ? WHERE id = ? AND used_at IS NULL AND expires_at > ?
 	// checking the affected-row count. Returning ErrNotFound for missing,
 	// expired and already-consumed alike is required: the difference is an oracle.

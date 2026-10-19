@@ -2,6 +2,7 @@ package authtest
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"math"
 	"sync"
@@ -15,7 +16,14 @@ import (
 
 // WebAuthnHarness connects [WebAuthnStoreSuite] to an application's stores.
 type WebAuthnHarness struct {
-	// NewStores returns stores no other subtest has written to.
+	// NewStores returns stores no other subtest has written to; the suite
+	// calls it once per subtest. The Concurrent subtests prove a write atomic
+	// only when their 16 callers reach the database on separate connections
+	// at the same moment. With a database/sql pool, give each store pair a
+	// pool that already holds 16 open connections, as newDB in
+	// examples/sqlitestore does: otherwise each caller may open a fresh one,
+	// the callers run one after another, and a read followed by a write can
+	// pass.
 	NewStores func(t *testing.T) (webauthn.CredentialStore, webauthn.HandleStore)
 	// NewSubject returns a subject the application's store accepts, for
 	// example the key of a freshly inserted user row when credentials hold a
@@ -32,7 +40,9 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 		t.Helper()
 		ctx := t.Context()
 		const rpID = "example.test"
-		t0 := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+		// Below the microsecond too, at an odd microsecond count, so a store
+		// that keeps a coarser grain (2 µs, 10 µs) moves it.
+		t0 := time.Date(2026, 1, 2, 3, 4, 5, 123_457_789, time.UTC)
 		t1 := t0.Add(48 * time.Hour)
 
 		// newCred is a credential with every field non-zero, then pinned to
@@ -308,6 +318,29 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 			}
 		})
 
+		// A counter that stays 0 and a last-used time equal to the stored one
+		// leave the row unchanged: it still matches, so the update applies. A
+		// driver that counts changed rows rather than matched ones (MySQL
+		// without clientFoundRows) reports it as lost to a concurrent assertion.
+		t.Run("RecordAssertion_UnchangedRow_Applies", func(t *testing.T) {
+			cs, _ := h.NewStores(t)
+			subject := h.NewSubject(t)
+			c := asRegistered(t, subject, rpID)
+			insert(t, cs, c)
+			u := webauthn.AssertionUpdate{
+				Subject: subject, CredentialID: c.ID, Version: webauthn.CurrentVersion, At: t1,
+			}
+			for _, attempt := range []string{"first", "identical second"} {
+				applied, err := cs.RecordAssertion(ctx, u)
+				if err != nil || !applied {
+					t.Fatalf("%s RecordAssertion = (%v, %v), want (true, nil): a matched row applies whether or not a value changed", attempt, applied, err)
+				}
+			}
+			want := c
+			want.LastUsedAt = t1
+			assertSame(t, byID(t, cs, subject, c.ID), want, "credential after two identical assertions")
+		})
+
 		t.Run("MarkCloneSuspected_Visible", func(t *testing.T) {
 			cs, _ := h.NewStores(t)
 			subject := h.NewSubject(t)
@@ -321,6 +354,56 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 			want.CloneSuspectedAt = t1
 			assertSame(t, byID(t, cs, subject, c.ID), want, "credential after MarkCloneSuspected")
 			assertSame(t, byID(t, cs, subject, sib.ID), sib, "sibling credential after MarkCloneSuspected")
+		})
+
+		// The library reads store.ErrNotFound as a credential removed during the
+		// ceremony: a store that answers nil for an unknown credential has it
+		// report a clone of a credential that is gone, and one that counts
+		// changed rows answers ErrNotFound to the second of two concurrent
+		// regressions that mark the same instant, which then reports no clone.
+		t.Run("MarkCloneSuspected_ErrNotFoundOnlyWhenUnknown", func(t *testing.T) {
+			cs, _ := h.NewStores(t)
+			subject := h.NewSubject(t)
+			c := newCred(t, subject, rpID)
+			insert(t, cs, c)
+			if err := cs.MarkCloneSuspected(ctx, subject, randBytes(t, 16), t1); !errors.Is(err, store.ErrNotFound) {
+				t.Errorf("MarkCloneSuspected of an unknown credential ID: error = %v, want store.ErrNotFound", err)
+			}
+			for _, attempt := range []string{"first", "identical second"} {
+				if err := cs.MarkCloneSuspected(ctx, subject, c.ID, t1); err != nil {
+					t.Fatalf("%s MarkCloneSuspected = %v, want nil: a matched row is marked whether or not a value changed", attempt, err)
+				}
+			}
+			want := c
+			want.CloneSuspectedAt = t1
+			assertSame(t, byID(t, cs, subject, c.ID), want, "credential after two identical marks")
+		})
+
+		// FinishRegistration returns store.ErrDuplicate to the application as
+		// "this credential ID is already registered". A store that maps every
+		// constraint violation to it reports a CHECK or a NOT NULL as that. Each
+		// credential below, under a fresh ID, is one the library never writes:
+		// a store may accept it, but a refusal must not be store.ErrDuplicate.
+		// The application's own unique indexes fall under the same rule; the
+		// suite cannot see them.
+		t.Run("Insert_OtherRefusal_NotErrDuplicate", func(t *testing.T) {
+			cs, _ := h.NewStores(t)
+			for _, tc := range []struct {
+				name string
+				edit func(c *webauthn.Credential)
+			}{
+				{"a 1024-byte credential ID", func(c *webauthn.Credential) { c.ID = randBytes(t, 1024) }},
+				{"an empty public key", func(c *webauthn.Credential) { c.PublicKey = nil }},
+				{"an empty RP ID", func(c *webauthn.Credential) { c.RPID = "" }},
+				{"a zero creation time", func(c *webauthn.Credential) { c.CreatedAt = time.Time{} }},
+				{"a version above CurrentVersion", func(c *webauthn.Credential) { c.Version = math.MaxUint16 }},
+			} {
+				c := newCred(t, h.NewSubject(t), rpID)
+				tc.edit(&c)
+				if err := cs.Insert(ctx, c); errors.Is(err, store.ErrDuplicate) {
+					t.Errorf("Insert of a credential with %s under a fresh ID: error = %v; store.ErrDuplicate means the credential ID is held, and only that", tc.name, err)
+				}
+			}
 		})
 
 		t.Run("Ensure_CreatesOnce", func(t *testing.T) {
@@ -403,6 +486,65 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 			}
 		})
 
+		// A handle resolves to one subject. An Ensure that replaces on conflict
+		// moves the handle, and its owner's passkeys then resolve to the other
+		// subject.
+		t.Run("EnsureHandleOfAnotherSubject_Refused", func(t *testing.T) {
+			_, hs := h.NewStores(t)
+			owner, other := h.NewSubject(t), h.NewSubject(t)
+			held := randBytes(t, 64)
+			if got, err := hs.Ensure(ctx, owner, held); err != nil || !bytes.Equal(got, held) {
+				t.Fatalf("Ensure(owner) = (%x, %v), want (%x, nil)", got, err, held)
+			}
+			if got, err := hs.Ensure(ctx, other, held); err == nil {
+				t.Fatalf("Ensure of the owner's handle for a subject with none = (%x, nil), want an error", got)
+			}
+			if got, err := hs.Subject(ctx, held); err != nil || got != owner {
+				t.Fatalf("Subject of the owner's handle after the refused Ensure = (%q, %v), want %q", got, err, owner)
+			}
+			fresh := randBytes(t, 64)
+			if got, err := hs.Ensure(ctx, other, fresh); err != nil || !bytes.Equal(got, fresh) {
+				t.Fatalf("Ensure(other) after the refusal = (%x, %v), want its own fresh handle %x: the refusal stored nothing", got, err, fresh)
+			}
+		})
+
+		// Handles are bytes. Kept as text under a case-insensitive collation,
+		// raw or base64-encoded, a handle matches others that differ only in
+		// the case of a letter. Both handles here are 64 bytes, the length the
+		// library creates.
+		t.Run("SubjectByHandle_CaseVariant_ErrNotFound", func(t *testing.T) {
+			_, hs := h.NewStores(t)
+			raw := randLetters(t, 64)
+			// 64 bytes encode to 86 base64 characters and "==". The 86th carries
+			// the last byte's two low bits and four zero bits, so it is one of A,
+			// Q, g and w, and the variant keeps it.
+			text := append(randLetters(t, 85), "AQgw"[randBytes(t, 1)[0]%4], '=', '=')
+			variant := append(swapCase(text[:85]), text[85:]...)
+			b64, err := base64.StdEncoding.Strict().DecodeString(string(text))
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			b64Variant, err := base64.StdEncoding.Strict().DecodeString(string(variant))
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			for _, tc := range []struct {
+				form            string
+				handle, variant []byte
+			}{
+				{"raw", raw, swapCase(raw)},
+				{"base64-encoded", b64, b64Variant},
+			} {
+				subject := h.NewSubject(t)
+				if got, err := hs.Ensure(ctx, subject, tc.handle); err != nil || !bytes.Equal(got, tc.handle) {
+					t.Fatalf("Ensure(%s) = (%x, %v), want (%x, nil)", tc.form, got, err, tc.handle)
+				}
+				if got, err := hs.Subject(ctx, tc.variant); !errors.Is(err, store.ErrNotFound) {
+					t.Errorf("Subject of a handle whose %s form differs only in letter case = (%q, %v), want store.ErrNotFound (compare bytes exactly)", tc.form, got, err)
+				}
+			}
+		})
+
 		t.Run("UnknownHandle_ErrNotFound", func(t *testing.T) {
 			_, hs := h.NewStores(t)
 			if _, err := hs.Subject(ctx, randBytes(t, 64)); !errors.Is(err, store.ErrNotFound) {
@@ -433,7 +575,10 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 				// wall clock and drops the offset moves them.
 				c.CreatedAt = c.CreatedAt.In(time.FixedZone("+14", 14*3600))
 				c.LastUsedAt = c.LastUsedAt.In(time.FixedZone("-12", -12*3600))
-				c.CloneSuspectedAt = c.CloneSuspectedAt.In(time.FixedZone("+5:45", 5*3600+45*60))
+				// On an exact microsecond: a store may drop what lies below it in
+				// either direction, but one that shifts every time by a microsecond
+				// moves this one by a whole one.
+				c.CloneSuspectedAt = c.CloneSuspectedAt.Truncate(time.Microsecond).In(time.FixedZone("+5:45", 5*3600+45*60))
 			})
 		})
 
@@ -455,6 +600,17 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 			roundTrip(t, func(c *webauthn.Credential) { c.Discoverable = nil })
 		})
 
+		// FinishRegistration stores a credential never used, often with no
+		// transports, AAGUID or credProps reported: a NOT NULL last-used column,
+		// or nil transports written as JSON null, refuses real registrations.
+		t.Run("CredentialRoundTrips_AsRegistered", func(t *testing.T) {
+			cs, _ := h.NewStores(t)
+			subject := h.NewSubject(t)
+			c := asRegistered(t, subject, rpID)
+			insert(t, cs, c)
+			assertSame(t, byID(t, cs, subject, c.ID), c, "credential as FinishRegistration stores it")
+		})
+
 		t.Run("CredentialRoundTrips_LargestValues", func(t *testing.T) {
 			roundTrip(t, func(c *webauthn.Credential) {
 				c.ID = randBytes(t, 1023) // WebAuthn's longest credential ID
@@ -463,5 +619,43 @@ func WebAuthnStoreSuite(h WebAuthnHarness) func(t *testing.T) {
 				c.PublicKey = randBytes(t, 2048)
 			})
 		})
+	}
+}
+
+// randLetters returns n ASCII letters drawn from crypto/rand, so a harness
+// whose stores share one database still sees unique handles.
+func randLetters(t *testing.T, n int) []byte {
+	t.Helper()
+	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	b := randBytes(t, n)
+	for i := range b {
+		b[i] = alphabet[int(b[i])%len(alphabet)]
+	}
+	return b
+}
+
+// swapCase returns b with the case of every letter swapped; b holds ASCII
+// letters only, as randLetters returns.
+func swapCase(b []byte) []byte {
+	out := make([]byte, len(b))
+	for i, c := range b {
+		out[i] = c ^ 0x20 // 'a' ^ 0x20 == 'A'
+	}
+	return out
+}
+
+// asRegistered is a credential as FinishRegistration may store it: every
+// field the library can leave unset is zero (no transports, AAGUID or
+// credProps reported, a zero counter, never used, no backup flags).
+func asRegistered(t *testing.T, subject, rpID string) webauthn.Credential {
+	t.Helper()
+	return webauthn.Credential{
+		Version:   webauthn.CurrentVersion,
+		ID:        randBytes(t, 16),
+		Subject:   subject,
+		RPID:      rpID,
+		PublicKey: randBytes(t, 77),
+		Algorithm: -7,
+		CreatedAt: time.Date(2026, 1, 2, 3, 4, 5, 987_653_321, time.UTC),
 	}
 }

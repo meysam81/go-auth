@@ -32,9 +32,9 @@ func TestNew_RejectsBadConfig(t *testing.T) {
 		{"RPID uppercase", func(c *Config) { c.RPID = "Example.Test" }, "must be lowercase"},
 		{"RPID is IP", func(c *Config) { c.RPID = "192.0.2.1"; c.Origins = []string{"https://192.0.2.1"} }, "must not be an IP"},
 		{"RPID bad label", func(c *Config) { c.RPID = "-example.test" }, "valid DNS name"},
-		{"RPID too long", func(c *Config) {
+		{"RPID too long", func(c *Config) { // 254 bytes
 			l := strings.Repeat("a", 63)
-			c.RPID = l + "." + l + "." + l + "." + l
+			c.RPID = l + "." + l + "." + l + "." + l[:62]
 			c.Origins = []string{"https://" + c.RPID}
 		}, "RPID is too long"},
 		{"empty RPName", func(c *Config) { c.RPName = "" }, "RPName is required"},
@@ -50,6 +50,7 @@ func TestNew_RejectsBadConfig(t *testing.T) {
 		{"uppercase subdomain only", func(c *Config) { c.Origins = []string{"https://App.example.test"} }, "lowercase host"},
 		{"uppercase scheme", func(c *Config) { c.Origins = []string{"HTTPS://app.example.test"} }, "lowercase scheme"},
 		{"non-ASCII host", func(c *Config) { c.Origins = []string{"https://app.exämple.test"} }, "punycode"},
+		{"host byte 0x80", func(c *Config) { c.Origins = []string{"https://app\x80.example.test"} }, "punycode"},
 		{"empty port", func(c *Config) { c.Origins = []string{"https://app.example.test:"} }, "port"},
 		{"port too large", func(c *Config) { c.Origins = []string{"https://app.example.test:99999"} }, "port"},
 		{"port zero", func(c *Config) { c.Origins = []string{"https://app.example.test:0"} }, "port"},
@@ -108,6 +109,13 @@ func TestNew_Boundaries(t *testing.T) {
 	cfg.Origins = []string{"https://app.example.test:1", "https://app.example.test:65535"}
 	if _, err := New(cfg); err != nil {
 		t.Fatalf("port bounds: %v", err)
+	}
+	l := strings.Repeat("a", 63)
+	cfg = validConfig()
+	cfg.RPID = l + "." + l + "." + l + "." + l[:61] // 253 bytes, the longest DNS name
+	cfg.Origins = []string{"https://" + cfg.RPID}
+	if _, err := New(cfg); err != nil {
+		t.Fatalf("253-byte RPID: %v", err)
 	}
 }
 

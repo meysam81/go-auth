@@ -46,7 +46,7 @@ type Credential struct {
 	PublicKey        []byte // COSE_Key
 	Algorithm        int
 	AAGUID           [16]byte // kept for naming even when unattested
-	Transports       []string // self-reported; a hint, never evidence
+	Transports       []string // self-reported; a hint, never evidence. nil and empty alike mean none reported
 	SignCount        uint32
 	BackupEligible   bool // fixed at creation; set once by the first assertion of an ImportedVersion credential
 	BackupState      bool
@@ -71,10 +71,12 @@ type AssertionUpdate struct {
 
 // CredentialStore holds WebAuthn credentials. Rename, delete and listing for a
 // settings page are the application's own queries; the library calls only these.
+// Times are kept to the microsecond, as package [store] says.
 type CredentialStore interface {
 	// Insert stores a new credential. It returns store.ErrDuplicate when ANY
 	// subject already holds this credential ID (a unique index on the ID, not
-	// on (subject, ID)).
+	// on (subject, ID)), and for no other refusal: a CHECK, a NOT NULL or
+	// another unique index of the application's is some other error.
 	Insert(ctx context.Context, c Credential) error
 
 	// List returns the subject's credentials for this RP ID.
@@ -88,12 +90,17 @@ type CredentialStore interface {
 	//	WHERE subject = ? AND credential_id = ? AND sign_count = ?
 	//
 	// applied=false means no row matched (a concurrent assertion won); the
-	// caller fails.
+	// caller fails. A matched row is applied=true even when no value changes
+	// (a counter that stays 0, a last-used time equal to the stored one): count
+	// matched rows, not changed ones.
 	RecordAssertion(ctx context.Context, u AssertionUpdate) (applied bool, err error)
 
 	// MarkCloneSuspected records a counter regression on the credential by
 	// setting its CloneSuspectedAt to at. The library refuses the credential
-	// from then on; clearing the mark is the application's own query.
+	// from then on; clearing the mark is the application's own query. It
+	// returns store.ErrNotFound when no credential matches, and nil for a
+	// matched one even when it already holds at: count matched rows, not
+	// changed ones.
 	MarkCloneSuspected(ctx context.Context, subject string, id []byte, at time.Time) error
 }
 
@@ -101,10 +108,13 @@ type CredentialStore interface {
 type HandleStore interface {
 	// Ensure returns the subject's handle, storing h first when it has none
 	// (create-if-absent; two concurrent callers get the same handle back).
+	// When the subject has none and another subject holds h, it returns an
+	// error and stores nothing: a handle resolves to one subject, and is
+	// never moved.
 	Ensure(ctx context.Context, subject string, h []byte) ([]byte, error)
 
-	// Subject resolves a handle from a discoverable assertion. It returns
-	// store.ErrNotFound when no subject holds it.
+	// Subject resolves a handle from a discoverable assertion, comparing bytes
+	// exactly. It returns store.ErrNotFound when no subject holds it.
 	Subject(ctx context.Context, handle []byte) (string, error)
 }
 

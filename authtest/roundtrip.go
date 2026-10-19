@@ -27,10 +27,11 @@ func randID(t *testing.T, prefix string) string {
 }
 
 // FillNonZero sets every exported field of the struct v points to a distinct
-// non-zero value; signed integers are negative. Supported kinds are strings, byte and string slices, bools,
-// signed and unsigned integers, byte arrays, *bool and [time.Time] (a
-// whole-second UTC instant). Any other kind fails the test, so a new field of
-// a new kind forces the suites to learn it instead of silently skipping it.
+// non-zero value; signed integers are negative. Supported kinds are strings,
+// byte and string slices, bools, signed and unsigned integers, byte arrays,
+// *bool and [time.Time] (a UTC instant with a sub-microsecond remainder, which
+// a store may drop). Any other kind fails the test, so a new field of a new
+// kind forces the suites to learn it instead of silently skipping it.
 func FillNonZero(t *testing.T, v any) {
 	t.Helper()
 	p := reflect.ValueOf(v)
@@ -60,7 +61,7 @@ func fillValue(t *testing.T, f reflect.Value, name string, n int) {
 	t.Helper()
 	switch {
 	case f.Type() == timeType:
-		f.Set(reflect.ValueOf(time.Unix(1_700_000_000+int64(n)*3600, 0).UTC()))
+		f.Set(reflect.ValueOf(time.Unix(1_700_000_000+int64(n)*3600, 123_457_789+int64(n)).UTC()))
 		return
 	case f.Kind() == reflect.String:
 		f.SetString(name + "-" + string(rune('a'+n%26)) + string(rune('A'+n%7)))
@@ -91,8 +92,10 @@ func fillValue(t *testing.T, f reflect.Value, name string, n int) {
 }
 
 // diffFields returns the name of the first exported field of a and b (structs
-// of the same type) that differs, comparing [time.Time] with Equal so a store
-// that returns another location is not blamed. It returns "" when they match.
+// of the same type) that differs. Two [time.Time] values match when they are
+// the same instant to the microsecond, the precision a store must keep, in
+// whatever location; a nil slice matches an empty one, which a store may
+// return for it. It returns "" when they match.
 func diffFields(a, b any) string {
 	av, bv := reflect.ValueOf(a), reflect.ValueOf(b)
 	for i := range av.NumField() {
@@ -104,9 +107,12 @@ func diffFields(a, b any) string {
 		if x.Type() == timeType {
 			xt, xok := x.Interface().(time.Time)
 			yt, yok := y.Interface().(time.Time)
-			if !xok || !yok || !xt.Equal(yt) {
+			if !xok || !yok || !sameInstant(xt, yt) {
 				return name
 			}
+			continue
+		}
+		if x.Kind() == reflect.Slice && x.Len() == 0 && y.Len() == 0 {
 			continue
 		}
 		if !reflect.DeepEqual(x.Interface(), y.Interface()) {
@@ -114,4 +120,11 @@ func diffFields(a, b any) string {
 		}
 	}
 	return ""
+}
+
+// sameInstant reports whether a and b are the same instant to the
+// microsecond: a store may drop what lies below it, in either direction.
+func sameInstant(a, b time.Time) bool {
+	d := a.Sub(b)
+	return d > -time.Microsecond && d < time.Microsecond
 }

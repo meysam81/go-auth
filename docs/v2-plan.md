@@ -446,7 +446,7 @@ payload containing `0x00` and `0xff`).
 `UnknownHandle_ErrNotFound`; `CredentialRoundTripsEveryField`.
 `FillNonZero` sets every exported field to a distinct non-zero value (strings,
 byte slices, bools, unsigned and signed ints, `[16]byte`, `[]string`, `*bool`,
-`time.Time` as a whole-second UTC instant) and calls `t.Fatalf` on any other
+`time.Time` as a UTC instant with a sub-microsecond remainder) and calls `t.Fatalf` on any other
 kind, so a new field of a new kind forces the suite to learn it.
 
 - [ ] **Step 4: Implement the memory stores**, then run

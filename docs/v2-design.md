@@ -219,6 +219,12 @@ rest it must trust.
    struct may gain fields (rule 4 catches stores that drop them).
 6. **Not-found is a store concern.** Stores return `store.ErrNotFound`; the
    authentication functions never surface it (§6).
+7. **Times are instants kept to the microsecond.** The finest precision
+   PostgreSQL and MySQL keep; a store may truncate or round below it and return
+   any location, and the suites write instants with a sub-microsecond remainder.
+   A flow is usable until its `ExpiresAt`, not at it (`expires_at > now`); the
+   suites cannot test that instant without a clock the `FlowStore` interface
+   lacks, so the rule stands on the contract text.
 
 ### 4.3 Why typed, not opaque records (decision, 2026-10-17)
 
@@ -466,7 +472,8 @@ subject ID.
 // settings page are the application's own queries; the library calls only these.
 type CredentialStore interface {
     // Insert stores a new credential. ErrDuplicate when ANY subject already
-    // holds this credential ID (a unique index on the ID, not on (subject, ID)).
+    // holds this credential ID (a unique index on the ID, not on (subject, ID)),
+    // and for no other refusal.
     Insert(ctx context.Context, c Credential) error
 
     // List returns the subject's credentials for this RP ID.
@@ -477,10 +484,13 @@ type CredentialStore interface {
     //   UPDATE ... SET sign_count = ?, backup_eligible = ?, backup_state = ?,
     //     version = ?, last_used_at = ?
     //   WHERE subject = ? AND credential_id = ? AND sign_count = ?
-    // applied=false means a concurrent assertion won; the caller fails.
+    // applied=false means a concurrent assertion won; the caller fails. A
+    // matched row is applied even when no value changes.
     RecordAssertion(ctx context.Context, u AssertionUpdate) (applied bool, err error)
 
     // MarkCloneSuspected records a counter regression on the credential.
+    // ErrNotFound when no credential matches; nil for a matched one, changed
+    // or not.
     MarkCloneSuspected(ctx context.Context, subject string, id []byte, at time.Time) error
 }
 
@@ -488,9 +498,11 @@ type CredentialStore interface {
 type HandleStore interface {
     // Ensure returns the subject's handle, storing h first when it has none
     // (create-if-absent; two concurrent callers get the same handle back).
+    // When the subject has none and another subject holds h: an error, and
+    // nothing stored.
     Ensure(ctx context.Context, subject string, h []byte) ([]byte, error)
-    // Subject resolves a handle from a discoverable assertion. ErrNotFound
-    // when no subject holds it.
+    // Subject resolves a handle from a discoverable assertion, comparing bytes
+    // exactly. ErrNotFound when no subject holds it.
     Subject(ctx context.Context, handle []byte) (string, error)
 }
 
@@ -502,7 +514,7 @@ type Credential struct {
     PublicKey        []byte    // COSE_Key
     Algorithm        int
     AAGUID           [16]byte  // kept for naming even when unattested
-    Transports       []string  // self-reported; a hint, never evidence
+    Transports       []string  // self-reported; a hint, never evidence. nil and empty alike: none reported
     SignCount        uint32
     BackupEligible   bool      // fixed at creation
     BackupState      bool
@@ -885,7 +897,13 @@ They cover what an application will otherwise get wrong: `Take` and `Ensure` rac
 N goroutines and exactly one wins (or all agree); a credential ID held by one
 subject cannot be inserted for another; `RecordAssertion` loses cleanly to a
 concurrent update; expiry is enforced on read, not by a sweeper; every exported
-field round-trips (§4.2 rule 4); not-found is never confused with success.
+field round-trips (§4.2 rule 4), and so does a credential as a registration
+stores it (never used, nothing optional reported); not-found is never confused
+with success; `ErrDuplicate` means the credential ID is held and nothing else;
+handles compare as bytes, never as text under a collation. The races prove
+atomicity only when their callers hold separate database connections at once,
+so each store the application's harness builds opens its pool's connections
+first.
 
 **A virtual authenticator.** `authtest` ships a software authenticator (ES256 and
 Ed25519 keys, attestation `none`, settable flags and counters, and the means to
