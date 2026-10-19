@@ -1,7 +1,7 @@
 name: ci
 
-# `v1` carries v1 once `v2` replaces `main` at `v2.0.0` (docs/v2-design.md §11
-# on the `v2` branch); naming it now means it keeps CI and releases after that.
+# `v1` carries v1 once `v2` replaces `main` at `v2.0.0` (docs/ci.md on the `v2`
+# branch); naming it now means it keeps CI and releases after that.
 on:
   pull_request:
     branches:
