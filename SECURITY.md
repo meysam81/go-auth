@@ -2,10 +2,11 @@
 
 ## Supported versions
 
-| Version | Supported |
-| ------- | --------- |
-| 1.x     | yes       |
-| < 1.0   | no        |
+| Version        | Supported                                                  |
+| -------------- | ---------------------------------------------------------- |
+| 2.0.0-alpha.\* | best effort                                                |
+| 1.x            | security fixes for twelve months from the `v2.0.0` release |
+| < 1.0          | no                                                         |
 
 ## Reporting a vulnerability
 
