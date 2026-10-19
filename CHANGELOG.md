@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.1.4](https://github.com/meysam81/go-auth/compare/v1.1.3...v1.1.4) (2026-10-19)
+
+
+### Bug Fixes
+
+* **deps-security:** update module golang.org/x/crypto to v0.56.0 [security] (main) ([#74](https://github.com/meysam81/go-auth/issues/74)) ([3f167ec](https://github.com/meysam81/go-auth/commit/3f167ece53afec5ac2c4cf4fface11a04492696b))
+
+
+### CI
+
+* add the ci-gate job the ruleset requires on main ([#75](https://github.com/meysam81/go-auth/issues/75)) ([a8771cd](https://github.com/meysam81/go-auth/commit/a8771cdea2fd5cc255621d14b88d0bd2dd8fdf59))
+* dispatch the v2 nightly from the default branch ([#69](https://github.com/meysam81/go-auth/issues/69)) ([3e04105](https://github.com/meysam81/go-auth/commit/3e041059a042de96a8282244e386886b5e34fafe))
+* run CI and releases on v1, and let Renovate update v2 ([#62](https://github.com/meysam81/go-auth/issues/62)) ([c62904f](https://github.com/meysam81/go-auth/commit/c62904f493e5c43169c429d28c83cc4306ae9b13))
+* Scorecard, the weekly mutation dispatch, and library-minded Renovate ([#73](https://github.com/meysam81/go-auth/issues/73)) ([1d1078b](https://github.com/meysam81/go-auth/commit/1d1078bc560a6853906a514fd5e8b67c1769ec09))
+
+
+### Documentation
+
+* cut the v1 CLAUDE.md to maintenance rules and drop ROADMAP.md ([#84](https://github.com/meysam81/go-auth/issues/84)) ([735783b](https://github.com/meysam81/go-auth/commit/735783b50c2ede2d40bb5f28e09cca29146e9688))
+
+
+### Tests
+
+* **jwt:** keep the truncated and extended signing keys distinct ([#70](https://github.com/meysam81/go-auth/issues/70)) ([79a368e](https://github.com/meysam81/go-auth/commit/79a368e9ae8b4344f31bc7c75fe20704cd0891ed))
+
 ## [1.1.3](https://github.com/meysam81/go-auth/compare/v1.1.2...v1.1.3) (2026-08-25)
 
 
