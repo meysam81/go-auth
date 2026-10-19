@@ -108,7 +108,6 @@ behind each change are in the same document.
 - [Contributing](#contributing)
 - [License](#license)
 - [Support](#support)
-- [Roadmap](#roadmap)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
@@ -1491,14 +1490,3 @@ Apache 2.0 License - see LICENSE file for details
 
 - GitHub Issues: [Report bugs or request features](https://github.com/meysam81/go-auth/issues)
 - Documentation: See package documentation with `go doc`
-
-## Roadmap
-
-- [ ] Support for SAML (if requested)
-- [ ] Built-in OIDC Provider/Server (nice to have)
-- [ ] Additional SSO providers
-- [ ] Rate limiting middleware
-- [x] Audit logging interface ✅
-- [x] Password reset flow helpers ✅
-- [x] Email verification flow helpers ✅
-- [x] Two-factor authentication (TOTP) ✅
