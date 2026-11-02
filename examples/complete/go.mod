@@ -1,6 +1,6 @@
 module github.com/meysam81/go-auth/examples/complete
 
-go 1.26.0
+go 1.27.3
 
 require (
 	github.com/go-webauthn/webauthn v0.17.4
