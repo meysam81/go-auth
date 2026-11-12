@@ -19,12 +19,12 @@ ci:
 
 repos:
   - repo: https://github.com/oxc-project/mirrors-oxlint
-    rev: v1.79.0
+    rev: 839c3a661811dc1720f06b64d4db969e1ee564df # frozen: v1.79.0
     hooks:
       - id: oxlint
         verbose: false
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v6.0.0
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # frozen: v6.0.0
     hooks:
       - id: check-added-large-files
         args: ["--maxkb=2000"]
@@ -76,13 +76,14 @@ repos:
             renovate.json
           )$
   - repo: https://github.com/alessandrojcm/commitlint-pre-commit-hook
-    rev: v9.26.0
+    rev: 25d0a52aa8bc0fc242613346792dc8d726c13347 # frozen: v9.26.0
     hooks:
       - id: commitlint
+        language: node
         stages: [commit-msg]
-        additional_dependencies: ["@commitlint/config-conventional"]
+        additional_dependencies: ["@commitlint/config-conventional@21.2.4"]
   - repo: https://github.com/dnephin/pre-commit-golang
-    rev: v0.5.1
+    rev: fb24a639f7c938759fe56eeebbb7713b69d60494 # frozen: v0.5.1
     hooks:
       - id: go-fmt
       # go-vet stays disabled here: run-go-vet.sh starts with `pkg=$(go list)`,
@@ -111,11 +112,11 @@ repos:
       # - id: go-build
       - id: go-mod-tidy
   - repo: https://github.com/rhysd/actionlint
-    rev: v1.7.12
+    rev: 914e7df21a07ef503a81201c76d2b11c789d3fca # frozen: v1.7.12
     hooks:
       - id: actionlint
   - repo: https://github.com/reteps/dockerfmt
-    rev: v0.5.4
+    rev: 5c9b576cff2b0f3c323785ed9aa86838d1ae2228 # frozen: v0.5.4
     hooks:
       - id: dockerfmt
         args:
