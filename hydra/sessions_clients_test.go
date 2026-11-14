@@ -2,6 +2,7 @@ package hydra_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -249,5 +250,50 @@ func TestClient_ListConsentSessions_Refusals(t *testing.T) {
 	empty, _, _ := admin(t, http.StatusOK, nil, `[]`)
 	if got, err := empty.ListConsentSessions(t.Context(), "u1"); err != nil || len(got) != 0 {
 		t.Errorf("no sessions: got %v, err %v", got, err)
+	}
+}
+
+// The request-object metadata decodes as sent: present values are kept; an
+// absent or null value is the zero value; a jwks that holds no key is nil.
+func TestClient_DecodesRequestObjectMetadata(t *testing.T) {
+	t.Parallel()
+	const key = `{"kty":"RSA","kid":"k1","n":"x","e":"AQAB"}`
+	tests := []struct {
+		name, fields string
+		want         hydra.OAuthClient
+	}{
+		{"all present", `"request_object_signing_alg":"RS256","jwks":{"keys":[` + key + `]},"jwks_uri":"https://rp.example.test/jwks",` +
+			`"request_uris":["https://rp.example.test/req"]`,
+			hydra.OAuthClient{RequestObjectSigningAlg: "RS256", JWKS: json.RawMessage(`{"keys":[` + key + `]}`),
+				JWKSURI: "https://rp.example.test/jwks", RequestURIs: []string{"https://rp.example.test/req"}}},
+		{"all absent", ``, hydra.OAuthClient{}},
+		{"all null", `"request_object_signing_alg":null,"jwks":null,"jwks_uri":null,"request_uris":null`, hydra.OAuthClient{}},
+		{"empty values", `"request_object_signing_alg":"","jwks":{},"jwks_uri":"","request_uris":[]`,
+			hydra.OAuthClient{RequestURIs: []string{}}},
+		{"jwks with an empty key list", `"jwks":{"keys":[]}`, hydra.OAuthClient{}},
+		{"jwks with null keys", `"jwks":{"keys":null}`, hydra.OAuthClient{}},
+		{"jwks that is not a key set stays present", `"jwks":"x"`, hydra.OAuthClient{JWKS: json.RawMessage(`"x"`)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			body := `{"client_id":"c1"`
+			if tt.fields != "" {
+				body += "," + tt.fields
+			}
+			body += "}"
+			want := tt.want
+			want.ClientID = "c1"
+			c, _, _ := admin(t, http.StatusOK, nil, `[`+body+`]`)
+			page, err := c.ListClients(t.Context(), "")
+			if err != nil || len(page.Clients) != 1 || !reflect.DeepEqual(page.Clients[0], want) {
+				t.Fatalf("ListClients = %+v, %v; want %+v", page.Clients, err, want)
+			}
+			cr, _, _ := admin(t, http.StatusOK, nil, `{"challenge":"cc1","client":`+body+`}`)
+			req, err := cr.ConsentRequest(t.Context(), "cc1")
+			if err != nil || !reflect.DeepEqual(req.Client, want) {
+				t.Fatalf("ConsentRequest client = %+v, %v; want %+v", req.Client, err, want)
+			}
+		})
 	}
 }

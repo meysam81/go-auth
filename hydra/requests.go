@@ -16,15 +16,50 @@ const (
 
 // OAuthClient is the registered OAuth 2.0 client a request comes from. Every
 // field but ClientID was chosen by whoever registered the client.
+//
+// RequestObjectSigningAlg, JWKS, JWKSURI and RequestURIs are the metadata
+// that enable OIDC request objects (a signed authorization request, passed by
+// value or by reference); an application that refuses such clients reads them.
+// An absent or null string or list decodes to its zero value. JWKS is the raw
+// jwks object, nil when it is absent, null, not carrying a "keys" member, or
+// carrying an empty one: a non-nil JWKS always holds at least one key, or is
+// a value that is not a key set and should be treated as present.
 type OAuthClient struct {
-	ClientID                string    `json:"client_id"`
-	ClientName              string    `json:"client_name"`
-	RedirectURIs            []string  `json:"redirect_uris"`
-	GrantTypes              []string  `json:"grant_types"`
-	ResponseTypes           []string  `json:"response_types"`
-	Scope                   string    `json:"scope"`
-	TokenEndpointAuthMethod string    `json:"token_endpoint_auth_method"`
-	CreatedAt               time.Time `json:"created_at"`
+	ClientID                string          `json:"client_id"`
+	ClientName              string          `json:"client_name"`
+	RedirectURIs            []string        `json:"redirect_uris"`
+	GrantTypes              []string        `json:"grant_types"`
+	ResponseTypes           []string        `json:"response_types"`
+	Scope                   string          `json:"scope"`
+	TokenEndpointAuthMethod string          `json:"token_endpoint_auth_method"`
+	RequestObjectSigningAlg string          `json:"request_object_signing_alg"`
+	JWKS                    json.RawMessage `json:"jwks"`
+	JWKSURI                 string          `json:"jwks_uri"`
+	RequestURIs             []string        `json:"request_uris"`
+	CreatedAt               time.Time       `json:"created_at"`
+}
+
+// keySet is the part of a jwks object that decides whether it holds keys.
+type keySet struct {
+	Keys []json.RawMessage `json:"keys"`
+}
+
+// UnmarshalJSON decodes the client and normalizes JWKS: null, an object with
+// no keys or an empty keys array all become nil, so "has keys" is JWKS != nil.
+func (c *OAuthClient) UnmarshalJSON(b []byte) error {
+	type plain OAuthClient // no methods: avoids recursing into this one
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	if len(p.JWKS) > 0 {
+		var ks keySet
+		if json.Unmarshal(p.JWKS, &ks) == nil && len(ks.Keys) == 0 {
+			p.JWKS = nil
+		}
+	}
+	*c = OAuthClient(p)
+	return nil
 }
 
 // LoginRequest is a login request Hydra holds for the application.
