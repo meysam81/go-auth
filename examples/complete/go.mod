@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/go-webauthn/webauthn v0.17.4
-	github.com/lib/pq v1.10.9
+	github.com/lib/pq v1.12.3
 	github.com/meysam81/go-auth v0.0.0
 )
 
