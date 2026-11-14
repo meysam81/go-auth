@@ -99,6 +99,8 @@ One module at the repository root. The phase is the delivery order.
 | `hash`      | password hashing: pluggable, parameter-bounded; bcrypt first                                                           | G3    |
 | `audit`     | event vocabulary, a `Logger` interface, a `log/slog` adapter                                                           | G3    |
 | `httpmw`    | credential extraction middleware and the session cookie writer                                                         | G3    |
+| `oauthrs`   | bearer extraction, token introspection, protected-resource metadata, challenges                                        | G1    |
+| `hydra`     | Ory Hydra admin client: login and consent answers, session revocation, clients                                         | G1    |
 | `normalize` | PRECIS identifier normalisation                                                                                        | later |
 | `batteries` | optional wired-up flows (§7)                                                                                           | later |
 | `examples/` | runnable demonstrations and a reference SQLite store; not production code                                              | G1    |
@@ -113,7 +115,8 @@ One module at the repository root. The phase is the delivery order.
 The boundary is enforced by `.golangci.yml`, not by discipline. `depguard` runs
 in strict mode with an allow-list of the standard library and the modules the
 tree imports today (`go-webauthn/webauthn`); `amr` and `store` are standard
-library only. A later phase adds `pquerna/otp`, `golang-jwt/jwt/v5`,
+library only, and `oauthrs`, `hydra` and `internal/outbound` import the
+standard library and `internal/outbound` alone. A later phase adds `pquerna/otp`, `golang-jwt/jwt/v5`,
 `coreos/go-oidc/v3`, `golang.org/x/crypto` or `golang.org/x/oauth2` in the change
 that first imports it; any other module needs a decision here first. When
 `batteries/` exists, a rule forbids every core package from importing it, and
@@ -572,6 +575,61 @@ serves no ceremony.
   reports unauthorized. v1's `ErrorHandler`, `DefaultErrorHandler` and
   `ErrForbidden` are not carried.
 
+### 6.10 `oauthrs`: protected resource (G1)
+
+The resource-server side of OAuth 2.0, for an application whose tokens come
+from an authorization server it does not run.
+
+- **Reading.** `BearerToken` reads the Authorization header only: one header,
+  the scheme case-insensitive, a b64token of at most 4096 bytes. It never reads
+  the body, so a form token is never seen, and it refuses a request carrying
+  `access_token` in its query, header or not: that URL is already in a log.
+  Every reading and verifying failure is `ErrInvalidToken`, as in `httpmw`.
+- **Verifying.** `Introspector.Verify` asks an RFC 7662 endpoint for an access
+  token rather than checking the type afterwards (F-02): `active`, `token_use`
+  equal to `access_token`, `iss` equal to the configured issuer, a subject, a
+  client and a future `exp`. Ory Hydra answers a refresh token `active` too, and
+  RFC 7662 does not define `token_use`, so an endpoint that omits it is refused,
+  not trusted. The `ext` member comes back undecoded, for the application's own
+  struct.
+- **Outbound.** The application's `*http.Client` must carry a timeout; the
+  package never follows a redirect, which would carry the token to a host nobody
+  configured, and reads at most 64 KiB. A failure to get an answer matches no
+  sentinel: it is a server error, never a refused token.
+- **Cache.** Off by default. At most 60 s, never past a token's `exp`, keyed by
+  the token's SHA-256, bounded in entries, and holding verified tokens only: a
+  refusal is never cached, and a revoked token stops working within the TTL.
+  Concurrent calls for one token share one request, which runs on a context that
+  does not end when one caller hangs up; each caller still stops at its own.
+- **Metadata and challenges.** `Resource` validates the resource identifier,
+  the issuers and the scopes once and serves the RFC 9728 document as fixed
+  bytes, at the URL that inserts the well-known segment between host and path.
+  `WriteChallenge` writes `invalid_token` (401) or `insufficient_scope` (403)
+  with `resource_metadata` and scopes from the resource's own set, and never an
+  `error_description`: a reason is for logs.
+
+### 6.11 `hydra`: authorization-server admin client (G1)
+
+An application that delegates its authorization server to Ory Hydra (decision 12) still owns sign-in and consent. This client reads Hydra's login and consent
+requests and carries the application's answer back, lists and revokes consent
+sessions, ends login sessions, and lists and deletes registered clients.
+
+- It decides nothing: the subject, the scopes granted and the claims put on the
+  access token are the application's arguments, so §1 holds.
+- An empty challenge, one Hydra does not know (404) and one it reports as
+  answered or expired (409, 410) are `ErrInvalidChallenge` whatever status
+  Hydra used, so the browser is answered alike (§5). Answering a challenge twice
+  before the browser follows the redirect is not an error: Hydra overwrites the
+  first answer.
+- A list that pages (consent sessions, clients) is read through the next-page
+  links; a link it cannot follow, or more than 50 pages of consent sessions, is
+  an error rather than a shorter list, so a sweep never misses a grant.
+- A revocation names what it revokes: one consent request, or a subject with
+  one client or all of them; a subject's login sessions, or one session.
+- The outbound rules of `oauthrs` apply, with a 1 MiB cap. The admin API has no
+  authentication of its own: the application reaches it over a network it
+  controls.
+
 ---
 
 ## 7. Batteries, deferred
@@ -722,6 +780,10 @@ tables cover every non-test file of v1.
     opt-in and left its unbound entry points exposed (F-16), and a sealed,
     single-use state alone does not stop an attacker's own state completing in
     a victim's browser.
+16. **A resource server and an admin client, not an authorization server.**
+    `oauthrs` verifies tokens an external server issued, and `hydra` carries the
+    application's sign-in and consent decisions to that server. Neither creates
+    identity, and decision 12 stands.
 
 ---
 

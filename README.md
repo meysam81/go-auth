@@ -30,6 +30,12 @@ Expect breaking changes between alpha releases until `v2.0.0`.
   shared `ErrNotFound` / `ErrDuplicate` sentinels.
 - `authtest`: conformance suites for your stores, in-memory stores and a
   virtual authenticator for your own tests.
+- `oauthrs`: the protected-resource side of OAuth 2.0: bearer tokens (RFC
+  6750), token introspection (RFC 7662), the protected-resource metadata
+  document (RFC 9728) and the challenge a refused request carries.
+- `hydra`: a client for the Ory Hydra admin API: login and consent answers,
+  consent session listing and revocation, login session revocation, registered
+  clients.
 
 `examples/passkeys` is a runnable demonstration. It is not production code.
 
@@ -146,6 +152,50 @@ func TestStores(t *testing.T) {
 `authtest.NewMemoryFlowStore` and `authtest.NewMemoryWebAuthnStore` are
 in-memory implementations for tests, and `authtest.NewAuthenticator` signs real
 registrations and assertions so your handlers are tested end to end.
+
+### Quickstart: a protected resource
+
+Build the resource, its introspector and the Hydra admin client once, with an
+`*http.Client` that carries a timeout. Serve `res.Metadata()` at
+`res.MetadataPath()` on the resource's host.
+
+```go
+res, err := oauthrs.NewResource(oauthrs.ResourceConfig{
+	Resource:             "https://api.example.com/mcp",
+	AuthorizationServers: []string{"https://auth.example.com"},
+	ScopesSupported:      []string{"read", "write"},
+})
+in, err := oauthrs.NewIntrospector(oauthrs.IntrospectorConfig{
+	Endpoint:   "http://hydra-admin:4445/admin/oauth2/introspect",
+	Issuer:     "https://auth.example.com",
+	HTTPClient: &http.Client{Timeout: 5 * time.Second},
+	CacheTTL:   30 * time.Second,
+})
+
+// In a middleware: every refusal is ErrInvalidToken; any other error is a
+// server failure.
+raw, err := oauthrs.BearerToken(r)
+var tok oauthrs.Token
+if err == nil {
+	tok, err = in.Verify(r.Context(), raw)
+}
+switch {
+case errors.Is(err, oauthrs.ErrInvalidToken):
+	err = res.WriteChallenge(w, oauthrs.InvalidToken)
+case err != nil:
+	http.Error(w, "unavailable", http.StatusServiceUnavailable)
+case !tok.HasScopes("write"):
+	err = res.WriteChallenge(w, oauthrs.InsufficientScope, "write")
+default:
+	next.ServeHTTP(w, r)
+}
+if err != nil {
+	log.Printf("auth: %v", err) // for logs only, never for the client
+}
+```
+
+`hydra.New` takes the admin URL and the same kind of client. Every login or
+consent challenge Hydra no longer holds is `hydra.ErrInvalidChallenge`.
 
 ## v1
 
