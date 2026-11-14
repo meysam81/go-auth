@@ -96,6 +96,7 @@ func TestClient_SessionAndClientRefusals(t *testing.T) {
 		"subject and session id":        c.RevokeLoginSessions(ctx, hydra.RevokeLogin{Subject: "u1", SessionID: "sid1"}),
 		"empty client id":               c.DeleteClient(ctx, ""),
 		"client id that walks the path": c.DeleteClient(ctx, ".."),
+		"client id of one dot":          c.DeleteClient(ctx, "."),
 	} {
 		if err == nil {
 			t.Errorf("%s: accepted", name)
@@ -179,6 +180,31 @@ func TestClient_ListConsentSessions_FollowsPages(t *testing.T) {
 	}
 	if wantQ := []string{"subject=u+1", "page_token=t2&subject=u+1"}; !reflect.DeepEqual(*queries, wantQ) {
 		t.Fatalf("queries = %q, want %q", *queries, wantQ)
+	}
+}
+
+// RFC 8288: rel may be a bare token or hold several space-separated types.
+func TestClient_ListConsentSessions_ReadsEveryRelForm(t *testing.T) {
+	t.Parallel()
+	for _, link := range []string{
+		`<` + sessionsPath + `?page_token=t2>; rel=next`,
+		`<` + sessionsPath + `?page_token=t2>; rel="next last"`,
+		`<` + sessionsPath + `?page_token=t2>; title="x"; REL="prev next"`,
+	} {
+		c, queries := pagedSessions(t, map[string]struct{ body, next string }{
+			"":   {`[` + sessionItem1 + `]`, link},
+			"t2": {`[` + sessionItem2 + `]`, ""},
+		})
+		got, err := c.ListConsentSessions(t.Context(), "u1")
+		if err != nil || len(got) != 2 || len(*queries) != 2 {
+			t.Errorf("Link %s: %d sessions, %d requests, err %v; want 2 and 2", link, len(got), len(*queries), err)
+		}
+	}
+	c, queries := pagedSessions(t, map[string]struct{ body, next string }{
+		"": {`[` + sessionItem1 + `]`, `<` + sessionsPath + `?page_token=t0>; rel="first prev"`},
+	})
+	if got, err := c.ListConsentSessions(t.Context(), "u1"); err != nil || len(got) != 1 || len(*queries) != 1 {
+		t.Errorf("first/prev link: %d sessions, %d requests, err %v", len(got), len(*queries), err)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
@@ -94,7 +95,7 @@ func nextLinkToken(h http.Header) (string, error) {
 	for _, link := range h.Values("Link") {
 		for part := range strings.SplitSeq(link, ",") {
 			target, params, ok := strings.Cut(strings.TrimSpace(part), ";")
-			if !ok || !strings.Contains(params, `rel="next"`) {
+			if !ok || !hasRel(params, "next") {
 				continue
 			}
 			u, err := url.Parse(strings.Trim(target, "<>"))
@@ -109,6 +110,24 @@ func nextLinkToken(h http.Header) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// hasRel reports whether a link's parameters carry a rel naming want, quoted
+// or a bare token, among space-separated relation types (RFC 8288 section
+// 3.3).
+func hasRel(params, want string) bool {
+	for param := range strings.SplitSeq(params, ";") {
+		name, value, ok := strings.Cut(strings.TrimSpace(param), "=")
+		if !ok || !strings.EqualFold(strings.TrimSpace(name), "rel") {
+			continue
+		}
+		if slices.ContainsFunc(strings.Fields(strings.Trim(strings.TrimSpace(value), `"`)), func(r string) bool {
+			return strings.EqualFold(r, want)
+		}) {
+			return true
+		}
+	}
+	return false
 }
 
 // maxConsentSessionPages bounds ListConsentSessions: a server that never

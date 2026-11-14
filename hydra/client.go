@@ -17,7 +17,8 @@ import (
 const maxAnswerBytes = 1 << 20
 
 // ErrInvalidChallenge is every refusal of a login or consent challenge: an
-// empty one, and one Hydra does not know or reports as answered or expired.
+// empty one, and one Hydra does not know, answers 401 request_unauthorized (expired), or
+// reports as answered (409, 410).
 var ErrInvalidChallenge = errors.New("hydra: invalid challenge")
 
 // failure matches ErrInvalidChallenge and carries a reason for logs only.
@@ -32,6 +33,7 @@ func (f *failure) Is(target error) bool { return target == ErrInvalidChallenge }
 type statusError struct {
 	method, path string
 	status       int
+	body         []byte // the capped answer, read by onChallenge only
 }
 
 func (e *statusError) Error() string {
@@ -91,7 +93,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		return nil, fmt.Errorf("hydra: %w", err)
 	}
 	if resp.Status < 200 || resp.Status > 299 {
-		return nil, &statusError{method: method, path: path, status: resp.Status}
+		return nil, &statusError{method: method, path: path, status: resp.Status, body: resp.Body}
 	}
 	if out != nil {
 		if err := json.Unmarshal(resp.Body, out); err != nil {
@@ -102,26 +104,44 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 }
 
 // onChallenge sends one request about a login or consent challenge and maps
-// Hydra's answers for an unknown challenge (404) to ErrInvalidChallenge. 409
-// and 410 map to it too, defensively: Hydra answers 404 for an unknown
-// challenge and accepts a repeated answer with a redirect.
+// Hydra's answers for an unknown challenge (404) and for an expired one (401
+// with the error request_unauthorized, Hydra v26) to ErrInvalidChallenge. 409
+// and 410 map to it too, defensively. Any other 401 is an infrastructure
+// failure: it is how Hydra answers a caller it does not trust. Hydra accepts a
+// repeated answer with a redirect.
 func (c *Client) onChallenge(ctx context.Context, method, path, param, challenge string, in, out any) error {
 	if challenge == "" {
 		return &failure{reason: "empty " + param}
 	}
 	_, err := c.do(ctx, method, path, url.Values{param: {challenge}}, in, out)
 	var se *statusError
-	if errors.As(err, &se) && (se.status == http.StatusNotFound || se.status == http.StatusConflict || se.status == http.StatusGone) {
+	if errors.As(err, &se) && (se.status == http.StatusNotFound || se.status == http.StatusConflict ||
+		se.status == http.StatusGone || se.expiredChallenge()) {
 		return &failure{reason: se.Error()}
 	}
 	return err
 }
 
+// hydraError is the error body of an admin answer.
+type hydraError struct {
+	Error string `json:"error"`
+}
+
+// expiredChallenge reports Hydra v26's answer for a login or consent
+// challenge older than its ttl: 401 with the error request_unauthorized.
+func (e *statusError) expiredChallenge() bool {
+	var body hydraError
+	return e.status == http.StatusUnauthorized && json.Unmarshal(e.body, &body) == nil && body.Error == "request_unauthorized"
+}
+
+// redirectAnswer is where Hydra sends the browser after an accept or reject.
+type redirectAnswer struct {
+	RedirectTo string `json:"redirect_to"`
+}
+
 // answer sends an accept or reject and returns where Hydra sends the browser.
 func (c *Client) answer(ctx context.Context, path, param, challenge string, in any) (string, error) {
-	var out struct {
-		RedirectTo string `json:"redirect_to"`
-	}
+	var out redirectAnswer
 	if err := c.onChallenge(ctx, http.MethodPut, path, param, challenge, in, &out); err != nil {
 		return "", err
 	}

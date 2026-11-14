@@ -165,12 +165,18 @@ res, err := oauthrs.NewResource(oauthrs.ResourceConfig{
 	AuthorizationServers: []string{"https://auth.example.com"},
 	ScopesSupported:      []string{"read", "write"},
 })
+if err != nil {
+	log.Fatal(err)
+}
 in, err := oauthrs.NewIntrospector(oauthrs.IntrospectorConfig{
 	Endpoint:   "http://hydra-admin:4445/admin/oauth2/introspect",
 	Issuer:     "https://auth.example.com",
 	HTTPClient: &http.Client{Timeout: 5 * time.Second},
 	CacheTTL:   30 * time.Second,
 })
+if err != nil {
+	log.Fatal(err)
+}
 
 // In a middleware: every refusal is ErrInvalidToken; any other error is a
 // server failure.

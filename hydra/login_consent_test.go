@@ -205,6 +205,19 @@ func TestClient_ChallengeFailures(t *testing.T) {
 					t.Errorf("status %d: err = %v, want ErrInvalidChallenge %v", status, err, want)
 				}
 			}
+			// Hydra v26 answers an expired challenge 401 request_unauthorized; a
+			// 401 that says anything else is no verdict on the challenge.
+			for body, want := range map[string]bool{
+				`{"error":"request_unauthorized","error_description":"x"}`: true,
+				`{"error":"invalid_client"}`:                               false,
+				`{}`:                                                       false,
+				`not json`:                                                 false,
+			} {
+				c, _, _ := admin(t, http.StatusUnauthorized, nil, body)
+				if err := do(t.Context(), c, "ch1"); err == nil || errors.Is(err, hydra.ErrInvalidChallenge) != want {
+					t.Errorf("401 %s: err = %v, want ErrInvalidChallenge %v", body, err, want)
+				}
+			}
 			c, _, hits := admin(t, http.StatusOK, nil, redirectJSON)
 			if err := do(t.Context(), c, ""); !errors.Is(err, hydra.ErrInvalidChallenge) || hits.Load() != 0 {
 				t.Errorf("empty challenge: err = %v after %d requests", err, hits.Load())

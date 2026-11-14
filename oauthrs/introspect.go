@@ -190,9 +190,13 @@ func (in *Introspector) introspect(ctx context.Context, token string) (Token, er
 	if string(ir.Ext) == "null" {
 		ir.Ext = nil
 	}
+	var issuedAt time.Time
+	if ir.Iat != 0 {
+		issuedAt = time.Unix(ir.Iat, 0)
+	}
 	return Token{
 		Subject: ir.Subject, ClientID: ir.ClientID, Issuer: ir.Issuer, TokenUse: ir.TokenUse,
 		Scopes: strings.Fields(ir.Scope), Audience: ir.Audience,
-		ExpiresAt: time.Unix(ir.Exp, 0), IssuedAt: time.Unix(ir.Iat, 0), Ext: ir.Ext,
+		ExpiresAt: time.Unix(ir.Exp, 0), IssuedAt: issuedAt, Ext: ir.Ext,
 	}, nil
 }

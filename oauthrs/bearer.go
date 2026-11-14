@@ -2,6 +2,7 @@ package oauthrs
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -13,7 +14,7 @@ const maxTokenLen = 4096
 // body, so a form-encoded token is never seen. A token in the URI query is
 // refused, header or not: the URL has already reached a log.
 func BearerToken(r *http.Request) (string, error) {
-	if r.URL != nil && r.URL.Query().Has("access_token") {
+	if r.URL != nil && queryHasAccessToken(r.URL.RawQuery) {
 		return "", fail("access_token in the URI query")
 	}
 	values := r.Header.Values("Authorization")
@@ -29,6 +30,24 @@ func BearerToken(r *http.Request) (string, error) {
 		return "", fail("bearer token is not a b64token of at most 4096 bytes")
 	}
 	return token, nil
+}
+
+// queryHasAccessToken scans the raw query for an access_token key. It does not
+// use url.Values: Query() drops a pair it cannot parse, such as
+// "access_token=x;" or "access_token=x%", and a dropped pair must not hide the
+// token. Both & and ; separate pairs, so no server's reading of the query can
+// see a key this scan does not.
+func queryHasAccessToken(raw string) bool {
+	for pair := range strings.FieldsFuncSeq(raw, func(r rune) bool { return r == '&' || r == ';' }) {
+		key, _, _ := strings.Cut(pair, "=")
+		if unescaped, err := url.QueryUnescape(key); err == nil {
+			key = unescaped
+		}
+		if key == "access_token" {
+			return true
+		}
+	}
+	return false
 }
 
 // validToken reports whether s is a b64token (RFC 6750 section 2.1) of at

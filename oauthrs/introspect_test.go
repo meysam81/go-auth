@@ -88,6 +88,16 @@ func introspector(t *testing.T, endpoint string, edit func(*oauthrs.Introspector
 	return in
 }
 
+// An endpoint that omits iat leaves IssuedAt the zero time, not 1970.
+func TestIntrospector_AbsentIatIsTheZeroTime(t *testing.T) {
+	t.Parallel()
+	endpoint, _ := hydra(t, respond(http.StatusOK, answer(func(a *answerJSON) { a.Iat = 0 })))
+	got, err := introspector(t, endpoint, nil).Verify(t.Context(), "tok")
+	if err != nil || !got.IssuedAt.IsZero() {
+		t.Fatalf("IssuedAt = %v, err %v; want the zero time", got.IssuedAt, err)
+	}
+}
+
 func TestIntrospector_VerifiesAnActiveAccessToken(t *testing.T) {
 	t.Parallel()
 	endpoint, _ := hydra(t, func(w http.ResponseWriter, r *http.Request) {

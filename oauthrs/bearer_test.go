@@ -34,6 +34,11 @@ func TestBearerToken(t *testing.T) {
 		{"over 4096 bytes", "/mcp", []string{"Bearer " + long + "a"}, ""},
 		{"two Authorization headers (RFC 6750 section 3.1)", "/mcp", []string{"Bearer a", "Bearer a"}, ""},
 		{"query token without a header (RFC 6750 section 2.3)", "/mcp?access_token=tok", nil, ""},
+		{"query token ending in a semicolon", "/mcp?access_token=x;", nil, ""},
+		{"query token with a broken escape", "/mcp?access_token=x%", nil, ""},
+		{"query token after a semicolon pair", "/mcp?a=1;access_token=x", []string{"Bearer tok"}, ""},
+		{"query token with an escaped key", "/mcp?access%5Ftoken=x", nil, ""},
+		{"query that merely mentions it in a value", "/mcp?q=access_token", []string{"Bearer tok"}, "tok"},
 		{"query token beside a header", "/mcp?access_token=tok", []string{"Bearer tok"}, ""},
 	}
 	for _, tt := range tests {

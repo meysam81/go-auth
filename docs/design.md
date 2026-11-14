@@ -617,8 +617,10 @@ sessions, ends login sessions, and lists and deletes registered clients.
 - It decides nothing: the subject, the scopes granted and the claims put on the
   access token are the application's arguments, so §1 holds.
 - An empty challenge, one Hydra does not know (404) and one it reports as
-  answered or expired (409, 410) are `ErrInvalidChallenge` whatever status
-  Hydra used, so the browser is answered alike (§5). Answering a challenge twice
+  an expired one (Hydra v26 answers 401 `request_unauthorized`; 409 and 410 are
+  kept defensively) are `ErrInvalidChallenge` whatever status Hydra used, so
+  the browser is answered alike (§5). Any other 401 is an infrastructure
+  failure. Answering a challenge twice
   before the browser follows the redirect is not an error: Hydra overwrites the
   first answer.
 - A list that pages (consent sessions, clients) is read through the next-page
