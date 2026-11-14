@@ -222,22 +222,6 @@ func TestIntrospector_RefusesAMalformedTokenWithoutARequest(t *testing.T) {
 	}
 }
 
-// RFC 7662 section 2.1 with RFC 6749 section 2.3.1: the credentials are
-// form-encoded before they go into HTTP Basic.
-func TestIntrospector_BasicClientAuthentication(t *testing.T) {
-	t.Parallel()
-	endpoint, _ := hydra(t, func(w http.ResponseWriter, r *http.Request) {
-		if u, p, ok := r.BasicAuth(); !ok || u != "rs%3A1" || p != "s%26cret" {
-			t.Errorf("BasicAuth = %q, %q, %v", u, p, ok)
-		}
-		respond(http.StatusOK, answer(nil))(w, r)
-	})
-	in := introspector(t, endpoint, func(c *oauthrs.IntrospectorConfig) { c.ClientID, c.ClientSecret = "rs:1", "s&cret" })
-	if _, err := in.Verify(t.Context(), "tok"); err != nil {
-		t.Fatalf("Verify: %v", err)
-	}
-}
-
 func TestNewIntrospector_Refuses(t *testing.T) {
 	t.Parallel()
 	tests := map[string]func(*oauthrs.IntrospectorConfig){
@@ -246,7 +230,6 @@ func TestNewIntrospector_Refuses(t *testing.T) {
 		"no endpoint":          func(c *oauthrs.IntrospectorConfig) { c.Endpoint = "" },
 		"relative endpoint":    func(c *oauthrs.IntrospectorConfig) { c.Endpoint = "/admin/oauth2/introspect" },
 		"no issuer":            func(c *oauthrs.IntrospectorConfig) { c.Issuer = "" },
-		"id without secret":    func(c *oauthrs.IntrospectorConfig) { c.ClientID = "rs" },
 		"negative cache TTL":   func(c *oauthrs.IntrospectorConfig) { c.CacheTTL = -time.Second },
 		"cache TTL over 60 s":  func(c *oauthrs.IntrospectorConfig) { c.CacheTTL = 61 * time.Second },
 		"negative cache size":  func(c *oauthrs.IntrospectorConfig) { c.CacheTTL, c.CacheSize = time.Second, -1 },

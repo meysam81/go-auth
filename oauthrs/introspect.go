@@ -24,24 +24,21 @@ const (
 
 // IntrospectorConfig configures token verification at an RFC 7662 endpoint.
 type IntrospectorConfig struct {
-	Endpoint     string           // absolute http(s) URL of the introspection endpoint
-	Issuer       string           // the iss every token must carry, compared exactly
-	HTTPClient   *http.Client     // required, with a Timeout; never follows a redirect
-	ClientID     string           // optional HTTP Basic client authentication; both or neither
-	ClientSecret string           //nolint:gosec // G117: configuration, not a literal secret
-	CacheTTL     time.Duration    // 0 = no cache; at most 60 s; capped at each token's exp
-	CacheSize    int              // cached tokens; 0 = 10,000; at most 1,048,576
-	Now          func() time.Time // nil = time.Now
+	Endpoint   string           // absolute http(s) URL of the introspection endpoint
+	Issuer     string           // the iss every token must carry, compared exactly
+	HTTPClient *http.Client     // required, with a Timeout; never follows a redirect
+	CacheTTL   time.Duration    // 0 = no cache; at most 60 s; capped at each token's exp
+	CacheSize  int              // cached tokens; 0 = 10,000; at most 1,048,576
+	Now        func() time.Time // nil = time.Now
 }
 
 // Introspector verifies bearer tokens at an introspection endpoint.
 type Introspector struct {
-	endpoint, issuer       string
-	clientID, clientSecret string
-	client                 *http.Client
-	now                    func() time.Time
-	cache                  *cache // nil without a CacheTTL
-	flight                 flight
+	endpoint, issuer string
+	client           *http.Client
+	now              func() time.Time
+	cache            *cache // nil without a CacheTTL
+	flight           flight
 }
 
 // Token is what a verified access token asserts. Ext is the endpoint's ext
@@ -80,16 +77,13 @@ func NewIntrospector(cfg IntrospectorConfig) (*Introspector, error) {
 	switch {
 	case cfg.Issuer == "":
 		return nil, errors.New("oauthrs: Issuer is required")
-	case (cfg.ClientID == "") != (cfg.ClientSecret == ""):
-		return nil, errors.New("oauthrs: ClientID and ClientSecret go together")
 	case cfg.CacheTTL < 0 || cfg.CacheTTL > maxCacheTTL:
 		return nil, fmt.Errorf("oauthrs: CacheTTL %s outside 0 to %s", cfg.CacheTTL, maxCacheTTL)
 	case cfg.CacheSize < 0 || cfg.CacheSize > maxCacheSize:
 		return nil, fmt.Errorf("oauthrs: CacheSize %d outside 0 to %d", cfg.CacheSize, maxCacheSize)
 	}
 	in := &Introspector{
-		endpoint: cfg.Endpoint, issuer: cfg.Issuer, clientID: cfg.ClientID, clientSecret: cfg.ClientSecret,
-		client: client, now: cfg.Now,
+		endpoint: cfg.Endpoint, issuer: cfg.Issuer, client: client, now: cfg.Now,
 	}
 	if in.now == nil {
 		in.now = time.Now
@@ -170,9 +164,6 @@ func (in *Introspector) introspect(ctx context.Context, token string) (Token, er
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	if in.clientID != "" {
-		req.SetBasicAuth(url.QueryEscape(in.clientID), url.QueryEscape(in.clientSecret))
-	}
 	resp, err := outbound.Do(in.client, req, maxIntrospectionBytes)
 	if err != nil {
 		return Token{}, fmt.Errorf("oauthrs: introspection: %w", err)
