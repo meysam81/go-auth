@@ -254,7 +254,7 @@ func TestClient_ListConsentSessions_Refusals(t *testing.T) {
 }
 
 // The request-object metadata decodes as sent: present values are kept; an
-// absent or null value is the zero value; a jwks that holds no key is nil.
+// absent or null value is the zero value; jwks is nil only for absent, null or {}.
 func TestClient_DecodesRequestObjectMetadata(t *testing.T) {
 	t.Parallel()
 	const key = `{"kty":"RSA","kid":"k1","n":"x","e":"AQAB"}`
@@ -268,10 +268,11 @@ func TestClient_DecodesRequestObjectMetadata(t *testing.T) {
 				JWKSURI: "https://rp.example.test/jwks", RequestURIs: []string{"https://rp.example.test/req"}}},
 		{"all absent", ``, hydra.OAuthClient{}},
 		{"all null", `"request_object_signing_alg":null,"jwks":null,"jwks_uri":null,"request_uris":null`, hydra.OAuthClient{}},
-		{"empty values", `"request_object_signing_alg":"","jwks":{},"jwks_uri":"","request_uris":[]`,
+		{"empty values; jwks {} is nil", `"request_object_signing_alg":"","jwks":{},"jwks_uri":"","request_uris":[]`,
 			hydra.OAuthClient{RequestURIs: []string{}}},
-		{"jwks with an empty key list", `"jwks":{"keys":[]}`, hydra.OAuthClient{}},
-		{"jwks with null keys", `"jwks":{"keys":null}`, hydra.OAuthClient{}},
+		{"jwks with an empty key list is registered", `"jwks":{"keys":[]}`, hydra.OAuthClient{JWKS: json.RawMessage(`{"keys":[]}`)}},
+		{"jwks with null keys is registered", `"jwks":{"keys":null}`, hydra.OAuthClient{JWKS: json.RawMessage(`{"keys":null}`)}},
+		{"jwks with another member is registered", `"jwks":{"x":1}`, hydra.OAuthClient{JWKS: json.RawMessage(`{"x":1}`)}},
 		{"jwks that is not a key set stays present", `"jwks":"x"`, hydra.OAuthClient{JWKS: json.RawMessage(`"x"`)}},
 	}
 	for _, tt := range tests {

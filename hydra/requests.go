@@ -21,9 +21,11 @@ const (
 // that enable OIDC request objects (a signed authorization request, passed by
 // value or by reference); an application that refuses such clients reads them.
 // An absent or null string or list decodes to its zero value. JWKS is the raw
-// jwks object, nil when it is absent, null, not carrying a "keys" member, or
-// carrying an empty one: a non-nil JWKS always holds at least one key, or is
-// a value that is not a key set and should be treated as present.
+// jwks value, nil only when it is absent, null or exactly {} (what Hydra
+// returns for a client without keys). Any object with a member, a "keys" of []
+// or null included, and any value that is not an object, is kept: Hydra
+// honors a request object for a client registered with {"keys":[]}, so "has a
+// jwks" is JWKS != nil and an application refusing such clients must use it.
 type OAuthClient struct {
 	ClientID                string          `json:"client_id"`
 	ClientName              string          `json:"client_name"`
@@ -39,13 +41,11 @@ type OAuthClient struct {
 	CreatedAt               time.Time       `json:"created_at"`
 }
 
-// keySet is the part of a jwks object that decides whether it holds keys.
-type keySet struct {
-	Keys []json.RawMessage `json:"keys"`
-}
+// members is a JSON object's members, undecoded.
+type members map[string]json.RawMessage
 
-// UnmarshalJSON decodes the client and normalizes JWKS: null, an object with
-// no keys or an empty keys array all become nil, so "has keys" is JWKS != nil.
+// UnmarshalJSON decodes the client and normalizes JWKS: null and {} become
+// nil; anything else, an empty or null keys member included, stays.
 func (c *OAuthClient) UnmarshalJSON(b []byte) error {
 	type plain OAuthClient // no methods: avoids recursing into this one
 	var p plain
@@ -53,8 +53,8 @@ func (c *OAuthClient) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	if len(p.JWKS) > 0 {
-		var ks keySet
-		if json.Unmarshal(p.JWKS, &ks) == nil && len(ks.Keys) == 0 {
+		var m members
+		if json.Unmarshal(p.JWKS, &m) == nil && len(m) == 0 {
 			p.JWKS = nil
 		}
 	}

@@ -625,8 +625,9 @@ sessions, ends login sessions, and lists and deletes registered clients.
   first answer.
 - `OAuthClient` carries the metadata that enables OIDC request objects
   (`RequestObjectSigningAlg`, `JWKS`, `JWKSURI`, `RequestURIs`) so the
-  application can refuse such clients; `JWKS` is nil when absent, null or
-  without keys.
+  application can refuse such clients; `JWKS` is nil only when absent, null or
+  `{}`: any object with a member (`{"keys":[]}` included, which Hydra still
+  honors for a request object) is registered.
 - A list that pages (consent sessions, clients) is read through the next-page
   links; a link it cannot follow, or more than 50 pages of consent sessions, is
   an error rather than a shorter list, so a sweep never misses a grant.
