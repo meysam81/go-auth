@@ -30,7 +30,8 @@ there, and a job cannot land ungated. `release-please` runs only on a push to
   new package is invisible to it; here it is an added line in the diff.
   Regenerate with `.github/dependency-footprint.sh > .dependency-footprint`.
   `amr` and `store` also have a depguard rule of their own: standard library
-  only.
+  only; so do `oauthrs`, `hydra` and `internal/outbound`, which may also
+  import `internal/outbound`.
 - **The Go floor.** `test` runs on the Go version go.mod declares as well as on
   the newest release, so code that needs a newer standard library fails before
   a consumer on the declared version finds out. For Go module updates, Renovate

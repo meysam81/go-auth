@@ -97,6 +97,20 @@ linters:
           allow:
             - $gostd
 
+        # oauthrs and hydra speak HTTP and JSON to a server the application
+        # names: the standard library and the module's bounded client are all
+        # they need, so a consumer of either compiles nothing else.
+        protocol-clients:
+          files:
+            - "**/oauthrs/*.go"
+            - "**/hydra/*.go"
+            - "**/internal/outbound/*.go"
+            - "!$test"
+          list-mode: strict
+          allow:
+            - $gostd
+            - github.com/meysam81/go-auth/v2/internal/outbound
+
     forbidigo:
       # Needed so `pkg` below matches the resolved import path rather than the
       # local identifier, which an alias could otherwise dodge.
