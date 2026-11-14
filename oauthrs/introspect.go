@@ -2,6 +2,7 @@ package oauthrs
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 const (
 	maxIntrospectionBytes = 64 << 10
 	maxCacheTTL           = time.Minute
+	defaultCacheSize      = 10_000
 	maxCacheSize          = 1 << 20
 )
 
@@ -38,6 +40,8 @@ type Introspector struct {
 	clientID, clientSecret string
 	client                 *http.Client
 	now                    func() time.Time
+	cache                  *cache // nil without a CacheTTL
+	flight                 flight
 }
 
 // Token is what a verified access token asserts. Ext is the endpoint's ext
@@ -90,18 +94,39 @@ func NewIntrospector(cfg IntrospectorConfig) (*Introspector, error) {
 	if in.now == nil {
 		in.now = time.Now
 	}
+	if cfg.CacheTTL > 0 {
+		size := cfg.CacheSize
+		if size == 0 {
+			size = defaultCacheSize
+		}
+		in.cache = newCache(cfg.CacheTTL, size)
+	}
 	return in, nil
 }
 
 // Verify asks the endpoint about token and returns it only when it is an
 // active access token from the issuer with a subject, a client and a future
 // expiry. Every refusal matches ErrInvalidToken; any other error is an
-// infrastructure failure.
+// infrastructure failure. With a CacheTTL, a verified token is answered from
+// memory until min(CacheTTL, exp); a refusal or a failure is never cached.
+// Concurrent calls for one token share one request.
 func (in *Introspector) Verify(ctx context.Context, token string) (Token, error) {
 	if !validToken(token) {
 		return Token{}, fail("token is not a b64token of at most 4096 bytes")
 	}
-	return in.introspect(ctx, token)
+	k := sha256.Sum256([]byte(token))
+	if in.cache != nil {
+		if t, ok := in.cache.get(k, in.now()); ok {
+			return t, nil
+		}
+	}
+	return in.flight.do(ctx, k, func(ctx context.Context) (Token, error) {
+		t, err := in.introspect(ctx, token)
+		if err == nil && in.cache != nil {
+			in.cache.put(k, t, in.now())
+		}
+		return t, err
+	})
 }
 
 type introspection struct {
