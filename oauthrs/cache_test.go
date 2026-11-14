@@ -152,6 +152,7 @@ func TestIntrospector_ConcurrentVerifiesShareOneCall(t *testing.T) {
 func TestIntrospector_RefusalsDoNotEvictVerifiedTokens(t *testing.T) {
 	t.Parallel()
 	endpoint, hits := hydra(t, func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
 		if err := r.ParseForm(); err != nil {
 			t.Errorf("ParseForm: %v", err)
 		}

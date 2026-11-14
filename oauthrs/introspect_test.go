@@ -101,6 +101,7 @@ func TestIntrospector_AbsentIatIsTheZeroTime(t *testing.T) {
 func TestIntrospector_VerifiesAnActiveAccessToken(t *testing.T) {
 	t.Parallel()
 	endpoint, _ := hydra(t, func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
 		if err := r.ParseForm(); err != nil {
 			t.Errorf("ParseForm: %v", err)
 		}
