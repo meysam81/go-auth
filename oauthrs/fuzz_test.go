@@ -26,6 +26,9 @@ func FuzzBearerToken(f *testing.F) {
 		r.Header.Set("Authorization", h)
 		r.URL.RawQuery = q
 		tok, err := oauthrs.BearerToken(r)
+		if err == nil && !oauthrs.HasBearer(r) {
+			t.Fatalf("BearerToken accepted %q, which HasBearer says presented no bearer token", h)
+		}
 		for _, pair := range strings.FieldsFunc(q, func(r rune) bool { return r == '&' || r == ';' }) {
 			if key, _, _ := strings.Cut(pair, "="); key == "access_token" && err == nil {
 				t.Fatalf("BearerToken accepted the query token in %q", q)

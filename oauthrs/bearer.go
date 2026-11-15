@@ -32,6 +32,21 @@ func BearerToken(r *http.Request) (string, error) {
 	return token, nil
 }
 
+// HasBearer reports whether r presented a bearer token at all: an
+// Authorization header whose scheme is Bearer, well-formed or not. A request
+// without one lacks authentication information (RFC 6750 section 3.1), so
+// its challenge carries no error code ([Resource.WriteAuthRequired]); a
+// bearer token that fails gets invalid_token. A token in the URI query is not
+// presented: BearerToken refuses it whatever the header says.
+func HasBearer(r *http.Request) bool {
+	for _, v := range r.Header.Values("Authorization") {
+		if scheme, _, _ := strings.Cut(v, " "); strings.EqualFold(scheme, "Bearer") {
+			return true
+		}
+	}
+	return false
+}
+
 // queryHasAccessToken scans the raw query for an access_token key. It does not
 // use url.Values: Query() drops a pair it cannot parse, such as
 // "access_token=x;" or "access_token=x%", and a dropped pair must not hide the

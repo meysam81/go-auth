@@ -14,10 +14,13 @@
 // endpoint that omits it is refused rather than trusted.
 //
 // Every extraction and verification failure matches [ErrInvalidToken] and
-// nothing else: a missing or malformed header and a bad token are answered
-// alike. An error that matches nothing is an infrastructure failure (the
-// endpoint was unreachable or slow, answered a status other than 200, or sent
-// a body over the cap): answer it as a server error, never as a refused
+// nothing else: a missing or malformed header and a bad token are refused
+// alike. Only the challenge tells them apart: a request that presented no
+// bearer token ([HasBearer] false) gets one without an error code
+// ([Resource.WriteAuthRequired], RFC 6750 section 3.1), any other refusal
+// invalid_token. An error that matches nothing is an infrastructure failure
+// (the endpoint was unreachable or slow, answered a status other than 200, or
+// sent a body over the cap): answer it as a server error, never as a refused
 // token. An error's text is for logs only and never carries the token.
 //
 // Requests go through the *http.Client the application supplies, which must

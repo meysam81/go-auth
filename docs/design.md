@@ -606,7 +606,10 @@ from an authorization server it does not run.
   bytes, at the URL that inserts the well-known segment between host and path.
   `WriteChallenge` writes `invalid_token` (401) or `insufficient_scope` (403)
   with `resource_metadata` and scopes from the resource's own set, and never an
-  `error_description`: a reason is for logs.
+  `error_description`: a reason is for logs. A request that presented no bearer
+  token (`HasBearer` false) gets `WriteAuthRequired` instead: the same 401 and
+  attributes with no error code, as RFC 6750 section 3.1 asks of a request that
+  lacks any authentication information.
 
 ### 6.11 `hydra`: authorization-server admin client (G1)
 

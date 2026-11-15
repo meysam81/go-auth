@@ -186,6 +186,8 @@ if err == nil {
 	tok, err = in.Verify(r.Context(), raw)
 }
 switch {
+case errors.Is(err, oauthrs.ErrInvalidToken) && !oauthrs.HasBearer(r):
+	err = res.WriteAuthRequired(w) // no token sent: no error code
 case errors.Is(err, oauthrs.ErrInvalidToken):
 	err = res.WriteChallenge(w, oauthrs.InvalidToken)
 case err != nil:
