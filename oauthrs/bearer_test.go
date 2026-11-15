@@ -77,3 +77,37 @@ func TestBearerToken_FormBodyTokenIsNeverRead(t *testing.T) {
 		t.Fatal("BearerToken read or parsed the body")
 	}
 }
+
+// A request that presented no bearer token lacks authentication information,
+// and RFC 6750 section 3.1 says its challenge SHOULD NOT carry an error code;
+// a bearer token that is present but bad gets invalid_token.
+func TestHasBearer_RFC6750Section3_1(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, target string
+		headers      []string
+		want         bool
+	}{
+		{"no header", "/mcp", nil, false},
+		{"query token only (RFC 6750 section 2.3)", "/mcp?access_token=tok", nil, false},
+		{"basic scheme", "/mcp", []string{"Basic dXNlcjpwYXNz"}, false},
+		{"empty header", "/mcp", []string{""}, false},
+		{"bearer token", "/mcp", []string{"Bearer tok"}, true},
+		{"scheme is case-insensitive (RFC 7235 section 2.1)", "/mcp", []string{"bEaReR tok"}, true},
+		{"scheme only", "/mcp", []string{"Bearer"}, true},
+		{"malformed token", "/mcp", []string{"Bearer a b"}, true},
+		{"second header is bearer", "/mcp", []string{"Basic x", "Bearer tok"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r := httptest.NewRequest(http.MethodPost, tt.target, http.NoBody)
+			for _, h := range tt.headers {
+				r.Header.Add("Authorization", h)
+			}
+			if got := oauthrs.HasBearer(r); got != tt.want {
+				t.Fatalf("HasBearer = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

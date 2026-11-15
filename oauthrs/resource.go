@@ -121,6 +121,23 @@ func (r *Resource) WriteChallenge(w http.ResponseWriter, code ErrorCode, scopes 
 	if status == 0 {
 		return fmt.Errorf("oauthrs: unknown error code %q", code)
 	}
+	return r.writeChallenge(w, status, `error="`+string(code)+`", `, scopes)
+}
+
+// WriteAuthRequired refuses a request that presented no bearer token (see
+// [HasBearer]): RFC 6750 section 3.1 says the challenge of a request that
+// lacks any authentication information SHOULD NOT carry an error code. It
+// sets WWW-Authenticate with the metadata URL and a scope, and
+// Cache-Control: no-store, then writes 401. scopes defaults to every
+// supported scope, and each must be one of them. For an unknown scope it
+// writes nothing and returns an error.
+func (r *Resource) WriteAuthRequired(w http.ResponseWriter, scopes ...string) error {
+	return r.writeChallenge(w, http.StatusUnauthorized, "", scopes)
+}
+
+// writeChallenge writes a challenge whose attributes start with errorAttr
+// (empty, or `error="<code>", `), after checking every scope is supported.
+func (r *Resource) writeChallenge(w http.ResponseWriter, status int, errorAttr string, scopes []string) error {
 	if len(scopes) == 0 {
 		scopes = r.scopes
 	}
@@ -129,7 +146,7 @@ func (r *Resource) WriteChallenge(w http.ResponseWriter, code ErrorCode, scopes 
 			return fmt.Errorf("oauthrs: scope %q is not supported", s)
 		}
 	}
-	w.Header().Set("WWW-Authenticate", `Bearer error="`+string(code)+`", resource_metadata="`+
+	w.Header().Set("WWW-Authenticate", `Bearer `+errorAttr+`resource_metadata="`+
 		r.metadataURL+`", scope="`+strings.Join(scopes, " ")+`"`)
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)

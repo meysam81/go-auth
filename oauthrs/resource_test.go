@@ -160,3 +160,40 @@ func TestResource_WriteChallengeRefusesUnknownCodeOrScope(t *testing.T) {
 		}
 	}
 }
+
+// A request without a bearer token gets a challenge with no error code
+// (RFC 6750 section 3.1); a scope outside the resource's set writes nothing.
+func TestResource_WriteAuthRequired_NoErrorCode(t *testing.T) {
+	t.Parallel()
+	const prm = `resource_metadata="https://mcp.example.test/.well-known/oauth-protected-resource/mcp"`
+	r := newResource(t)
+	for name, tt := range map[string]struct {
+		scopes []string
+		header string
+	}{
+		"every supported scope by default": {nil, `Bearer ` + prm + `, scope="read domains:add"`},
+		"the scopes named":                 {[]string{"read"}, `Bearer ` + prm + `, scope="read"`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			w := httptest.NewRecorder()
+			if err := r.WriteAuthRequired(w, tt.scopes...); err != nil {
+				t.Fatalf("WriteAuthRequired: %v", err)
+			}
+			if w.Code != http.StatusUnauthorized || w.Header().Get("WWW-Authenticate") != tt.header ||
+				w.Header().Get("Cache-Control") != "no-store" || w.Body.Len() != 0 {
+				t.Fatalf("got %d %q %q body %q; want 401 %q", w.Code, w.Header().Get("WWW-Authenticate"),
+					w.Header().Get("Cache-Control"), w.Body.String(), tt.header)
+			}
+		})
+	}
+	for name, scopes := range map[string][]string{
+		"unknown scope": {"offline_access"},
+		"injection":     {`read", error="invalid_token`},
+	} {
+		w := httptest.NewRecorder()
+		if err := r.WriteAuthRequired(w, scopes...); err == nil || w.Header().Get("WWW-Authenticate") != "" || w.Code != http.StatusOK {
+			t.Errorf("%s: err = %v, header %q; want an error and nothing written", name, err, w.Header().Get("WWW-Authenticate"))
+		}
+	}
+}
