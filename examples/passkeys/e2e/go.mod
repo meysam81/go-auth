@@ -1,6 +1,6 @@
 module github.com/meysam81/go-auth/v2/examples/passkeys/e2e
 
-go 1.26.0
+go 1.27.4
 
 require (
 	github.com/chromedp/cdproto v0.0.0-20260714215040-dc233986426f
