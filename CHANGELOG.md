@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.0-alpha.3](https://github.com/meysam81/go-auth/compare/v2.0.0-alpha.2...v2.0.0-alpha.3) (2026-11-15)
+
+
+### Features
+
+* **oauthrs:** challenge a request with no bearer token without an error code ([#103](https://github.com/meysam81/go-auth/issues/103)) ([4fdd2b6](https://github.com/meysam81/go-auth/commit/4fdd2b6cb1370e62977efbaec8bed3355f0ead48))
+
 ## [2.0.0-alpha.2](https://github.com/meysam81/go-auth/compare/v2.0.0-alpha.1...v2.0.0-alpha.2) (2026-11-14)
 
 
