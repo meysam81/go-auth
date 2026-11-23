@@ -19,7 +19,7 @@ ci:
 
 repos:
   - repo: https://github.com/oxc-project/mirrors-oxlint
-    rev: 839c3a661811dc1720f06b64d4db969e1ee564df # frozen: v1.79.0
+    rev: ae7f4cb583c0bd8d4c02bbc16d314b4c6feac456 # frozen: v1.93.0
     hooks:
       - id: oxlint
         verbose: false
@@ -76,7 +76,7 @@ repos:
             renovate.json
           )$
   - repo: https://github.com/alessandrojcm/commitlint-pre-commit-hook
-    rev: 25d0a52aa8bc0fc242613346792dc8d726c13347 # frozen: v9.26.0
+    rev: 1f1ac45c93d1c2ce36b71330252c489a5f4f2724 # frozen: v9.27.0
     hooks:
       - id: commitlint
         language: node
@@ -116,7 +116,7 @@ repos:
     hooks:
       - id: actionlint
   - repo: https://github.com/reteps/dockerfmt
-    rev: 5c9b576cff2b0f3c323785ed9aa86838d1ae2228 # frozen: v0.5.4
+    rev: d096f3231fc6eadc7009f63ee6cdc913b626e9ad # frozen: v0.6.0
     hooks:
       - id: dockerfmt
         args:
